@@ -82,6 +82,10 @@ def shutdown_application(app=None) -> None:
     if app is None:
         return
     dispose_windows(app)
+    if app.platformName() == "offscreen":
+        # The offscreen platform (tests, CI) crashes on teardown while its clipboard holds
+        # data. Real platforms hand the data to the OS clipboard, so it survives quitting.
+        app.clipboard().clear()
     _clear_icon_caches()
     gc.collect()  # Python-owned QObjects (QSettings, documents...) held only by dead cycles
     flush_deferred_deletes()

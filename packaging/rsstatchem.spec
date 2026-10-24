@@ -6,23 +6,28 @@ import re
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
-
 ROOT = Path(SPECPATH).parent
 RES = ROOT / "rsstatchem" / "resources"
 VERSION = re.search(r'__version__ = "([^"]+)"',
                     (ROOT / "rsstatchem" / "__init__.py").read_text()).group(1)
 
+# Every module of the package, found from the files rather than by importing the package:
+# PyInstaller's collect_submodules() silently returns nothing when the project folder is not on
+# sys.path (as with the plain `pyinstaller` entry point on CI), and the feature modules are only
+# loaded by name in ui/menus.py, so the analysis cannot see them.
+APP_MODULES = sorted(
+    ".".join(path.relative_to(ROOT).with_suffix("").parts).removesuffix(".__init__")
+    for path in (ROOT / "rsstatchem").rglob("*.py"))
+
 a = Analysis(
     [str(ROOT / "run.py")],
     pathex=[str(ROOT)],
     datas=[(str(RES), "rsstatchem/resources")],
-    # Feature modules are loaded by name in ui/menus.py, so PyInstaller cannot see them.
     hiddenimports=["pyreadstat._readstat_parser", "pyreadstat._readstat_writer",
                    "pyreadstat.worker", "mpl_toolkits.mplot3d",
                    "matplotlib.backends.backend_qtagg", "matplotlib.backends.backend_pdf",
                    "matplotlib.backends.backend_svg", "matplotlib.backends.backend_ps",
-                   *collect_submodules("rsstatchem")],
+                   *APP_MODULES],
     excludes=["tkinter", "_tkinter", "IPython", "jupyter", "notebook", "pytest",
               "PyQt5", "PyQt6", "PySide2", "sklearn", "seaborn", "pingouin"],
     noarchive=False,

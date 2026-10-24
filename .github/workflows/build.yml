@@ -46,7 +46,7 @@ jobs:
           exit $code
 
       - name: Build
-        run: pyinstaller packaging/rsstatchem.spec --noconfirm --clean
+        run: python -m PyInstaller packaging/rsstatchem.spec --noconfirm --clean
 
       - name: Smoke-test the packaged app (macOS)
         if: runner.os == 'macOS'

@@ -45,10 +45,9 @@ def extension_modules() -> list:
         for name in EXTENSIONS:
             try:
                 _loaded.append(importlib.import_module(name))
-            except ModuleNotFoundError as exc:
-                if exc.name != name:
-                    _failed[name] = traceback.format_exc()
             except Exception:  # noqa: BLE001 - keep the app usable if one module breaks
+                # A missing module is a failure too: a packaged build once shipped without half
+                # of these and the menus silently fell back to disabled placeholders.
                 _failed[name] = traceback.format_exc()
         for name, tb in _failed.items():
             print(f"[RS-StatChem] extension {name} failed to load:\n{tb}", file=sys.stderr)
