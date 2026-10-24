@@ -1,0 +1,501 @@
+"""Drawing geometry of the editor (no Qt): new-bond angles (120 deg zig-zag), chains, ring
+templates, angle snapping, double-bond placement and the line/polygon primitives of bonds
+and arrows, following ChemDraw's conventions (offset double bonds inside rings, wedges whose
+wide end has the bold width, hashed wedges with a fixed hash spacing, notched arrowheads).
+
+Angles are in radians in screen coordinates (y down), so -30 deg points up-right.
+"""
+from __future__ import annotations
+
+import math
+
+from rsstatchem.core.chem_draw.model import Arrow, Bond, Document
+from rsstatchem.core.chem_draw.style import Style
+
+__all__ = ["snap_angle", "new_bond_angle", "chain_points", "free_ring", "ring_on_bond",
+           "ring_on_atom", "double_bond_side", "bond_primitives", "arrow_primitives",
+           "arrow_path_points", "head_size", "ray_box_exit", "bracket_primitives",
+           "bond_end_point"]
+
+D30 = math.radians(30)
+
+
+def _ang(dx: float, dy: float) -> float:
+    return math.atan2(dy, dx)
+
+
+def _norm(a: float) -> float:
+    while a <= -math.pi:
+        a += 2 * math.pi
+    while a > math.pi:
+        a -= 2 * math.pi
+    return a
+
+
+def snap_angle(angle: float, step_deg: float = 15.0) -> float:
+    step = math.radians(step_deg)
+    return round(angle / step) * step
+
+
+def bond_end_point(x: float, y: float, angle: float, length: float) -> tuple[float, float]:
+    return x + length * math.cos(angle), y + length * math.sin(angle)
+
+
+def new_bond_angle(doc: Document, aid: int) -> float:
+    """Direction of a bond added to atom ``aid`` (ChemDraw: 120 deg zig-zag, linear at sp
+    centres, largest gap otherwise)."""
+    atom = doc.atoms[aid]
+    nbrs = doc.neighbors(aid)
+    if not nbrs:
+        return -D30
+    angles = [_ang(doc.atoms[n].x - atom.x, doc.atoms[n].y - atom.y) for n in nbrs]
+    if len(nbrs) == 1:
+        n = nbrs[0]
+        base = angles[0]
+        bond = doc.bond_between(aid, n)
+        doubles = sum(1 for b in doc.bonds_of(aid) if b.order == 2)
+        if bond is not None and (bond.order == 3 or doubles >= 2):
+            return _norm(base + math.pi)
+        cands = [_norm(base + math.radians(120)), _norm(base - math.radians(120))]
+        others = [m for m in doc.neighbors(n) if m != aid]
+        if others:
+            nb = doc.atoms[n]
+            m = doc.atoms[others[0]]
+            target = _ang(nb.x - m.x, nb.y - m.y)     # continue the zig-zag (trans)
+            return min(cands, key=lambda c: abs(_norm(c - target)))
+        return max(cands, key=lambda c: (round(math.cos(c), 6), -math.sin(c)))
+    angles.sort()
+    best_gap, best_mid = -1.0, 0.0
+    for i, a in enumerate(angles):
+        b = angles[(i + 1) % len(angles)] + (2 * math.pi if i == len(angles) - 1 else 0)
+        if b - a > best_gap:
+            best_gap, best_mid = b - a, (a + b) / 2
+    return _norm(best_mid)
+
+
+def chain_points(x0: float, y0: float, direction: float, n: int, length: float,
+                 first_sign: int = 1) -> list[tuple[float, float]]:
+    """n zig-zag bond end points from (x0, y0) along ``direction`` (bonds at +-30 deg)."""
+    pts, x, y = [], x0, y0
+    sign = -first_sign
+    for _ in range(n):
+        a = direction + sign * D30
+        x, y = x + length * math.cos(a), y + length * math.sin(a)
+        pts.append((x, y))
+        sign = -sign
+    return pts
+
+
+def free_ring(cx: float, cy: float, n: int, length: float) -> list[tuple[float, float]]:
+    """Regular ring centred on (cx, cy): pointed top (benzene with vertical sides),
+    flat top for 4- and 8-membered rings."""
+    r = length / (2 * math.sin(math.pi / n))
+    start = -math.pi / 2 + (math.pi / n if n % 4 == 0 else 0.0)
+    return [(cx + r * math.cos(start + 2 * math.pi * k / n),
+             cy + r * math.sin(start + 2 * math.pi * k / n)) for k in range(n)]
+
+
+def ring_on_bond(x1, y1, x2, y2, n: int, side: int) -> list[tuple[float, float]]:
+    """Vertices of a regular n-ring fused on the edge (x1, y1)-(x2, y2), starting with the
+    two edge atoms; ``side`` (+1/-1) picks the half-plane of the ring centre (+1 = left
+    normal (-dy, dx))."""
+    dx, dy = x2 - x1, y2 - y1
+    L = math.hypot(dx, dy) or 1.0
+    apothem = L / (2 * math.tan(math.pi / n))
+    nx, ny = -dy / L * side, dx / L * side
+    cx, cy = (x1 + x2) / 2 + nx * apothem, (y1 + y2) / 2 + ny * apothem
+    r = math.hypot(x1 - cx, y1 - cy)
+    a1, a2 = _ang(x1 - cx, y1 - cy), _ang(x2 - cx, y2 - cy)
+    step = _norm(a2 - a1)
+    return [(cx + r * math.cos(a1 + step * k), cy + r * math.sin(a1 + step * k))
+            for k in range(n)]
+
+
+def ring_on_atom(x: float, y: float, n: int, direction: float,
+                 length: float) -> list[tuple[float, float]]:
+    """Ring that contains the vertex (x, y) and whose centre lies along ``direction``."""
+    r = length / (2 * math.sin(math.pi / n))
+    cx, cy = x + r * math.cos(direction), y + r * math.sin(direction)
+    a0 = _ang(x - cx, y - cy)
+    return [(cx + r * math.cos(a0 + 2 * math.pi * k / n),
+             cy + r * math.sin(a0 + 2 * math.pi * k / n)) for k in range(n)]
+
+
+def away_direction(doc: Document, aid: int) -> float:
+    """Direction pointing away from the neighbours of an atom (up when it has none)."""
+    a = doc.atoms[aid]
+    sx = sy = 0.0
+    for n in doc.neighbors(aid):
+        o = doc.atoms[n]
+        d = math.hypot(o.x - a.x, o.y - a.y) or 1.0
+        sx += (o.x - a.x) / d
+        sy += (o.y - a.y) / d
+    if math.hypot(sx, sy) < 1e-6:
+        return new_bond_angle(doc, aid) if doc.neighbors(aid) else -math.pi / 2
+    return _ang(-sx, -sy)
+
+
+def ring_side_for_bond(doc: Document, bond: Bond, px: float | None = None,
+                       py: float | None = None) -> int:
+    """Side (+1 left normal / -1) for fusing a ring on a bond: away from the atoms already
+    attached to the bond, else towards the pointer."""
+    a, b = doc.atoms[bond.a], doc.atoms[bond.b]
+    dx, dy = b.x - a.x, b.y - a.y
+    mx, my = (a.x + b.x) / 2, (a.y + b.y) / 2
+    score = 0.0
+    for end in (bond.a, bond.b):
+        for n in doc.neighbors(end):
+            if n in (bond.a, bond.b):
+                continue
+            o = doc.atoms[n]
+            score += (-dy) * (o.x - mx) + dx * (o.y - my)
+    if abs(score) > 1e-6:
+        return -1 if score > 0 else 1
+    if px is not None:
+        s = (-dy) * (px - mx) + dx * (py - my)
+        if abs(s) > 1e-6:
+            return 1 if s > 0 else -1
+    return 1 if dx >= 0 else -1
+
+
+# --- double bonds ---------------------------------------------------------------------------
+
+def double_bond_side(doc: Document, bond: Bond, labelled=None, rings=None) -> int:
+    """+1 / -1: the second line lies on the left (-dy, dx) / right normal of a->b;
+    0: centred. ``labelled`` = set of atom ids with visible labels."""
+    if bond.double_pos == "center":
+        return 0
+    if bond.double_pos == "left":
+        return 1
+    if bond.double_pos == "right":
+        return -1
+    labelled = labelled or set()
+    a, b = doc.atoms[bond.a], doc.atoms[bond.b]
+    dx, dy = b.x - a.x, b.y - a.y
+    ring = None
+    if rings is not None:
+        cands = [r for r in rings if bond.a in r and bond.b in r and
+                 _adjacent_in(r, bond.a, bond.b)]
+        if cands:
+            ring = min(cands, key=lambda r: (len(r), -_doubles_in(doc, r)))
+    else:
+        ring = doc.ring_of_bond(bond.id)
+    if ring:
+        cx = sum(doc.atoms[i].x for i in ring) / len(ring)
+        cy = sum(doc.atoms[i].y for i in ring) / len(ring)
+        s = (-dy) * (cx - a.x) + dx * (cy - a.y)
+        return 1 if s > 0 else -1
+    if bond.a in labelled and bond.b in labelled:
+        return 0
+    left = right = 0
+    ends_other = {}
+    for end in (bond.a, bond.b):
+        others = [n for n in doc.neighbors(end) if n not in (bond.a, bond.b)]
+        ends_other[end] = others
+        for n in others:
+            o = doc.atoms[n]
+            s = (-dy) * (o.x - a.x) + dx * (o.y - a.y)
+            if s > 1e-6:
+                left += 1
+            elif s < -1e-6:
+                right += 1
+    if not ends_other[bond.a] and not ends_other[bond.b]:
+        return 0
+    for end in (bond.a, bond.b):
+        if not ends_other[end] and end in labelled:
+            return 0
+    if left == right:
+        return 1 if left else 0
+    return 1 if left > right else -1
+
+
+def _adjacent_in(ring, a, b) -> bool:
+    i, j = ring.index(a), ring.index(b)
+    return abs(i - j) in (1, len(ring) - 1)
+
+
+def _doubles_in(doc: Document, ring) -> int:
+    n = 0
+    for i in range(len(ring)):
+        b = doc.bond_between(ring[i], ring[(i + 1) % len(ring)])
+        if b is not None and b.order in (2, 1.5):
+            n += 1
+    return n
+
+
+# --- primitives -----------------------------------------------------------------------------
+# ("line", x1, y1, x2, y2, width, dashed)   ("poly", [(x, y), ...])   ("path", pts, width)
+
+def _shorten(doc: Document, end: int, other: int, side: int, nx: float, ny: float,
+             spacing: float, length: float) -> float:
+    e, o = doc.atoms[end], doc.atoms[other]
+    ux, uy = o.x - e.x, o.y - e.y
+    d = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / d, uy / d
+    best = None
+    for n in doc.neighbors(end):
+        if n == other:
+            continue
+        m = doc.atoms[n]
+        vx, vy = m.x - e.x, m.y - e.y
+        dv = math.hypot(vx, vy) or 1.0
+        vx, vy = vx / dv, vy / dv
+        if side and (vx * nx + vy * ny) * side <= 0:
+            continue
+        theta = math.acos(max(-1.0, min(1.0, ux * vx + uy * vy)))
+        if theta < 1e-3:
+            continue
+        s = spacing / math.tan(theta / 2)
+        best = s if best is None else max(best, s)
+    if best is None:
+        return 0.1 * length
+    return max(0.05 * length, min(best, 0.35 * length))
+
+
+def bond_primitives(doc: Document, bond: Bond, style: Style, trim_a: float = 0.0,
+                    trim_b: float = 0.0, side: int | None = None,
+                    labelled=None) -> list[tuple]:
+    a, b = doc.atoms[bond.a], doc.atoms[bond.b]
+    dx, dy = b.x - a.x, b.y - a.y
+    L = math.hypot(dx, dy)
+    if L < 1e-6:
+        return []
+    ux, uy = dx / L, dy / L
+    nx, ny = -uy, ux
+    lw = style.line_width
+    sp = style.spacing
+    p = (a.x + ux * trim_a, a.y + uy * trim_a)
+    q = (b.x - ux * trim_b, b.y - uy * trim_b)
+    if (q[0] - p[0]) * ux + (q[1] - p[1]) * uy <= 0.5:
+        return []
+    out: list[tuple] = []
+
+    def line(p1, p2, width=lw, dashed=False):
+        out.append(("line", p1[0], p1[1], p2[0], p2[1], width, dashed))
+
+    def off(pt, k):
+        return (pt[0] + nx * k, pt[1] + ny * k)
+
+    order = bond.order
+    st = bond.style
+    if order in (2, 1.5) and st != "either":
+        if side is None:
+            side = double_bond_side(doc, bond, labelled)
+        if side == 0 and order == 2:
+            line(off(p, sp / 2), off(q, sp / 2))
+            line(off(p, -sp / 2), off(q, -sp / 2))
+            return out
+        side = side or 1
+        line(p, q)
+        sa = trim_a if bond.a in (labelled or ()) else max(
+            trim_a, _shorten(doc, bond.a, bond.b, side, nx, ny, sp, L))
+        sb = trim_b if bond.b in (labelled or ()) else max(
+            trim_b, _shorten(doc, bond.b, bond.a, side, nx, ny, sp, L))
+        p2 = (a.x + ux * sa + nx * sp * side, a.y + uy * sa + ny * sp * side)
+        q2 = (b.x - ux * sb + nx * sp * side, b.y - uy * sb + ny * sp * side)
+        if (q2[0] - p2[0]) * ux + (q2[1] - p2[1]) * uy > 0.5:
+            line(p2, q2, dashed=order == 1.5)
+        return out
+    if order == 2 and st == "either":
+        line(off(p, sp / 2), off(q, -sp / 2))
+        line(off(p, -sp / 2), off(q, sp / 2))
+        return out
+    if order == 3:
+        line(p, q)
+        line(off(p, sp), off(q, sp))
+        line(off(p, -sp), off(q, -sp))
+        return out
+    if st == "wedge":
+        w = style.wedge_width / 2
+        tip = lw / 2
+        out.append(("poly", [off(p, tip), off(q, w), off(q, -w), off(p, -tip)]))
+        return out
+    if st == "hash":
+        w = style.wedge_width / 2
+        length = math.hypot(q[0] - p[0], q[1] - p[1])
+        n = max(2, int(length / style.hash_spacing))
+        for k in range(n + 1):
+            t = k / n
+            if k == 0:
+                t = 0.5 / n
+            c = (p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t)
+            hw = lw / 2 + (w - lw / 2) * t
+            line(off(c, hw), off(c, -hw))
+        return out
+    if st == "wavy":
+        length = math.hypot(q[0] - p[0], q[1] - p[1])
+        waves = max(2, round(length / (style.bond_length * 0.16)))
+        amp = style.wedge_width * 0.4
+        pts = []
+        steps = waves * 12
+        for k in range(steps + 1):
+            t = k / steps
+            c = (p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t)
+            pts.append(off(c, amp * math.sin(t * waves * math.pi)))
+        out.append(("path", pts, lw))
+        return out
+    if st == "bold":
+        w = style.bold_width / 2
+        out.append(("poly", [off(p, w), off(q, w), off(q, -w), off(p, -w)]))
+        return out
+    if st == "dashed":
+        line(p, q, dashed=True)
+        return out
+    line(p, q)
+    return out
+
+
+def ray_box_exit(cx: float, cy: float, ux: float, uy: float,
+                 box: tuple[float, float, float, float]) -> float:
+    """Distance from (cx, cy), which lies inside ``box`` (x0, y0, x1, y1), along (ux, uy)
+    to the border of the box."""
+    x0, y0, x1, y1 = box
+    ts = []
+    if ux > 1e-9:
+        ts.append((x1 - cx) / ux)
+    elif ux < -1e-9:
+        ts.append((x0 - cx) / ux)
+    if uy > 1e-9:
+        ts.append((y1 - cy) / uy)
+    elif uy < -1e-9:
+        ts.append((y0 - cy) / uy)
+    ts = [t for t in ts if t >= 0]
+    return min(ts) if ts else 0.0
+
+
+# --- arrows ---------------------------------------------------------------------------------
+
+def head_size(style: Style) -> tuple[float, float]:
+    """(length, half width) of an arrowhead."""
+    hl = max(4.5, style.bond_length * 0.32 + style.line_width * 1.5)
+    return hl, hl * 0.36
+
+
+def arrow_path_points(ar: Arrow, samples: int = 24) -> list[tuple[float, float]]:
+    """Points along the arrow shaft (a quadratic curve for curved arrows)."""
+    if ar.kind not in ("curved", "fishhook") or abs(ar.bend) < 1e-6:
+        return [(ar.x1, ar.y1), (ar.x2, ar.y2)]
+    dx, dy = ar.x2 - ar.x1, ar.y2 - ar.y1
+    L = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / L, dx / L
+    mx, my = (ar.x1 + ar.x2) / 2, (ar.y1 + ar.y2) / 2
+    cx, cy = mx + nx * 2 * ar.bend, my + ny * 2 * ar.bend
+    pts = []
+    for k in range(samples + 1):
+        t = k / samples
+        x = (1 - t) ** 2 * ar.x1 + 2 * (1 - t) * t * cx + t * t * ar.x2
+        y = (1 - t) ** 2 * ar.y1 + 2 * (1 - t) * t * cy + t * t * ar.y2
+        pts.append((x, y))
+    return pts
+
+
+def _head(tip, ux, uy, hl, hw, half: int = 0) -> list[tuple[float, float]]:
+    """Notched arrowhead polygon; ``half`` = +1/-1 keeps one barb (left/right normal)."""
+    nx, ny = -uy, ux
+    back = (tip[0] - ux * hl, tip[1] - uy * hl)
+    notch = (tip[0] - ux * hl * 0.78, tip[1] - uy * hl * 0.78)
+    left = (back[0] + nx * hw, back[1] + ny * hw)
+    right = (back[0] - nx * hw, back[1] - ny * hw)
+    if half > 0:
+        return [tip, left, notch]
+    if half < 0:
+        return [tip, notch, right]
+    return [tip, left, notch, right]
+
+
+def arrow_primitives(ar: Arrow, style: Style) -> list[tuple]:
+    lw = style.line_width
+    hl, hw = head_size(style)
+    out: list[tuple] = []
+    dx, dy = ar.x2 - ar.x1, ar.y2 - ar.y1
+    L = math.hypot(dx, dy)
+    if L < 1e-6:
+        return out
+    ux, uy = dx / L, dy / L
+    nx, ny = -uy, ux
+    tail, tip = (ar.x1, ar.y1), (ar.x2, ar.y2)
+    k = ar.kind
+    if k in ("curved", "fishhook"):
+        pts = arrow_path_points(ar)
+        ex, ey = pts[-1][0] - pts[-2][0], pts[-1][1] - pts[-2][1]
+        el = math.hypot(ex, ey) or 1.0
+        ex, ey = ex / el, ey / el
+        hl2, hw2 = hl * 0.9, hw * 0.9
+        cut = hl2 * 0.7
+        trimmed = [pt for pt in pts if math.hypot(pt[0] - tip[0], pt[1] - tip[1]) > cut]
+        trimmed.append((tip[0] - ex * cut, tip[1] - ey * cut))
+        out.append(("path", trimmed, lw))
+        half = 0
+        if k == "fishhook":
+            half = 1 if ar.bend >= 0 else -1
+        out.append(("poly", _head(tip, ex, ey, hl2, hw2 * (1.15 if half else 1), half)))
+        return out
+    if k == "line":
+        out.append(("line", tail[0], tail[1], tip[0], tip[1], lw, False))
+        return out
+    if k == "forward":
+        notch = (tip[0] - ux * hl * 0.78, tip[1] - uy * hl * 0.78)
+        out.append(("line", tail[0], tail[1], notch[0], notch[1], lw, False))
+        out.append(("poly", _head(tip, ux, uy, hl, hw)))
+        return out
+    if k == "resonance":
+        n1 = (tip[0] - ux * hl * 0.78, tip[1] - uy * hl * 0.78)
+        n2 = (tail[0] + ux * hl * 0.78, tail[1] + uy * hl * 0.78)
+        out.append(("line", n2[0], n2[1], n1[0], n1[1], lw, False))
+        out.append(("poly", _head(tip, ux, uy, hl, hw)))
+        out.append(("poly", _head(tail, -ux, -uy, hl, hw)))
+        return out
+    if k == "equilibrium":
+        # forward harpoon on top (screen up = -n when the arrow points right), barbs out
+        g = max(hw * 0.9, 2.2 * lw)
+        t1 = (tail[0] - nx * g / 2, tail[1] - ny * g / 2)
+        h1 = (tip[0] - nx * g / 2, tip[1] - ny * g / 2)
+        t2 = (tip[0] + nx * g / 2, tip[1] + ny * g / 2)
+        h2 = (tail[0] + nx * g / 2, tail[1] + ny * g / 2)
+        out.append(("line", t1[0], t1[1], h1[0] - ux * hl * 0.6, h1[1] - uy * hl * 0.6, lw,
+                    False))
+        out.append(("poly", _head(h1, ux, uy, hl, hw * 1.1, half=-1)))
+        out.append(("line", t2[0], t2[1], h2[0] + ux * hl * 0.6, h2[1] + uy * hl * 0.6, lw,
+                    False))
+        out.append(("poly", _head(h2, -ux, -uy, hl, hw * 1.1, half=-1)))
+        return out
+    if k == "retro":
+        g = max(hw * 0.9, 2.5 * lw)
+        wing = g * 1.9
+        back = (tip[0] - ux * hl, tip[1] - uy * hl)
+        for s in (1, -1):
+            # parallel lines stop where they meet the open chevron
+            f = 1 - (g / 2) / wing
+            end = (tip[0] - ux * hl * f + nx * s * g / 2, tip[1] - uy * hl * f + ny * s * g / 2)
+            out.append(("line", tail[0] + nx * s * g / 2, tail[1] + ny * s * g / 2, end[0],
+                        end[1], lw, False))
+        out.append(("path", [(back[0] + nx * wing, back[1] + ny * wing), tip,
+                             (back[0] - nx * wing, back[1] - ny * wing)], lw))
+        return out
+    out.append(("line", tail[0], tail[1], tip[0], tip[1], lw, False))
+    return out
+
+
+def bracket_primitives(x1, y1, x2, y2, kind: str, style: Style) -> list[tuple]:
+    lw = style.line_width
+    h = y2 - y1
+    tick = max(3.0, min(h * 0.12, style.bond_length * 0.3))
+    out: list[tuple] = []
+    for x, s in ((x1, 1), (x2, -1)):
+        if kind == "round":
+            pts = []
+            for k in range(17):
+                t = k / 16
+                pts.append((x + s * tick * 1.2 * (1 - math.sin(math.pi * t)), y1 + h * t))
+            out.append(("path", pts, lw))
+        elif kind == "curly":
+            m = (y1 + y2) / 2
+            pts = [(x + s * tick, y1), (x + s * tick * 0.4, y1 + tick * 0.3),
+                   (x + s * tick * 0.4, m - tick * 0.6), (x, m),
+                   (x + s * tick * 0.4, m + tick * 0.6), (x + s * tick * 0.4, y2 - tick * 0.3),
+                   (x + s * tick, y2)]
+            out.append(("path", pts, lw))
+        else:
+            out.append(("path", [(x + s * tick, y1), (x, y1), (x, y2), (x + s * tick, y2)],
+                        lw))
+    return out

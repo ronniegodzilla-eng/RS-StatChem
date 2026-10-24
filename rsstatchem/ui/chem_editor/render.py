@@ -1,0 +1,369 @@
+"""Builds QGraphicsItems for a drawing document (canvas and all exports share it).
+
+Text is drawn as glyph outlines (``QPainterPath.addText``) from a 100 px reference font
+scaled to the style's point size, so labels look identical on screen, in SVG/PDF and in
+PNGs of any resolution. Bonds stop at the label boxes (plus the style margin) instead of
+being masked, as in ChemDraw.
+"""
+from __future__ import annotations
+
+import html
+import math
+import re
+from dataclasses import dataclass, field
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QPainterPath, QPen,
+                           QPolygonF, QTransform)
+from PySide6.QtWidgets import (QGraphicsLineItem, QGraphicsPathItem, QGraphicsPolygonItem,
+                               QGraphicsScene)
+
+from rsstatchem.core.chem.formula import format_formula
+from rsstatchem.core.chem_draw import geometry as geo
+from rsstatchem.core.chem_draw import labels as lab
+from rsstatchem.core.chem_draw.model import Document
+from rsstatchem.core.chem_draw.style import Style, element_color
+
+__all__ = ["Builder", "BuildInfo", "chem_text_lines", "SELECT_COLOR"]
+
+REF_PX = 100.0
+SUB = 0.72
+SELECT_COLOR = QColor(47, 125, 225)
+_FONTS: dict = {}
+
+
+def _font(family: str, bold: bool = False) -> tuple[QFont, QFontMetricsF]:
+    key = (family, bold)
+    if key not in _FONTS:
+        f = QFont(family)
+        f.setPixelSize(int(REF_PX))
+        f.setBold(bold)
+        f.setStyleStrategy(QFont.StyleStrategy.PreferOutline)
+        _FONTS[key] = (f, QFontMetricsF(f))
+    return _FONTS[key]
+
+
+_TAG = re.compile(r"<(sub|sup)>(.*?)</\1>")
+
+
+def _html_runs(text: str) -> list[tuple[str, str]]:
+    runs, pos = [], 0
+    for m in _TAG.finditer(text):
+        if m.start() > pos:
+            runs.append((html.unescape(text[pos:m.start()]), "n"))
+        runs.append((html.unescape(m.group(2)).replace("&minus;", "−"), m.group(1)))
+        pos = m.end()
+    if pos < len(text):
+        runs.append((html.unescape(text[pos:]), "n"))
+    return [(t.replace("&minus;", "−"), k) for t, k in runs]
+
+
+def _word_runs(word: str) -> list[tuple[str, str]]:
+    core = word.rstrip(",;:")
+    tail = word[len(core):]
+    out = None
+    if core:
+        h = format_formula(core, "html")
+        if h != core and "<" in h:
+            out = _html_runs(h)
+        elif (core[0].isupper() or core[0] == "(") and any(c.isdigit() for c in core):
+            out = lab.split_digits(core)
+    out = out or [(core, "n")]
+    if tail:
+        out.append((tail, "n"))
+    return out
+
+
+def chem_text_lines(text: str, chemical: bool = True) -> list[list[tuple[str, str]]]:
+    """Runs per line; with ``chemical`` formulas get subscripts and charges superscripts."""
+    lines = []
+    for line in (text or "").split("\n"):
+        if not chemical:
+            lines.append([(line, "n")])
+            continue
+        runs: list[tuple[str, str]] = []
+        for tok in re.split(r"(\s+)", line):
+            if not tok:
+                continue
+            runs += [(tok, "n")] if tok.isspace() else _word_runs(tok)
+        lines.append(runs or [("", "n")])
+    return lines
+
+
+@dataclass
+class BuildInfo:
+    label_boxes: dict = field(default_factory=dict)    # atom id -> QRectF
+    text_boxes: dict = field(default_factory=dict)     # text id -> QRectF
+    plus_boxes: dict = field(default_factory=dict)
+    bracket_boxes: dict = field(default_factory=dict)
+    arrow_text: dict = field(default_factory=dict)     # arrow id -> [QRectF]
+
+
+class Builder:
+    def __init__(self, style: Style):
+        self.style = style
+
+    # --- text ----------------------------------------------------------------------------
+    def runs_path(self, runs, size: float, x: float, baseline: float, bold: bool = False
+                  ) -> tuple[QPainterPath, list[float]]:
+        font, fm = _font(self.style.font_family, bold)
+        path = QPainterPath()
+        widths = []
+        cursor = x
+        for text, kind in runs:
+            s = size * (SUB if kind in ("sub", "sup") else 1.0)
+            shift = size * 0.30 if kind == "sub" else (-size * 0.42 if kind == "sup" else 0)
+            if text:
+                p = QPainterPath()
+                p.addText(0, 0, font, text)
+                k = s / REF_PX
+                t = QTransform()
+                t.translate(cursor, baseline + shift)
+                t.scale(k, k)
+                path.addPath(t.map(p))
+            w = fm.horizontalAdvance(text) * s / REF_PX
+            widths.append(w)
+            cursor += w
+        return path, widths
+
+    def run_widths(self, runs, size: float, bold: bool = False) -> list[float]:
+        _, fm = _font(self.style.font_family, bold)
+        return [fm.horizontalAdvance(t) * size * (SUB if k in ("sub", "sup") else 1.0)
+                / REF_PX for t, k in runs]
+
+    def cap_height(self, size: float) -> float:
+        _, fm = _font(self.style.font_family)
+        return fm.capHeight() * size / REF_PX
+
+    def text_block(self, lines, size: float, x: float, y: float, bold=False, center=False
+                   ) -> tuple[QPainterPath, QRectF]:
+        """Multi-line text with top-left (x, y) (or centred on x)."""
+        path = QPainterPath()
+        line_h = size * 1.25
+        cap = self.cap_height(size)
+        width = 0.0
+        for i, runs in enumerate(lines):
+            w = sum(self.run_widths(runs, size, bold))
+            width = max(width, w)
+            x0 = x - w / 2 if center else x
+            base = y + size * 0.2 + cap + i * line_h
+            p, _ = self.runs_path(runs, size, x0, base, bold)
+            path.addPath(p)
+        h = line_h * len(lines)
+        rect = QRectF(x - width / 2 if center else x, y, width, h)
+        return path, rect
+
+    # --- labels --------------------------------------------------------------------------
+    def label(self, doc: Document, atom) -> tuple[QPainterPath | None, QRectF | None, str]:
+        lay = lab.layout(doc, atom)
+        if not lay.visible:
+            return None, None, "#000000"
+        st = self.style
+        size = st.font_size
+        widths = self.run_widths(lay.runs, size)
+        text = lay.text
+        # character offsets -> run index for the anchor range
+        starts, pos = [], 0
+        for t, _ in lay.runs:
+            starts.append(pos)
+            pos += len(t)
+
+        def char_x(ci: int) -> float:
+            x = 0.0
+            for (t, k), s0, w in zip(lay.runs, starts, widths):
+                if ci <= s0:
+                    break
+                if ci >= s0 + len(t):
+                    x += w
+                else:
+                    x += w * (ci - s0) / max(1, len(t))
+                    break
+            return x
+        a0, a1 = lay.anchor
+        anchor_c = (char_x(a0) + char_x(a1)) / 2 if text else 0.0
+        cap = self.cap_height(size)
+        x0 = atom.x - anchor_c
+        base = atom.y + cap / 2
+        path, _ = self.runs_path(lay.runs, size, x0, base)
+        total = sum(widths)
+        m = st.margin
+        rect = QRectF(x0 - m, base - cap - m, total + 2 * m, cap + 2 * m)
+        if any(k == "sub" for _, k in lay.runs):
+            rect.setBottom(rect.bottom() + size * 0.25)
+        if any(k == "sup" for _, k in lay.runs):
+            rect.setTop(rect.top() - size * 0.2)
+        if lay.stacked:
+            sw = sum(self.run_widths(lay.stacked, size))
+            hx = atom.x - self.run_widths([lay.stacked[0]], size)[0] / 2
+            gap = cap * 1.45
+            sb = base - gap if lay.stacked_pos == "up" else base + gap
+            p2, _ = self.runs_path(lay.stacked, size, hx, sb)
+            path.addPath(p2)
+            r2 = QRectF(hx - m, sb - cap - m, sw + 2 * m, cap + 2 * m + size * 0.25)
+            rect = rect.united(r2)
+        anchor_sym = atom.symbol if not atom.label else ""
+        color = element_color(anchor_sym, st.color_by_element) if anchor_sym else "#000000"
+        return path, rect, color
+
+    # --- scene ---------------------------------------------------------------------------
+    def build(self, scene: QGraphicsScene, doc: Document, z0: float = 0.0) -> BuildInfo:
+        st = self.style
+        info = BuildInfo()
+        pen_color = QColor("#000000")
+        boxes: dict[int, QRectF] = {}
+        labelled = set()
+        for a in doc.atoms.values():
+            path, rect, color = self.label(doc, a)
+            if path is None:
+                if a.radicals:
+                    self._radicals(scene, a.x, a.y - st.font_size * 0.35, a.radicals, z0)
+                continue
+            item = QGraphicsPathItem(path)
+            item.setBrush(QBrush(QColor(color)))
+            item.setPen(Qt.PenStyle.NoPen)
+            item.setZValue(z0 + 2)
+            scene.addItem(item)
+            boxes[a.id] = rect
+            labelled.add(a.id)
+            if a.radicals:
+                self._radicals(scene, a.x, rect.top() - st.line_width * 1.2, a.radicals, z0)
+        for a in doc.atoms.values():
+            if a.map_number:
+                size = st.font_size * 0.6
+                ref = boxes.get(a.id)
+                x = (ref.right() if ref else a.x + st.font_size * 0.25)
+                y = (ref.bottom() if ref else a.y + st.font_size * 0.2)
+                path, _ = self.runs_path([(str(a.map_number), "n")], size, x, y + size * 0.6)
+                item = QGraphicsPathItem(path)
+                item.setBrush(QBrush(QColor("#1565C0")))
+                item.setPen(Qt.PenStyle.NoPen)
+                item.setZValue(z0 + 2)
+                scene.addItem(item)
+        info.label_boxes = boxes
+        rings = doc.rings()
+        for b in doc.bonds.values():
+            pa, pb = doc.atoms.get(b.a), doc.atoms.get(b.b)
+            if pa is None or pb is None:
+                continue
+            dx, dy = pb.x - pa.x, pb.y - pa.y
+            L = math.hypot(dx, dy) or 1.0
+            ux, uy = dx / L, dy / L
+            ta = geo.ray_box_exit(pa.x, pa.y, ux, uy, _box(boxes[b.a])) if b.a in boxes else 0
+            tb = geo.ray_box_exit(pb.x, pb.y, -ux, -uy, _box(boxes[b.b])) \
+                if b.b in boxes else 0
+            side = None
+            if b.order in (2, 1.5):
+                side = geo.double_bond_side(doc, b, labelled, rings)
+            for prim in geo.bond_primitives(doc, b, st, ta, tb, side, labelled):
+                self._prim(scene, prim, pen_color, z0 + 1)
+        for ar in doc.arrows.values():
+            z = z0 + 3 + ar.z
+            for prim in geo.arrow_primitives(ar, st):
+                self._prim(scene, prim, pen_color, z)
+            info.arrow_text[ar.id] = self._arrow_text(scene, ar, z)
+        for p in doc.pluses.values():
+            h = st.caption_size * 0.36
+            w = max(st.line_width, 0.6)
+            for x1, y1, x2, y2 in ((p.x - h, p.y, p.x + h, p.y), (p.x, p.y - h, p.x, p.y + h)):
+                self._prim(scene, ("line", x1, y1, x2, y2, w, False), pen_color,
+                           z0 + 3 + p.z, cap=Qt.PenCapStyle.FlatCap)
+            info.plus_boxes[p.id] = QRectF(p.x - h, p.y - h, 2 * h, 2 * h)
+        for t in doc.texts.values():
+            size = t.size or st.caption_size
+            path, rect = self.text_block(chem_text_lines(t.text, t.chemical), size, t.x, t.y,
+                                         t.bold)
+            item = QGraphicsPathItem(path)
+            item.setBrush(QBrush(pen_color))
+            item.setPen(Qt.PenStyle.NoPen)
+            item.setZValue(z0 + 3 + t.z)
+            scene.addItem(item)
+            info.text_boxes[t.id] = rect
+        for br in doc.brackets.values():
+            z = z0 + 3 + br.z
+            for prim in geo.bracket_primitives(br.x1, br.y1, br.x2, br.y2, br.kind, st):
+                self._prim(scene, prim, pen_color, z)
+            if br.label:
+                size = st.caption_size * 0.85
+                path, _ = self.runs_path([(br.label, "n")], size, br.x2 + 1.5, br.y2 + size * 0.5)
+                item = QGraphicsPathItem(path)
+                item.setBrush(QBrush(pen_color))
+                item.setPen(Qt.PenStyle.NoPen)
+                item.setZValue(z)
+                scene.addItem(item)
+            info.bracket_boxes[br.id] = QRectF(br.x1, br.y1, br.x2 - br.x1, br.y2 - br.y1)
+        return info
+
+    def _arrow_text(self, scene, ar, z) -> list:
+        rects = []
+        st = self.style
+        dx, dy = ar.x2 - ar.x1, ar.y2 - ar.y1
+        L = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / L, dx / L
+        if ny > 0 or (abs(ny) < 1e-9 and nx > 0):
+            nx, ny = -nx, -ny           # (nx, ny) points to the screen-up side
+        mx, my = (ar.x1 + ar.x2) / 2, (ar.y1 + ar.y2) / 2
+        _, hw = geo.head_size(st)
+        gap = hw * 1.2 + st.caption_size * 0.25
+        size = st.caption_size
+        for text, sign in ((ar.above, 1), (ar.below, -1)):
+            if not text:
+                continue
+            lines = chem_text_lines(text)
+            h = size * 1.25 * len(lines)
+            cx = mx + nx * sign * (gap + h / 2)
+            cy = my + ny * sign * (gap + h / 2)
+            path, rect = self.text_block(lines, size, cx, cy - h / 2, center=True)
+            item = QGraphicsPathItem(path)
+            item.setBrush(QBrush(QColor("#000000")))
+            item.setPen(Qt.PenStyle.NoPen)
+            item.setZValue(z)
+            scene.addItem(item)
+            rects.append(rect)
+        return rects
+
+    def _radicals(self, scene, x, y, n, z0):
+        r = max(0.8, self.style.line_width * 1.1)
+        xs = [x] if n == 1 else [x - r * 1.6, x + r * 1.6]
+        for cx in xs:
+            path = QPainterPath()
+            path.addEllipse(QPointF(cx, y - r), r, r)
+            item = QGraphicsPathItem(path)
+            item.setBrush(QBrush(QColor("#000000")))
+            item.setPen(Qt.PenStyle.NoPen)
+            item.setZValue(z0 + 2)
+            scene.addItem(item)
+
+    def _prim(self, scene, prim, color, z, cap=Qt.PenCapStyle.RoundCap):
+        kind = prim[0]
+        if kind == "line":
+            _, x1, y1, x2, y2, w, dashed = prim
+            pen = QPen(color, w)
+            pen.setCapStyle(Qt.PenCapStyle.FlatCap if dashed else cap)
+            if dashed:
+                pen.setDashPattern([2.2, 2.0])
+            item = QGraphicsLineItem(x1, y1, x2, y2)
+            item.setPen(pen)
+        elif kind == "poly":
+            item = QGraphicsPolygonItem(QPolygonF([QPointF(x, y) for x, y in prim[1]]))
+            item.setBrush(QBrush(color))
+            pen = QPen(color, 0.15)
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+            item.setPen(pen)
+        else:
+            pts = prim[1]
+            path = QPainterPath(QPointF(*pts[0]))
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            item = QGraphicsPathItem(path)
+            pen = QPen(color, prim[2])
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            item.setPen(pen)
+            item.setBrush(Qt.BrushStyle.NoBrush)
+        item.setZValue(z)
+        scene.addItem(item)
+        return item
+
+
+def _box(r: QRectF) -> tuple[float, float, float, float]:
+    return r.left(), r.top(), r.right(), r.bottom()
