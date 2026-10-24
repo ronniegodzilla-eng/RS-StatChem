@@ -426,11 +426,7 @@ def test_sections_build():
     assert isinstance(s.items[-1], Image)
 
 
-def test_ui_dialogs_offscreen(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
+def test_ui_dialogs_offscreen(qapp):
     import rsstatchem.ui.chem as chem
     from rsstatchem.core.output import Section
     labels = [e[0] for e in chem.MENUS["Chemistry"] if e]

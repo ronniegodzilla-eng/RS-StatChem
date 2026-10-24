@@ -14,7 +14,6 @@ from rsstatchem.core.stats import pls_engine as E
 from rsstatchem.core.stats.pls_model import ModelError, parse_syntax
 
 SYNTAX = pls.SELFTEST_SYNTAX
-_APP = None
 
 
 @pytest.fixture(scope="module")
@@ -398,14 +397,9 @@ def test_selftest():
                             dialog_module.MENUS["Analyze/Structural Equation Modeling"]]
 
 
-def test_dialog_offscreen(df):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
+def test_dialog_offscreen(df, qapp):
     from rsstatchem.ui.dialogs.pls import PLSSEMDialog
 
-    global _APP
-    _APP = QApplication.instance() or QApplication([])
     dlg = PLSSEMDialog(Dataset(df))
     dlg.tabs.setCurrentIndex(1)
     dlg.editor.setPlainText(SYNTAX)
@@ -419,7 +413,7 @@ def test_dialog_offscreen(df):
     assert dlg2.model.to_syntax() == dlg.model.to_syntax()
     dlg.deleteLater()
     dlg2.deleteLater()
-    _APP.processEvents()
+    qapp.processEvents()
 
 
 # ---------------------------------------------------------------------- moderation
@@ -468,15 +462,10 @@ def test_two_stage_moderation(mod_df):
     assert parse_syntax(MOD).to_syntax().endswith("Y ~ X + W + X:W")
 
 
-def test_dialog_builder_and_subdialogs(mod_df, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
+def test_dialog_builder_and_subdialogs(mod_df, monkeypatch, qapp):
     from rsstatchem.ui.dialogs import pls as dlg_mod
     from rsstatchem.ui.dialogs.base import SubDialog
 
-    global _APP
-    _APP = QApplication.instance() or QApplication([])
     dlg = dlg_mod.PLSSEMDialog(Dataset(mod_df))
     dlg.reset()
     for name, items in (("X", ["X1", "X2", "X3"]), ("W", ["W1", "W2", "W3"]),
@@ -508,4 +497,4 @@ def test_dialog_builder_and_subdialogs(mod_df, monkeypatch):
     assert [c.name for c in med.model().constructs] == ["X", "M", "Y"]
     for d in (dlg, med):
         d.deleteLater()
-    _APP.processEvents()
+    qapp.processEvents()

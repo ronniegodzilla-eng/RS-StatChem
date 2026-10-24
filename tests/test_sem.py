@@ -503,10 +503,7 @@ def test_questionnaire_example_runs():
     assert 0 < res.fit["cfi"] <= 1
 
 
-def test_dialog_offscreen(monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+def test_dialog_offscreen(qapp):
     from rsstatchem.io.files import load_project
     from rsstatchem.ui.dialogs import sem as dlgmod
     assert dlgmod.MENUS == {"Analyze/Structural Equation Modeling":
@@ -527,7 +524,7 @@ def test_dialog_offscreen(monkeypatch):
     assert res.est is not None and res.est.converged
     dlg.editor.setPlainText("X =~ X1 + nope")
     assert "nope" in dlg.validate()
-    app.processEvents()
+    qapp.processEvents()
 
 
 def test_selftest():

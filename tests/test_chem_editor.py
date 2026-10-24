@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -487,14 +486,6 @@ def test_selftest_runs():
 
 
 # --- Qt: canvas, window, exports ---------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def qapp():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    yield app
-
 
 @pytest.fixture
 def win(qapp):

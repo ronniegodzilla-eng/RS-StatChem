@@ -346,12 +346,10 @@ def test_module_selftest():
     assert MENUS["File"][0][0] == "Open Graph..."
 
 
-def test_graph_window_offscreen(ds, tmp_path, monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+def test_graph_window_offscreen(ds, tmp_path, monkeypatch, qapp):
     monkeypatch.setenv("RSSTATCHEM_HOME", str(tmp_path))
     from matplotlib.backend_bases import MouseEvent
-    from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+    app = qapp
     from rsstatchem.ui.graph.setup_dialog import PlotSetupDialog, blocks_visible
     from rsstatchem.ui.graph.window import WINDOWS, GraphWindow
 
@@ -388,10 +386,7 @@ def test_graph_window_offscreen(ds, tmp_path, monkeypatch):
     assert win not in WINDOWS
 
 
-def test_property_forms_for_every_object(ds, ds_xyz, monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    QApplication.instance() or QApplication([])
+def test_property_forms_for_every_object(ds, ds_xyz, qapp):
     from rsstatchem.ui.graph.properties import PropertyForm, schema_for
     from rsstatchem.ui.graph.window import GraphWindow, REF_ROLE
 

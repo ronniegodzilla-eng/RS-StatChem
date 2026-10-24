@@ -1,11 +1,10 @@
-"""Shared pytest setup.
+"""Shared pytest setup: one QApplication for the session and deterministic Qt teardown.
 
-Several tests create Qt windows offscreen. On the CI runners PySide6 can crash while the
-interpreter destroys the remaining C++ objects at exit — after every test has passed — which
-turns a green run into a failure (SIGSEGV / exit 139 on both macOS and Windows). Closing the
-windows first also crashed on Windows. pytest has already printed its summary by the time
-``pytest_unconfigure`` runs, so we leave right there with pytest's own exit status and skip the
-interpreter (and, on Windows, DLL) teardown entirely.
+Widgets that are still alive when the interpreter exits are deleted by PySide6's atexit hook in
+an arbitrary order, which crashes the process after every test has passed (SIGSEGV / exit 139,
+"Windows fatal exception: access violation" with no Python frame). So every test's leftover
+windows are deleted right after it, and the QApplication is shut down at the end of the session
+while Python is still intact. See ``rsstatchem/ui/qt_lifecycle.py``.
 """
 from __future__ import annotations
 
@@ -14,27 +13,40 @@ import sys
 
 import pytest
 
-_exit_status: int | None = None
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+def _running_app():
+    if "PySide6.QtWidgets" not in sys.modules:
+        return None
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance()
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """The session's QApplication (Qt tests take this instead of creating their own)."""
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _dispose_qt_windows():
+    """Delete the windows and dialogs a test left behind (closed ones too: a closed window is
+    only hidden, and several of ours are kept alive by signal connections to lambdas)."""
+    yield
+    app = _running_app()
+    if app is not None:
+        from rsstatchem.ui.qt_lifecycle import dispose_windows
+
+        dispose_windows(app)
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
-    global _exit_status
-    if os.environ.get("RS_TEST_NATURAL_EXIT"):  # diagnostics: let the interpreter tear down
-        return
-    _exit_status = int(exitstatus)
+    app = _running_app()
+    if app is not None:
+        from rsstatchem.ui.qt_lifecycle import shutdown_application
 
-
-@pytest.hookimpl(tryfirst=True)  # before pytest's own cleanup, which runs gc.collect()
-def pytest_unconfigure(config) -> None:
-    if _exit_status is None:
-        return
-    print(f"\n[conftest] leaving with pytest exit status {_exit_status}", flush=True)
-    sys.stderr.flush()
-    if sys.platform == "win32":
-        # os._exit still runs every DLL's detach routine, and Qt's crashes there (seen as
-        # SIGSEGV / exit 139 on the runner). TerminateProcess skips DLL teardown entirely.
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        kernel32.TerminateProcess(kernel32.GetCurrentProcess(), _exit_status)
-    os._exit(_exit_status)
+        shutdown_application(app)

@@ -175,6 +175,20 @@ def main(argv: list[str] | None = None) -> int:
         if Path(arg).is_file():
             editor.open_path(arg)
     if splash is not None:
-        QTimer.singleShot(700, lambda: splash.finish(editor))
+        # `splash` as context object: the callback is dropped if the splash is already gone
+        QTimer.singleShot(700, splash, lambda: splash.finish(editor))
     app._rs_context = ctx  # keep a strong reference for the lifetime of the app
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        # Tear everything Qt down while the interpreter is intact. Windows left alive (closed
+        # editors are only hidden) would otherwise be deleted by PySide6's atexit hook in an
+        # arbitrary order, which crashes on quit.
+        from rsstatchem.ui.qt_lifecycle import shutdown_application
+
+        app.removeEventFilter(file_filter)
+        ctx.editors.clear()
+        ctx._output = None
+        del app._rs_context
+        del splash, editor, ctx, file_filter
+        shutdown_application(app)

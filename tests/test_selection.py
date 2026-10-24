@@ -79,13 +79,10 @@ def test_filter_and_split_together(ds):
     assert sizes == [2, 4]
 
 
-def test_editor_runs_analyses_on_views_and_maps_saved_columns(ds):
-    from PySide6.QtWidgets import QApplication
-
+def test_editor_runs_analyses_on_views_and_maps_saved_columns(ds, qapp):
     from rsstatchem.app import AppContext
 
-    app = QApplication.instance() or QApplication([])
-    ctx = AppContext(app)
+    ctx = AppContext(qapp)
     editor = ctx.new_editor(ds)
     editor.doc.mutate(lambda d: selection.select_cases(d, "if", expression="x > 2"))
     assert "Filter On" in editor.state_label.text()

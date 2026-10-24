@@ -5,17 +5,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from rsstatchem.core.dataset import Dataset  # noqa: E402
 from rsstatchem.core.transform import Rule, compute, recode  # noqa: E402
 from rsstatchem.ui.document import DatasetDocument  # noqa: E402
 
-app = QApplication.instance() or QApplication([])
-
 
 @pytest.fixture
-def doc():
+def doc(qapp):
     ds = Dataset(pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": ["x", "y", "z"]}))
     return DatasetDocument(ds)
 
