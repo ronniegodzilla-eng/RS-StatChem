@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write   # attach the zips to the GitHub Release created for a v* tag
+
 jobs:
   build:
     strategy:
