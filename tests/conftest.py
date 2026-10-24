@@ -19,6 +19,8 @@ _exit_status: int | None = None
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     global _exit_status
+    if os.environ.get("RS_TEST_NATURAL_EXIT"):  # diagnostics: let the interpreter tear down
+        return
     _exit_status = int(exitstatus)
 
 
