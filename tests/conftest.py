@@ -22,10 +22,10 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     _exit_status = int(exitstatus)
 
 
-@pytest.hookimpl(trylast=True)
+@pytest.hookimpl(tryfirst=True)  # before pytest's own cleanup, which runs gc.collect()
 def pytest_unconfigure(config) -> None:
     if _exit_status is None:
         return
-    sys.stdout.flush()
+    print(f"\n[conftest] leaving with pytest exit status {_exit_status}", flush=True)
     sys.stderr.flush()
     os._exit(_exit_status)

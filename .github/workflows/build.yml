@@ -35,7 +35,14 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q tests
+          PYTHONFAULTHANDLER: "1"
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q tests
+          code=$?
+          echo "pytest process exit code: $code"
+          exit $code
 
       - name: Build
         run: pyinstaller packaging/rsstatchem.spec --noconfirm --clean
