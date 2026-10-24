@@ -1,10 +1,11 @@
 """Shared pytest setup.
 
-Several tests create Qt windows offscreen. On some Python builds (seen with the python.org
-framework build on the macOS CI runner) PySide6 segfaults while the interpreter destroys the
-remaining C++ objects at exit — after every test has passed — which turns a green run into
-exit code 139. We close the windows ourselves and then leave without that teardown; pytest
-has already printed its summary and we keep its exit status.
+Several tests create Qt windows offscreen. On the CI runners PySide6 can crash while the
+interpreter destroys the remaining C++ objects at exit — after every test has passed — which
+turns a green run into a failure (SIGSEGV / exit 139 on macOS, exit 1 on Windows). Closing the
+windows first also crashed on Windows. pytest has already printed its summary by the time
+``pytest_unconfigure`` runs, so we leave right there with pytest's own exit status and skip the
+interpreter teardown entirely.
 """
 from __future__ import annotations
 
@@ -18,20 +19,7 @@ _exit_status: int | None = None
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     global _exit_status
-    if sys.platform == "win32":  # the crash is not seen there, and forcing the exit made
-        return                   # the Windows runner report exit code 1 on a passing run
     _exit_status = int(exitstatus)
-    try:
-        from PySide6.QtWidgets import QApplication
-    except ImportError:
-        return
-    app = QApplication.instance()
-    if app is None:
-        return
-    for widget in app.topLevelWidgets():
-        widget.close()
-        widget.deleteLater()
-    app.processEvents()
 
 
 @pytest.hookimpl(trylast=True)
