@@ -35,7 +35,6 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-          PYTHONFAULTHANDLER: "1"
         shell: bash
         run: |
           set +e
