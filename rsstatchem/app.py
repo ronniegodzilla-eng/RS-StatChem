@@ -33,6 +33,7 @@ class AppContext:
         self.settings = QSettings(str(settings_file()), QSettings.Format.IniFormat)
         self.editors: list = []
         self._output = None
+        self._updates = None
         self._counter = 0
 
     # ------------------------------------------------------------------ editors
@@ -104,6 +105,21 @@ class AppContext:
         recent = [p for p in self.recent_files() if p != path]
         self.settings.setValue("recent_files", [path] + recent[:MAX_RECENT - 1])
 
+    def updates(self):
+        if self._updates is None:
+            from rsstatchem.ui.update_dialog import UpdateChecker
+
+            self._updates = UpdateChecker(self.settings, self._dialog_parent)
+        return self._updates
+
+    def _dialog_parent(self):
+        active = self.app.activeWindow()
+        return active if active is not None else (self.editors[-1] if self.editors else None)
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        if manual or self.updates().due():
+            self.updates().check(manual)
+
     def about(self) -> None:
         from rsstatchem.ui.dialogs.about import AboutDialog
 
@@ -133,6 +149,18 @@ class _FileOpenFilter(QObject):
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv if argv is None else argv
+    if "--check-update" in argv:  # diagnostics: does the (packaged) app reach GitHub?
+        from rsstatchem.updates import UpdateError, fetch_latest
+
+        url = next((a.split("=", 1)[1] for a in argv if a.startswith("--update-url=")), None)
+        try:
+            info = fetch_latest(url) if url else fetch_latest()
+        except UpdateError as exc:
+            print(f"update check: {exc}")
+            return 2
+        print(f"update check: latest {info.version} (this is {__version__}); "
+              f"newer={info.newer}; download={info.download_url}")
+        return 0
     if "--selftest" in argv:
         from rsstatchem.selftest import run
 
@@ -177,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     if splash is not None:
         # `splash` as context object: the callback is dropped if the splash is already gone
         QTimer.singleShot(700, splash, lambda: splash.finish(editor))
+    if not os.environ.get("RSSTATCHEM_NO_UPDATE_CHECK"):
+        QTimer.singleShot(4000, editor, lambda: ctx.check_for_updates(manual=False))
     app._rs_context = ctx  # keep a strong reference for the lifetime of the app
     try:
         return app.exec()
@@ -189,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         app.removeEventFilter(file_filter)
         ctx.editors.clear()
         ctx._output = None
+        ctx._updates = None
         del app._rs_context
         del splash, editor, ctx, file_filter
         shutdown_application(app)

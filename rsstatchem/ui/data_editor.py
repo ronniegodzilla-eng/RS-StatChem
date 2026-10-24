@@ -333,6 +333,9 @@ class DataEditorWindow(QMainWindow):
         self.window_menu.aboutToShow.connect(self._fill_window_menu)
 
         help_menu = mb.addMenu("&Help")
+        updates = help_menu.addAction("Check for &Updates...")
+        updates.triggered.connect(lambda: self.ctx.check_for_updates(manual=True))
+        help_menu.addSeparator()
         help_menu.addAction(self.act_about)
 
     def _build_toolbar(self) -> None:
