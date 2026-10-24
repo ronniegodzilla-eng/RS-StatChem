@@ -18,6 +18,8 @@ _exit_status: int | None = None
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     global _exit_status
+    if sys.platform == "win32":  # the crash is not seen there, and forcing the exit made
+        return                   # the Windows runner report exit code 1 on a passing run
     _exit_status = int(exitstatus)
     try:
         from PySide6.QtWidgets import QApplication
