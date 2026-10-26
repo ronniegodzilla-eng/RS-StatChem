@@ -37,6 +37,7 @@ from rsstatchem.ui.dialogs.transform import (ComputeDialog, RecodeDifferentDialo
                                              RecodeSameDialog)
 from rsstatchem.ui.document import DatasetDocument
 from rsstatchem.ui.menus import build_tree
+from rsstatchem.ui.modules import add_module_menu
 from rsstatchem.ui.models import DataTableModel, VariableTableModel
 from rsstatchem.ui.views import ChoiceDelegate, DataGridView, SheetView, SpinDelegate
 
@@ -319,10 +320,8 @@ class DataEditorWindow(QMainWindow):
         self._planned(mb.addMenu("&Transform"), tree["Transform"])
         self._planned(mb.addMenu("&Analyze"), tree["Analyze"])
         self._planned(mb.addMenu("&Graphs"), tree["Graphs"])
-        if tree["Analysis"]:
-            self._planned(mb.addMenu("Anal&ysis"), tree["Analysis"])
-        self._planned(mb.addMenu("&RSM"), tree["RSM"])
-        self._planned(mb.addMenu("&Chemistry"), tree["Chemistry"])
+        # Curve fitting / signal analysis, RSM and chemistry are modules of their own now
+        # (Graph & Analysis, RSM / DOE, Chemical Drawing), opened from Window > Modules.
         known = {"File", "Data", "Transform", "Analyze", "Graphs", "Analysis", "RSM",
                  "Chemistry"}
         for title, entries in tree.items():
@@ -583,6 +582,8 @@ class DataEditorWindow(QMainWindow):
             group.addAction(act)
             act.triggered.connect(lambda _=False, e=editor: (e.show(), e.raise_(),
                                                              e.activateWindow()))
+        self.window_menu.addSeparator()
+        add_module_menu(self.window_menu, self.ctx)
 
     # ------------------------------------------------------------------ editing
     def _active_sheet(self) -> SheetView:
@@ -859,3 +860,15 @@ class DataEditorWindow(QMainWindow):
         for url in event.mimeData().urls():
             if url.isLocalFile():
                 self.open_path(url.toLocalFile())
+
+
+def open_workspace(ctx, path: str | None = None):
+    """Statistics module entry point (see :mod:`rsstatchem.ui.modules`): a Data Editor,
+    reusing an untouched empty one."""
+    editor = next((e for e in ctx.editors if e.is_pristine()), None) or ctx.new_editor()
+    if path:
+        editor.open_path(path)
+    editor.show()
+    editor.raise_()
+    editor.activateWindow()
+    return editor

@@ -31,7 +31,9 @@ class AppContext:
     def __init__(self, app: QApplication):
         self.app = app
         self.settings = QSettings(str(settings_file()), QSettings.Format.IniFormat)
-        self.editors: list = []
+        self.editors: list = []   # Statistics data editors
+        self.windows: list = []   # main windows of every module (editors included)
+        self._launcher = None
         self._output = None
         self._updates = None
         self._counter = 0
@@ -45,6 +47,7 @@ class AppContext:
         if dataset is not None:
             editor.load_dataset(dataset)
         self.editors.append(editor)
+        self.register_window(editor)
         if len(self.editors) > 1:
             last = self.editors[-2]
             editor.move(last.pos() + QPoint(28, 28))
@@ -61,10 +64,45 @@ class AppContext:
     def editor_closed(self, editor) -> None:
         if editor in self.editors:
             self.editors.remove(editor)
-        if not self.editors:
+        if not self.editors and self._output is not None:
+            self._output.close()
+        self.window_closed(editor)
+
+    # ------------------------------------------------------------------ module windows
+    def register_window(self, window) -> None:
+        if window not in self.windows:
+            self.windows.append(window)
+
+    def window_closed(self, window) -> None:
+        """Called by a module window once its close is accepted; the app quits with the last
+        window (the launcher counts as one while it is open)."""
+        if window in self.windows:
+            self.windows.remove(window)
+        if not self.windows and not (self._launcher is not None and self._launcher.isVisible()):
             if self._output is not None:
                 self._output.close()
             self.app.quit()
+
+    def show_launcher(self):
+        if self._launcher is None:
+            from rsstatchem.ui.launcher import LauncherWindow
+
+            self._launcher = LauncherWindow(self)
+        self._launcher.show()
+        self._launcher.raise_()
+        self._launcher.activateWindow()
+        return self._launcher
+
+    def launcher_closed(self) -> None:
+        if not self.windows:
+            if self._output is not None:
+                self._output.close()
+            self.app.quit()
+
+    def open_module(self, key: str, path: str | None = None):
+        from rsstatchem.ui.modules import open_module
+
+        return open_module(self, key, path)
 
     # ------------------------------------------------------------------ output
     def output(self):
@@ -114,7 +152,7 @@ class AppContext:
 
     def _dialog_parent(self):
         active = self.app.activeWindow()
-        return active if active is not None else (self.editors[-1] if self.editors else None)
+        return active if active is not None else (self.windows[-1] if self.windows else None)
 
     def check_for_updates(self, manual: bool = False) -> None:
         if manual or self.updates().due():
@@ -127,10 +165,15 @@ class AppContext:
         AboutDialog(parent).exec()
 
     def open_file(self, path: str) -> None:
-        active = self.app.activeWindow()
-        editor = active if active in self.editors else (self.editors[-1] if self.editors
-                                                        else self.new_editor())
-        editor.open_path(path)
+        from rsstatchem.ui.modules import BY_KEY, module_for_path, open_path
+
+        info = module_for_path(path)
+        if info is None or info is BY_KEY["stats"]:
+            active = self.app.activeWindow()
+            if active in self.editors:  # a data file dropped on an open editor goes there
+                active.open_path(path)
+                return
+        open_path(self, path)
 
 
 class _FileOpenFilter(QObject):
@@ -198,15 +241,15 @@ def main(argv: list[str] | None = None) -> int:
     ctx = AppContext(app)
     file_filter = _FileOpenFilter(ctx)
     app.installEventFilter(file_filter)
-    editor = ctx.new_editor()
-    for arg in argv[1:]:
-        if Path(arg).is_file():
-            editor.open_path(arg)
+    files = [arg for arg in argv[1:] if Path(arg).is_file()]
+    for path in files:  # opened from Finder/Explorer: straight into the file's module
+        ctx.open_file(path)
+    first = ctx.windows[0] if ctx.windows else ctx.show_launcher()
     if splash is not None:
         # `splash` as context object: the callback is dropped if the splash is already gone
-        QTimer.singleShot(700, splash, lambda: splash.finish(editor))
+        QTimer.singleShot(700, splash, lambda: splash.finish(first))
     if not os.environ.get("RSSTATCHEM_NO_UPDATE_CHECK"):
-        QTimer.singleShot(4000, editor, lambda: ctx.check_for_updates(manual=False))
+        QTimer.singleShot(4000, first, lambda: ctx.check_for_updates(manual=False))
     app._rs_context = ctx  # keep a strong reference for the lifetime of the app
     try:
         return app.exec()
@@ -218,8 +261,10 @@ def main(argv: list[str] | None = None) -> int:
 
         app.removeEventFilter(file_filter)
         ctx.editors.clear()
+        ctx.windows.clear()
+        ctx._launcher = None
         ctx._output = None
         ctx._updates = None
         del app._rs_context
-        del splash, editor, ctx, file_filter
+        del splash, first, ctx, file_filter
         shutdown_application(app)
