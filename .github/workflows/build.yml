@@ -34,25 +34,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
-      # OPSIN (offline name -> structure, MIT) runs on Java: a pinned Temurin JDK provides
-      # jlink, which builds a small runtime (java.base + java.xml) for the bundle.
+      # OPSIN (offline name -> structure, MIT) and the CDK logP helper (LGPL) run on Java: a
+      # pinned Temurin JDK provides javac (CDK helper) and jlink, which builds a small runtime
+      # (java.base + java.xml, enough for both) for the bundle.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
-      - name: Fetch OPSIN and build a minimal Java runtime
+      - name: Fetch OPSIN and CDK, build the CDK helper and a minimal Java runtime
         shell: bash
         run: |
           python scripts/fetch_opsin.py
+          python scripts/fetch_cdk.py
           rm -rf build-jre
-          jlink --add-modules "$(python scripts/fetch_opsin.py --print-modules)" \
+          jlink --add-modules "$(python scripts/fetch_opsin.py --print-modules),$(python scripts/fetch_cdk.py --print-modules)" \
                 --strip-debug --no-man-pages --no-header-files --compress=zip-9 \
                 --output build-jre/jre
-          du -sh build-jre/jre rsstatchem/resources/opsin/opsin-cli.jar
+          du -sh build-jre/jre rsstatchem/resources/opsin/opsin-cli.jar rsstatchem/resources/java
           printf '2-acetoxybenzoic acid\n' | build-jre/jre/bin/java \
             -Dlog4j2.loggerContextFactory=org.apache.logging.log4j.simple.SimpleLoggerContextFactory \
             -jar rsstatchem/resources/opsin/opsin-cli.jar -osmi
+          python scripts/fetch_cdk.py --check-runtime build-jre/jre/bin/java
 
       - name: Test
         env:
@@ -73,6 +76,7 @@ jobs:
         run: |
           RES="$(cd dist/RS-StatChem.app/Contents/Frameworks/rsstatchem/resources && pwd -P)"
           test -f "$RES/opsin/opsin-cli.jar"
+          test -f "$RES/java/cdk.jar" && test -f "$RES/java/rsstatchem-cdk.jar"
           cp -R build-jre/jre "$RES/opsin/jre"
           # re-seal the ad-hoc signature over the added files (Temurin's binaries keep their
           # own signatures; sign them ad hoc only if the bundle cannot be sealed otherwise)
@@ -81,7 +85,7 @@ jobs:
               -exec codesign --force --sign - {} \;
             codesign --force --deep --sign - dist/RS-StatChem.app
           fi
-          du -sh "$RES/opsin/jre" "$RES/opsin/opsin-cli.jar" dist/RS-StatChem.app
+          du -sh "$RES/opsin/jre" "$RES/opsin/opsin-cli.jar" "$RES/java" dist/RS-StatChem.app
 
       - name: Bundle the Java runtime for OPSIN (Windows)
         if: runner.os == 'Windows'
@@ -89,6 +93,8 @@ jobs:
         run: |
           $res = "dist/RS-StatChem/_internal/rsstatchem/resources"
           if (-not (Test-Path "$res/opsin/opsin-cli.jar")) { throw "OPSIN jar missing from the build" }
+          if (-not (Test-Path "$res/java/cdk.jar")) { throw "CDK jar missing from the build" }
+          if (-not (Test-Path "$res/java/rsstatchem-cdk.jar")) { throw "CDK helper missing from the build" }
           Copy-Item -Recurse build-jre/jre "$res/opsin/jre"
           "{0:N1} MB Java runtime" -f ((Get-ChildItem "$res/opsin/jre" -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 
@@ -96,6 +102,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           RSSTATCHEM_SELFTEST_OPSIN: bundled   # name -> structure must work with the bundled Java
+          RSSTATCHEM_SELFTEST_CDK: bundled     # CDK logP must work with the bundled Java
         run: |
           dist/RS-StatChem.app/Contents/MacOS/RS-StatChem --selftest
           dist/RS-StatChem.app/Contents/MacOS/RS-StatChem --check-update --update-url=https://api.github.com/repos/cli/cli/releases/latest
@@ -105,6 +112,7 @@ jobs:
         shell: pwsh
         env:
           RSSTATCHEM_SELFTEST_OPSIN: bundled   # name -> structure must work with the bundled Java
+          RSSTATCHEM_SELFTEST_CDK: bundled     # CDK logP must work with the bundled Java
         run: |
           $p = Start-Process dist/RS-StatChem/RS-StatChem.exe -ArgumentList "--selftest" -Wait -PassThru
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }

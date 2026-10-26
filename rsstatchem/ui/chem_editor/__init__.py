@@ -107,6 +107,50 @@ def selftest() -> None:
     check(analysis.balance_check(rx).balanced, "esterification balance")
     check(convert.reaction_smiles(rx) == "CC(=O)O.CCO>>CCOC(C)=O.O", "reaction split")
     _selftest_names(check)
+    _selftest_properties(check)
+
+
+def _selftest_properties(check) -> None:
+    """Chemical Properties data: the experimental database, the numpy ML models, the group
+    contributions and - in a packaged build with RSSTATCHEM_SELFTEST_CDK=bundled (CI), or
+    whenever a bundled Java runtime is present - the CDK logP helper on the bundled Java."""
+    import os
+
+    from rsstatchem.core.chem import molecule as mo
+    from rsstatchem.core.chem_draw import cdk, exp_props, ml_props, names
+    from rsstatchem.core.chem_draw.properties import chemical_properties, marrero_gani
+
+    caffeine = mo.mol_from_text("Cn1cnc2c1c(=O)n(C)c(=O)n2C")
+    check(exp_props.db_size() > 20000, "experimental property database missing")
+    mp = exp_props.lookup(caffeine).get("mp")
+    check(mp is not None and abs(mp.value - 510.6) < 3 and "B" in mp.sources,
+          "experimental melting point of caffeine")
+    check(set(ml_props.models()) == {"mp", "bp", "logp"}, "ML property models missing")
+    novel = mo.mol_from_text("O=C(NC1CC2(C1)OCCO2)c1ccc(F)c(Cl)c1")
+    pred = ml_props.predict(novel, "mp")
+    check(pred.value is not None and 250 < pred.value < 600 and pred.expected_rmse,
+          f"ML melting point estimate ({pred.error or pred.value})")
+    tol = marrero_gani(mo.mol_from_text("Cc1ccccc1"))
+    check(tol.ok and abs(tol.values["tc"] - 600) < 20, "Marrero-Gani estimate")
+    rows = {p.name: p for p in chemical_properties(caffeine)}
+    check(rows["Melting Point"].kind == "experimental", "properties rows")
+    print(f"selftest ok: experimental database ({exp_props.db_size()} compounds), "
+          f"ML models, group contributions")
+    mode = os.environ.get("RSSTATCHEM_SELFTEST_CDK", "").lower()
+    if not mode and not cdk.cdk_available(allow_system=False):
+        return
+    check(cdk.cdk_jars() is not None, "CDK jar / helper is not bundled")
+    if mode == "bundled":
+        check(names.find_java(allow_system=False) is not None, "bundled Java runtime missing")
+    helper = cdk.CdkHelper()
+    try:
+        res = helper.compute("CC(=O)Oc1ccccc1C(=O)O", timeout=120)
+    finally:
+        helper.close()
+    check(res.get("jplogp") is not None and abs(res["jplogp"] - 1.24) < 0.3 and
+          res.get("xlogp") is not None and res.get("alogp") is not None,
+          f"CDK logP of aspirin ({res})")
+    print(f"selftest ok: CDK {helper.version} JPlogP/XLogP/ALogP ({names.find_java()})")
 
 
 def _selftest_names(check) -> None:

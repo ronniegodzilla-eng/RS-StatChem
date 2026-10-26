@@ -1,0 +1,562 @@
+{
+ "_about": "RS-StatChem benchmark of the property estimates against the open experimental data of exp_props.tsv.xz (scripts/benchmark_properties.py). Group-contribution and logP methods were fitted by their authors on data that overlap these sets (optimistic for them); 'ml' values are 5-fold cross-validated predictions (held out). Units: K for mp/bp/tc, bar for pc, cm3/mol for vc, log units for logp/logs.",
+ "generated": "2026-10-26",
+ "mp": {
+  "methods": {
+   "joback": {
+    "n": 14922,
+    "rmse": 152.91,
+    "mae": 96.587,
+    "bias": 77.803,
+    "coverage": 0.751
+   },
+   "mg1": {
+    "n": 16994,
+    "rmse": 54.185,
+    "mae": 39.989,
+    "bias": -4.395,
+    "coverage": 0.856
+   },
+   "mg": {
+    "n": 16806,
+    "rmse": 64.773,
+    "mae": 43.825,
+    "bias": -6.967,
+    "coverage": 0.846
+   },
+   "ml": {
+    "n": 19854,
+    "rmse": 37.033,
+    "mae": 26.934,
+    "bias": -0.07,
+    "coverage": 1.0
+   }
+  },
+  "n_experimental": 19859,
+  "common": {
+   "n": 13725,
+   "methods": {
+    "joback": {
+     "n": 13725,
+     "rmse": 141.746,
+     "mae": 91.945,
+     "bias": 73.014
+    },
+    "mg1": {
+     "n": 13725,
+     "rmse": 53.643,
+     "mae": 39.24,
+     "bias": -6.822
+    },
+    "mg": {
+     "n": 13725,
+     "rmse": 64.614,
+     "mae": 42.92,
+     "bias": -9.305
+    },
+    "ml": {
+     "n": 13725,
+     "rmse": 35.162,
+     "mae": 25.306,
+     "bias": -0.075
+    }
+   }
+  },
+  "ood_common": {
+   "n": 100,
+   "methods": {
+    "joback": {
+     "n": 100,
+     "rmse": 236.922,
+     "mae": 163.099,
+     "bias": 139.337
+    },
+    "mg1": {
+     "n": 100,
+     "rmse": 97.816,
+     "mae": 67.928,
+     "bias": -24.346
+    },
+    "mg": {
+     "n": 100,
+     "rmse": 98.554,
+     "mae": 67.482,
+     "bias": -23.539
+    },
+    "ml": {
+     "n": 100,
+     "rmse": 51.365,
+     "mae": 40.278,
+     "bias": 1.397
+    }
+   }
+  }
+ },
+ "bp": {
+  "methods": {
+   "joback": {
+    "n": 5299,
+    "rmse": 55.566,
+    "mae": 31.185,
+    "bias": 17.205,
+    "coverage": 0.922
+   },
+   "sb": {
+    "n": 5665,
+    "rmse": 36.71,
+    "mae": 19.805,
+    "bias": 4.546,
+    "coverage": 0.986
+   },
+   "mg1": {
+    "n": 5299,
+    "rmse": 33.294,
+    "mae": 18.841,
+    "bias": 7.983,
+    "coverage": 0.922
+   },
+   "mg": {
+    "n": 5299,
+    "rmse": 32.569,
+    "mae": 17.887,
+    "bias": 7.467,
+    "coverage": 0.922
+   },
+   "ml": {
+    "n": 5743,
+    "rmse": 26.782,
+    "mae": 13.496,
+    "bias": 0.239,
+    "coverage": 1.0
+   }
+  },
+  "n_experimental": 5745,
+  "common": {
+   "n": 5071,
+   "methods": {
+    "joback": {
+     "n": 5071,
+     "rmse": 53.047,
+     "mae": 29.889,
+     "bias": 16.111
+    },
+    "sb": {
+     "n": 5071,
+     "rmse": 31.026,
+     "mae": 17.615,
+     "bias": 3.342
+    },
+    "mg1": {
+     "n": 5071,
+     "rmse": 31.117,
+     "mae": 17.852,
+     "bias": 7.127
+    },
+    "mg": {
+     "n": 5071,
+     "rmse": 30.341,
+     "mae": 16.882,
+     "bias": 6.626
+    },
+    "ml": {
+     "n": 5071,
+     "rmse": 21.868,
+     "mae": 11.4,
+     "bias": 0.162
+    }
+   }
+  },
+  "ood_common": {
+   "n": 44,
+   "methods": {
+    "joback": {
+     "n": 44,
+     "rmse": 127.435,
+     "mae": 74.877,
+     "bias": 46.669
+    },
+    "sb": {
+     "n": 44,
+     "rmse": 72.386,
+     "mae": 44.728,
+     "bias": 22.08
+    },
+    "mg1": {
+     "n": 44,
+     "rmse": 79.067,
+     "mae": 48.875,
+     "bias": 23.315
+    },
+    "mg": {
+     "n": 44,
+     "rmse": 74.137,
+     "mae": 46.325,
+     "bias": 20.989
+    },
+    "ml": {
+     "n": 44,
+     "rmse": 50.125,
+     "mae": 29.204,
+     "bias": -0.03
+    }
+   }
+  }
+ },
+ "tc": {
+  "methods": {
+   "joback": {
+    "n": 352,
+    "rmse": 65.55,
+    "mae": 37.183,
+    "bias": 6.634,
+    "coverage": 0.975
+   },
+   "mg1": {
+    "n": 342,
+    "rmse": 54.782,
+    "mae": 27.474,
+    "bias": 4.772,
+    "coverage": 0.947
+   },
+   "mg": {
+    "n": 342,
+    "rmse": 53.501,
+    "mae": 26.106,
+    "bias": 3.414,
+    "coverage": 0.947
+   },
+   "ag": {
+    "n": 354,
+    "rmse": 63.523,
+    "mae": 30.715,
+    "bias": -3.379,
+    "coverage": 0.981
+   }
+  },
+  "n_experimental": 361,
+  "common": {
+   "n": 341,
+   "methods": {
+    "joback": {
+     "n": 341,
+     "rmse": 65.062,
+     "mae": 36.543,
+     "bias": 5.26
+    },
+    "mg1": {
+     "n": 341,
+     "rmse": 54.857,
+     "mae": 27.511,
+     "bias": 4.743
+    },
+    "mg": {
+     "n": 341,
+     "rmse": 53.573,
+     "mae": 26.14,
+     "bias": 3.381
+    },
+    "ag": {
+     "n": 341,
+     "rmse": 59.665,
+     "mae": 29.101,
+     "bias": -1.326
+    }
+   }
+  }
+ },
+ "pc": {
+  "methods": {
+   "joback": {
+    "n": 303,
+    "rmse": 6.139,
+    "mae": 3.645,
+    "bias": -0.252,
+    "coverage": 0.984
+   },
+   "mg1": {
+    "n": 294,
+    "rmse": 5.616,
+    "mae": 3.105,
+    "bias": -0.541,
+    "coverage": 0.955
+   },
+   "mg": {
+    "n": 294,
+    "rmse": 5.572,
+    "mae": 3.057,
+    "bias": -0.594,
+    "coverage": 0.955
+   },
+   "ag": {
+    "n": 303,
+    "rmse": 7.677,
+    "mae": 4.275,
+    "bias": -0.158,
+    "coverage": 0.984
+   }
+  },
+  "n_experimental": 308,
+  "common": {
+   "n": 293,
+   "methods": {
+    "joback": {
+     "n": 293,
+     "rmse": 6.174,
+     "mae": 3.647,
+     "bias": -0.375
+    },
+    "mg1": {
+     "n": 293,
+     "rmse": 5.626,
+     "mae": 3.113,
+     "bias": -0.541
+    },
+    "mg": {
+     "n": 293,
+     "rmse": 5.581,
+     "mae": 3.065,
+     "bias": -0.593
+    },
+    "ag": {
+     "n": 293,
+     "rmse": 6.993,
+     "mae": 4.052,
+     "bias": -0.532
+    }
+   }
+  }
+ },
+ "vc": {
+  "methods": {
+   "joback": {
+    "n": 33,
+    "rmse": 22.392,
+    "mae": 12.197,
+    "bias": -2.561,
+    "coverage": 1.0
+   },
+   "mg1": {
+    "n": 33,
+    "rmse": 16.436,
+    "mae": 11.754,
+    "bias": -0.451,
+    "coverage": 1.0
+   },
+   "mg": {
+    "n": 33,
+    "rmse": 16.24,
+    "mae": 11.761,
+    "bias": 0.072,
+    "coverage": 1.0
+   },
+   "ag": {
+    "n": 33,
+    "rmse": 25.759,
+    "mae": 15.329,
+    "bias": -4.327,
+    "coverage": 1.0
+   }
+  },
+  "n_experimental": 33,
+  "common": {
+   "n": 33,
+   "methods": {
+    "joback": {
+     "n": 33,
+     "rmse": 22.392,
+     "mae": 12.197,
+     "bias": -2.561
+    },
+    "mg1": {
+     "n": 33,
+     "rmse": 16.436,
+     "mae": 11.754,
+     "bias": -0.451
+    },
+    "mg": {
+     "n": 33,
+     "rmse": 16.24,
+     "mae": 11.761,
+     "bias": 0.072
+    },
+    "ag": {
+     "n": 33,
+     "rmse": 25.759,
+     "mae": 15.329,
+     "bias": -4.327
+    }
+   }
+  }
+ },
+ "logp": {
+  "methods": {
+   "crippen": {
+    "n": 14056,
+    "rmse": 0.917,
+    "mae": 0.652,
+    "bias": 0.099,
+    "coverage": 1.0
+   },
+   "jplogp": {
+    "n": 14050,
+    "rmse": 0.829,
+    "mae": 0.598,
+    "bias": 0.197,
+    "coverage": 1.0
+   },
+   "xlogp": {
+    "n": 14056,
+    "rmse": 0.88,
+    "mae": 0.62,
+    "bias": 0.137,
+    "coverage": 1.0
+   },
+   "alogp": {
+    "n": 14056,
+    "rmse": 0.811,
+    "mae": 0.561,
+    "bias": 0.056,
+    "coverage": 1.0
+   },
+   "ml": {
+    "n": 14049,
+    "rmse": 0.466,
+    "mae": 0.311,
+    "bias": 0.002,
+    "coverage": 1.0
+   },
+   "consensus4": {
+    "n": 14050,
+    "rmse": 0.765,
+    "mae": 0.542,
+    "bias": 0.122,
+    "coverage": 1.0
+   },
+   "consensus": {
+    "n": 14043,
+    "rmse": 0.67,
+    "mae": 0.475,
+    "bias": 0.098,
+    "coverage": 0.999
+   }
+  },
+  "n_experimental": 14056,
+  "common": {
+   "n": 14043,
+   "methods": {
+    "crippen": {
+     "n": 14043,
+     "rmse": 0.917,
+     "mae": 0.652,
+     "bias": 0.098
+    },
+    "jplogp": {
+     "n": 14043,
+     "rmse": 0.829,
+     "mae": 0.599,
+     "bias": 0.197
+    },
+    "xlogp": {
+     "n": 14043,
+     "rmse": 0.88,
+     "mae": 0.62,
+     "bias": 0.137
+    },
+    "alogp": {
+     "n": 14043,
+     "rmse": 0.81,
+     "mae": 0.561,
+     "bias": 0.056
+    },
+    "ml": {
+     "n": 14043,
+     "rmse": 0.466,
+     "mae": 0.311,
+     "bias": 0.001
+    },
+    "consensus4": {
+     "n": 14043,
+     "rmse": 0.765,
+     "mae": 0.542,
+     "bias": 0.122
+    },
+    "consensus": {
+     "n": 14043,
+     "rmse": 0.67,
+     "mae": 0.475,
+     "bias": 0.098
+    }
+   }
+  },
+  "ood_common": {
+   "n": 159,
+   "methods": {
+    "crippen": {
+     "n": 159,
+     "rmse": 0.991,
+     "mae": 0.727,
+     "bias": 0.038
+    },
+    "jplogp": {
+     "n": 159,
+     "rmse": 0.961,
+     "mae": 0.696,
+     "bias": 0.211
+    },
+    "xlogp": {
+     "n": 159,
+     "rmse": 1.112,
+     "mae": 0.787,
+     "bias": 0.21
+    },
+    "alogp": {
+     "n": 159,
+     "rmse": 1.06,
+     "mae": 0.779,
+     "bias": 0.039
+    },
+    "ml": {
+     "n": 159,
+     "rmse": 0.826,
+     "mae": 0.563,
+     "bias": 0.01
+    },
+    "consensus4": {
+     "n": 159,
+     "rmse": 0.879,
+     "mae": 0.628,
+     "bias": 0.124
+    },
+    "consensus": {
+     "n": 159,
+     "rmse": 0.829,
+     "mae": 0.588,
+     "bias": 0.102
+    }
+   }
+  }
+ },
+ "logs": {
+  "methods": {
+   "esol": {
+    "n": 8964,
+    "rmse": 1.34,
+    "mae": 0.995,
+    "bias": 0.092,
+    "coverage": 1.0
+   }
+  },
+  "n_experimental": 8964,
+  "common": {
+   "n": 8964,
+   "methods": {
+    "esol": {
+     "n": 8964,
+     "rmse": 1.34,
+     "mae": 0.995,
+     "bias": 0.092
+    }
+   }
+  }
+ }
+}

@@ -262,13 +262,14 @@ def test_analysis_window_caffeine_and_paste(win):
     assert "Chemical Formula: C8H10N4O2" in caption and "m/z" not in caption
     win.properties.refresh()
     props = win.properties.values()
-    # no Joback group for the ring N-CH3: published fallbacks, each labelled with its method
-    assert props["Boiling Point"].startswith("673.97 K") and "[Stein-Brown]" in \
-        props["Boiling Point"]
-    assert props["Melting Point"].endswith("[Marrero-Gani]")
-    assert props["Critical Temp."] == "n/a"          # no method covers every group: honest
-    assert props["LogP"] not in ("", "n/a") and props["tPSA"] == "61.82 Å² [Ertl]"
-    assert "estimates" in win.properties.note.text()
+    # experimental values first (open databases, sources named), else labelled estimates
+    assert props["Melting Point"].startswith("510.60 K (237.5 °C) [experimental: Bradley")
+    assert props["LogP"].startswith("-0.07 [experimental:")
+    assert "[ML: ±" in props["Boiling Point"]                 # caffeine sublimes: no exp. b.p.
+    assert "[Abdulelah-Gani]" in props["Critical Temp."]      # Marrero-Gani lacks a group
+    assert props["tPSA"] == "61.82 Å² [Ertl]"
+    assert "Experimental values" in win.properties.note.text()
+    assert "not BioByte" in win.properties.note.text()
 
 
 def test_chemical_properties_estimates():
@@ -277,9 +278,13 @@ def test_chemical_properties_estimates():
     assert acetone.groups == {"-CH3": 2, ">C=O": 1}
     assert acetone.tb == pytest.approx(322.11) and acetone.tc == pytest.approx(500.56, abs=0.01)
     assert not joback(Chem.MolFromSmiles(CAFFEINE)).ok
+    assert joback(Chem.MolFromSmiles("CCO")).tb == pytest.approx(337.54)
     rows = {p.name: p for p in chemical_properties(Chem.MolFromSmiles("CCO"))}
-    assert rows["Boiling Point"].value == pytest.approx(337.54)
-    assert "Joback" in rows["Boiling Point"].method and "Crippen" in rows["LogP"].method
+    # ethanol is in the experimental database (b.p. 78.2 degC); Joback stays in the details
+    assert rows["Boiling Point"].kind == "experimental"
+    assert rows["Boiling Point"].value == pytest.approx(351.4, abs=0.5)
+    jb = [a for a in rows["Boiling Point"].alternatives if a.key == "joback"][0]
+    assert jb.value == pytest.approx(337.54) and "RMSE" in jb.benchmark
 
 
 # --- names <-> structures --------------------------------------------------------------------

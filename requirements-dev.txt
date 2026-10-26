@@ -1,7 +1,8 @@
 pyinstaller>=6.10
 pytest>=8
 pillow>=10
-# Reference implementations used only by the tests (never imported by the app or bundled)
+# Reference implementations used only by the tests, and scikit-learn also by
+# scripts/train_property_models.py (never imported by the app or bundled)
 pingouin>=0.5.5
 scikit-learn>=1.5
 semopy>=2.3

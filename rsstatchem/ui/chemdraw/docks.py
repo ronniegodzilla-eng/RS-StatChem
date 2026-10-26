@@ -5,14 +5,15 @@ from __future__ import annotations
 
 import html
 import math
+import threading
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-                               QSpinBox, QVBoxLayout, QWidget)
+                               QSpinBox, QTextBrowser, QVBoxLayout, QWidget)
 
 from rsstatchem.core.chem import molecule as mo
 from rsstatchem.core.chem_draw import analysis, convert
-from rsstatchem.core.chem_draw.properties import chemical_properties
+from rsstatchem.core.chem_draw.properties import NOT_BIOBYTE, chemical_properties
 
 __all__ = ["AnalysisWindow", "ChemicalPropertiesWindow", "ANALYSIS_ROWS"]
 
@@ -147,19 +148,103 @@ class AnalysisWindow(_ValueWindow):
                           if res.n_molecules > 1 else "")
 
 
+class _CdkBridge(QObject):
+    """Carries CDK results from the worker thread to the window (queued signal)."""
+
+    done = Signal(str, object, str)          # SMILES, values (or None), state / error
+
+
 class ChemicalPropertiesWindow(_ValueWindow):
-    """Estimated properties of one molecule (Joback, Crippen, Ertl, ESOL; see
-    :mod:`rsstatchem.core.chem_draw.properties`)."""
+    """Properties of one molecule: experimental values from the offline database first, else
+    the estimate with the lowest benchmark error (see
+    :mod:`rsstatchem.core.chem_draw.properties`). Each value's tooltip lists every method with
+    its error on the open data; **Details** shows the same as a table. CDK logP methods run in
+    a background thread (one persistent Java helper) and fill in when ready."""
 
     NAMES = ("Boiling Point", "Melting Point", "Critical Temp.", "Critical Pres.",
-             "Critical Vol.", "Gibbs Energy", "Heat of Form.", "LogP", "MR", "tPSA", "LogS")
+             "Critical Vol.", "Gibbs Energy", "Heat of Form.", "LogP", "MR", "tPSA", "LogS",
+             "Vapor Pres.")
+    WARN = "#B05A00"
+    GREY = "#7A7A7A"
 
     def __init__(self, canvas, parent=None):
         super().__init__(canvas, self.NAMES, parent)
         self.setObjectName("chemdraw_properties")
         self.rows = []
+        self.use_cdk = True
+        self._mol = None
+        self._smiles = ""
+        self._cdk: dict[str, tuple] = {}         # SMILES -> (values or None, state)
+        self._pending: set[str] = set()
+        self._bridge = _CdkBridge(self)
+        self._bridge.done.connect(self._cdk_done)
+        self.details_btn = QPushButton("Details")
+        self.details_btn.setCheckable(True)
+        self.details_btn.setToolTip("Every method's value and its error on open experimental "
+                                    "data")
+        self.details_btn.toggled.connect(self._toggle_details)
+        self.buttons.insertWidget(0, self.details_btn)
+        self.details = QTextBrowser()
+        self.details.setObjectName("chemdraw_details")
+        self.details.setOpenExternalLinks(False)
+        self.details.setMinimumHeight(180)
+        self.details.setVisible(False)
+        lay = self.layout()
+        lay.insertWidget(lay.indexOf(self.note) + 1, self.details, 10)
         self.refresh()
 
+    # -- CDK in the background ---------------------------------------------------------------
+    def _cdk_for(self, smiles: str):
+        """(values, state): cached CDK values, or None with 'computing...' / why not."""
+        from rsstatchem.core.chem_draw import cdk
+        if not self.use_cdk or not smiles:
+            return None, ""
+        if smiles in self._cdk:
+            return self._cdk[smiles]
+        if not cdk.cdk_available():
+            state = "not available (CDK jar or Java missing)"
+            self._cdk[smiles] = (None, state)
+            return None, state
+        if smiles not in self._pending:
+            self._pending.add(smiles)
+            bridge = self._bridge
+            threading.Thread(target=self._cdk_worker, args=(bridge, smiles), daemon=True,
+                             name="cdk-props").start()
+        return None, "computing..."
+
+    @staticmethod
+    def _cdk_worker(bridge, smiles: str) -> None:
+        from rsstatchem.core.chem_draw import cdk
+        try:
+            values, state = cdk.cdk_values(smiles), ""
+        except cdk.CdkError as exc:
+            values, state = None, str(exc)
+        except Exception as exc:  # noqa: BLE001 - the worker must never raise
+            values, state = None, f"failed ({exc})"
+        try:
+            bridge.done.emit(smiles, values, state)
+        except RuntimeError:                       # window already gone
+            pass
+
+    def _cdk_done(self, smiles: str, values, state: str) -> None:
+        self._pending.discard(smiles)
+        self._cdk[smiles] = (values, state)
+        if smiles == self._smiles and self._mol is not None:
+            self._render(self._mol)
+
+    def wait_cdk(self, timeout: float = 60.0) -> bool:
+        """Block (processing events) until the CDK values of the current molecule arrived."""
+        import time
+
+        from PySide6.QtCore import QCoreApplication
+        end = time.monotonic() + timeout
+        while self._smiles in self._pending and time.monotonic() < end:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        QCoreApplication.processEvents()
+        return self._smiles in self._cdk and self._cdk[self._smiles][0] is not None
+
+    # -- refresh -----------------------------------------------------------------------------
     def refresh(self) -> None:
         atoms = self.scope_atoms()
         doc = self.canvas.doc
@@ -173,10 +258,30 @@ class ChemicalPropertiesWindow(_ValueWindow):
             from rdkit import Chem
             if len(Chem.GetMolFrags(mol)) > 1:
                 mol, msg = None, "Select one molecule to see its properties."
-        self.rows = chemical_properties(mol)
+        self._msg = msg
+        self._mol = mol
+        self._render(mol)
+
+    def _render(self, mol) -> None:
+        smiles = ""
+        if mol is not None:
+            try:
+                from rdkit import Chem
+                kek = Chem.Mol(mol)
+                Chem.Kekulize(kek, clearAromaticFlags=True)
+                smiles = Chem.MolToSmiles(kek, kekuleSmiles=True)
+            except Exception:  # noqa: BLE001
+                smiles = ""
+        self._smiles = smiles
+        values, state = self._cdk_for(smiles) if mol is not None else (None, "")
+        try:
+            self.rows = chemical_properties(mol, values, state)
+        except Exception as exc:  # noqa: BLE001 - the window must never break drawing
+            self.rows = []
+            self._msg = f"Properties failed: {exc}"
         by_name = {p.name: p for p in self.rows}
         missing: dict = {}
-        used = set()
+        kinds = set()
         for name in self.NAMES:
             p = by_name.get(name)
             if p is None:
@@ -184,32 +289,73 @@ class ChemicalPropertiesWindow(_ValueWindow):
                 self.labels[name].setToolTip("")
                 continue
             text = p.text()
-            if name == "Boiling Point" and p.value is not None:
-                text += f" ({p.value - 273.15:.2f} °C)"
+            if p.key in ("bp", "mp") and p.value is not None:
+                text += f" ({p.value - 273.15:.1f} °C)"
             rich = html.escape(text)
-            if p.short and p.value is not None:
-                text += f" [{p.short}]"
-                sep = "<br>" if len(rich) > 16 else " "     # long values: tag on its own line
-                rich += f"{sep}<span style='color:#7A7A7A;'>[{html.escape(p.short)}]</span>"
+            tag = p.tag()
+            if tag:
+                text += f" {tag}"
+                color = self.WARN if p.warn else self.GREY
+                sep = "<br>" if len(rich) + len(tag) > 30 else " "
+                rich += f"{sep}<span style='color:{color};'>{html.escape(tag)}</span>"
             self.set_value(name, text, rich)
-            self.labels[name].setToolTip(p.method + (f"\nNot available: {p.note}"
-                                                     if p.note else ""))
+            self.labels[name].setToolTip(self._tooltip(p))
             self.checks[name].setToolTip(p.method)
-            if p.note:
+            if p.note and p.value is None:
                 missing.setdefault(p.note, []).append(name)
-            elif p.short and name not in ("LogP", "MR", "tPSA", "LogS"):
-                used.add(p.short)
+            if p.value is not None:
+                kinds.add(p.kind)
         notes = []
-        if msg:
-            notes.append(msg)
+        if self._msg:
+            notes.append(self._msg)
         if self.rows:
-            gc = ", ".join(m for m in ("Joback", "Stein-Brown", "Marrero-Gani") if m in used)
-            notes.append("All values are estimates (method in brackets): boiling/melting "
-                         f"point, critical data and energies by group contribution "
-                         f"({gc or 'Joback'}; Joback first, published fallbacks when it "
-                         "lacks a group); LogP and MR by Crippen (RDKit); tPSA by Ertl; "
-                         "LogS by ESOL. Not ChemDraw's CLogP/CMR.")
-        if missing:
-            for why, props in missing.items():
-                notes.append(f"n/a ({', '.join(props)}): {why}.")
+            notes.append("Experimental values (open databases, sources in brackets) are shown "
+                         "first; otherwise the estimate with the lowest error on open "
+                         "experimental data. Hover a value or press Details for every method "
+                         "and its error. LogP/MR: " + NOT_BIOBYTE + ".")
+        for why, props in missing.items():
+            notes.append(f"n/a ({', '.join(props)}): {why}.")
         self.note.setText("\n".join(notes))
+        if self.details.isVisible():
+            self.details.setHtml(self.details_html())
+
+    # -- tooltip and details -----------------------------------------------------------------
+    def _tooltip(self, p) -> str:
+        head = f"<b>{html.escape(p.name)}</b> - {html.escape(p.method)}"
+        if p.note and p.value is None:
+            head += f"<br>Not available: {html.escape(p.note)}"
+        if not p.alternatives:
+            return head
+        return head + self._table(p.alternatives)
+
+    @staticmethod
+    def _table(alts) -> str:
+        cells = ["<table cellspacing='0' cellpadding='2'>"
+                 "<tr><th align='left'>Method</th><th align='left'>Value</th>"
+                 "<th align='left'>Error on open data</th><th align='left'>Note</th></tr>"]
+        for a in alts:
+            mark = "&#9654; " if a.default else ""
+            cells.append(f"<tr><td>{mark}{html.escape(a.label)}</td>"
+                         f"<td>{html.escape(a.text)}</td>"
+                         f"<td>{html.escape(a.benchmark)}</td>"
+                         f"<td>{html.escape(a.note)}</td></tr>")
+        cells.append("</table>")
+        return "".join(cells)
+
+    def details_html(self) -> str:
+        parts = ["<p style='color:#555'>&#9654; = value shown. Errors are RMSE / MAE against "
+                 "the open experimental data of the property database (n compounds; ML and "
+                 "consensus values 5-fold cross-validated, the published methods on data that "
+                 "may overlap their own fitting sets). " + html.escape(NOT_BIOBYTE) + ".</p>"]
+        for p in self.rows:
+            if not p.alternatives:
+                continue
+            parts.append(f"<p><b>{html.escape(p.name)}</b>: {html.escape(p.text())} "
+                         f"<span style='color:#777'>{html.escape(p.tag())}</span></p>")
+            parts.append(self._table(p.alternatives))
+        return "".join(parts)
+
+    def _toggle_details(self, on: bool) -> None:
+        self.details.setVisible(on)
+        if on:
+            self.details.setHtml(self.details_html())
