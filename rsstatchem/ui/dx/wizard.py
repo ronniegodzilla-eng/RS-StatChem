@@ -181,6 +181,7 @@ class NewDesignWizard(QDialog):
         self.options_form.setColumnStretch(3, 1)
         self.options_form.setHorizontalSpacing(8)
         self._n_opt = 0
+        self._opt_k = None
 
         self.randomize = QCheckBox("Randomize run order")
         self.randomize.setChecked(True)
@@ -366,6 +367,11 @@ class NewDesignWizard(QDialog):
         k = self.k_spin.value()
         while len(self._rows) < k:
             self._rows.append(self._default_row(len(self._rows)))
+        centers = {"ccd": designs.CCD_CENTERS, "bbd": designs.BBD_CENTERS}.get(self.design)
+        w = self._opt.get("center_points")
+        if centers and w is not None and w.value() == centers.get(self._opt_k, -1):
+            w.setValue(centers.get(k, w.value()))  # untouched default follows k
+        self._opt_k = k
         self._fill_table(k)
         self._changed()
         self._update_summary()
@@ -503,6 +509,7 @@ class NewDesignWizard(QDialog):
         while self.options_form.count():
             w = self.options_form.takeAt(0).widget()
             if w is not None:
+                w.hide()
                 w.deleteLater()
         self._opt = {}
         self._n_opt = 0
@@ -572,7 +579,9 @@ class NewDesignWizard(QDialog):
     def _build_options(self) -> None:
         self._clear_options()
         d = self.design
-        k = DEFAULT_K[d]
+        k = self.k_spin.value()
+        self._opt_k = k
+        self._frac_k = None
         if d == "factorial":
             self._combo("fraction", "Design:", [(0, "Full factorial")])
             self._combo("blocks", "Blocks:", [(1, "1"), (2, "2"), (4, "4"), (8, "8")])
@@ -656,9 +665,12 @@ class NewDesignWizard(QDialog):
                 break
             w.addItem(f"1/{2 ** p} fraction ({2 ** (k - p)} runs, Res "
                       f"{designs.ROMAN.get(res, res)})", p)
+        old_k = getattr(self, "_frac_k", None)
+        if self.design == "ccd" and (old_k is None or current == designs.CCD_FRACTION.get(
+                old_k, 0)):  # still the default: follow the default for the new k
+            current = designs.CCD_FRACTION.get(k, 0)
+        self._frac_k = k
         i = w.findData(current)
-        if i < 0 and self.design == "ccd":
-            i = w.findData(designs.CCD_FRACTION.get(k, 0))
         w.setCurrentIndex(max(i, 0))
         w.blockSignals(False)
 

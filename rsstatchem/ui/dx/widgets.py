@@ -107,8 +107,9 @@ def table_to_html(t: Table) -> str:
     out = []
     if t.title:
         out.append(f'<p class="sub">{esc(t.title)}</p>')
-    out.append('<table class="dx" cellspacing="0" cellpadding="0">')
-    if any(c for c in cols):
+    headed = any(c for c in cols)
+    out.append(f'<table class="{"dx" if headed else "eq"}" cellspacing="0" cellpadding="0">')
+    if headed:
         out.append("<tr>" + "".join(f'<th align="{"left" if i < t.row_header_cols else "center"}">'
                                     f"{esc(c)}</th>" for i, c in enumerate(cols)) + "</tr>")
     for row in t.rows:
@@ -132,6 +133,8 @@ def table_to_html(t: Table) -> str:
             bold = "font-weight:bold;" if i < t.row_header_cols and t.row_header_cols else ""
             lead = len(text) - len(text.lstrip(" "))
             cell = "&nbsp;" * (2 * lead) + esc(text.lstrip(" "))
+            if not headed:  # equations: plain lines, no grid
+                style_txt += "border:none; padding:1px 6px;"
             tds.append(f'<td align="{align}" style="{style_txt}{bold}">{cell}</td>')
         out.append("<tr>" + "".join(tds) + "</tr>")
     out.append("</table>")
@@ -421,6 +424,36 @@ class FactorsTool(QFrame):
         self._axis_of = [b.currentData() for b in self.axis_boxes]
         self._update_enabled()
         self.changed.emit()
+
+    def set_active_axes(self, n: int) -> None:
+        """Show only X1..Xn (a contour needs 2 axes, a cube 3, a perturbation plot none);
+        factors not on an axis get their slider back."""
+        n = min(n, self.n_axes)
+        self._busy = True
+        for j, box in enumerate(self.axis_boxes):
+            cur = self._axis_of[j] if self._axis_of[j] is not None else -1
+            box.clear()
+            box.addItem("—", -1)
+            for a in range(n):
+                box.addItem(f"X{a + 1} axis", a)
+            if not 0 <= cur < n:
+                cur = -1
+            box.setCurrentIndex(cur + 1)
+            self._axis_of[j] = cur
+            box.setVisible(n > 0)
+        used = {a for a in self._axis_of if a >= 0}
+        # numeric factors first; categoric ones only when nothing else is left
+        order = sorted(range(self.space.k), key=lambda j: self.space.factors[j].categoric)
+        for a in range(n):
+            if a in used:
+                continue
+            for j in order:
+                if self._axis_of[j] < 0:
+                    self._axis_of[j] = a
+                    self.axis_boxes[j].setCurrentIndex(a + 1)
+                    break
+        self._busy = False
+        self._update_enabled()
 
     # ------------------------------------------------------------------ internals
     def _sync_widgets(self) -> None:

@@ -368,7 +368,7 @@ class LayoutView(QTableView):
             elif kind in ("std", "run"):
                 self.setColumnWidth(c, 46)
             elif kind in ("block", "type"):
-                self.setColumnWidth(c, 78)
+                self.setColumnWidth(c, 92)
             else:
                 text = m.headerData(c, Qt.Orientation.Horizontal) or ""
                 width = max(len(s) for s in str(text).split("\n")) * 7 + 24

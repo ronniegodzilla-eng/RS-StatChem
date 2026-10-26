@@ -234,7 +234,7 @@ class NumericalView(QWidget):
             for col, v in ((2, c.lower), (3, c.upper), (4, c.target if c.target is not None
                                                         else (c.lower + c.upper) / 2),
                            (5, c.w_lower), (6, c.w_upper)):
-                it = QTableWidgetItem(num(v, 6))
+                it = QTableWidgetItem(f"{v:.6g}")
                 it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, col, it)
             imp = QComboBox()
@@ -555,7 +555,7 @@ class GraphicalView(QWidget):
             self.table.setItem(r, 0, name)
             lo, hi = lim.get(col, [None, None])
             for c, v in ((1, lo), (2, hi)):
-                self.table.setItem(r, c, QTableWidgetItem("" if v is None else num(v, 6)))
+                self.table.setItem(r, c, QTableWidgetItem("" if v is None else f"{v:.6g}"))
         self._loading = False
         if self.tool is not None:
             self.tool.setParent(None)

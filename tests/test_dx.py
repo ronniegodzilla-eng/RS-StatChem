@@ -112,6 +112,14 @@ def test_wizard_central_composite(qapp):
     assert doc.modified
 
 
+def test_wizard_ccd_defaults_follow_factor_count(qapp):
+    wiz = _ccd_wizard(qapp)
+    wiz.k_spin.setValue(5)  # Design-Expert default: half fraction, 6 centre points
+    assert wiz._opt_value("fraction") == 1 and wiz._opt_value("center_points") == 6
+    wiz.finish()
+    assert wiz.document.n_runs == 16 + 10 + 6
+
+
 def test_wizard_ranges_in_terms_of_alpha(qapp):
     wiz = _ccd_wizard(qapp)
     wiz.ccd_alpha_entry.setChecked(True)
@@ -177,6 +185,49 @@ def test_layout_headers_paste_undo_and_coded(win, qapp):
     assert win.nav_items["design"].text(0) == "Design (Coded)"
     m.set_order("std")
     assert [int(m.data(m.index(r, 1))) for r in range(m.rowCount())] == list(range(1, 14))
+
+
+def test_end_to_end_wizard_entry_analysis(ctx, qapp):
+    """New Design on an empty window -> type the results -> the analysis node fills in."""
+    from rsstatchem.ui.dx import open_workspace
+    from rsstatchem.ui.dx.examples import _CCD
+
+    w = open_workspace(ctx)
+    pump(qapp)
+    wiz = w.wizard
+    wiz.set_factors([{"name": "Time", "units": "min", "low": 80, "high": 90},
+                     {"name": "Temperature", "units": "°C", "low": 170, "high": 180}])
+    wiz.set_option("alpha_type", "custom")
+    wiz.set_option("alpha", 1.414)
+    wiz.go(1)
+    wiz.set_responses([("Yield", "%")])
+    wiz.finish()
+    assert w.doc is not None and w.current_key == "design"
+    col = w.doc.response_cols[0]
+    assert w.nav_items[f"analysis:{col}"].text(0) == "R1:Yield (empty)"
+    view = w.show_node(f"analysis:{col}")
+    assert view.outer.currentIndex() == 1  # "enter the data first" page
+    page = w.show_node("design")
+    m = page.model
+    coded = w.doc.coded_matrix()
+    pool = list(_CCD)
+    lines = []
+    for r in range(m.rowCount()):  # in run order, as typed from the lab notebook
+        pt = coded[m.rows[r]]
+        k = next(i for i, (c, _) in enumerate(pool) if np.allclose(c, pt, atol=1e-6))
+        lines.append(str(pool.pop(k)[1]))
+    qapp.clipboard().setText("\n".join(lines))
+    page.view.setCurrentIndex(m.index(0, 5))
+    assert page.view.paste() == 13
+    assert w.nav_items[f"analysis:{col}"].text(0) == "R1:Yield"
+    view = w.show_node(f"analysis:{col}")
+    assert view.outer.currentIndex() == 0
+    assert view.doc.analyze(col).summary.suggested == "Quadratic"
+    m.setData(m.index(0, 5), "")  # one value cleared again
+    assert w.nav_items[f"analysis:{col}"].text(0) == "R1:Yield (12/13)"
+    assert w.doc.analyze(col).fit.n == 12
+    w.doc.modified = False
+    w.close()
 
 
 def test_ignore_run_drops_out_of_analysis(win):
@@ -448,6 +499,30 @@ def test_mixture_design_flow(win):
     doc.modified = False
     w2.close()
     assert w2 not in win.ctx.windows
+
+
+def test_categoric_design_graphs(win):
+    from rsstatchem.ui.dx.document import DesignDocument
+
+    doc = DesignDocument.from_spec({
+        "design": "general", "factors": [{"name": "Solvent", "levels": ["Water", "Ethanol",
+                                                                         "Acetone"]},
+                                         {"name": "Catalyst", "levels": ["Pt", "Pd"]}],
+        "responses": [{"name": "Yield"}], "options": {"replicates": 2}, "seed": 1})
+    vals = doc.ds.df[doc.factor_cols].to_numpy(float)
+    y = 50 + 5 * vals[:, 0] + 3 * vals[:, 1] + np.random.default_rng(1).normal(0, 1, len(vals))
+    doc.set_values([(i, doc.response_cols[0], float(v)) for i, v in enumerate(y)])
+    win.doc.modified = False
+    w = win.adopt(doc)
+    view = w.show_node(f"analysis:{doc.response_cols[0]}")
+    view.set_tab("Model Graphs")
+    gp = view.graph_page
+    assert gp.graph_key == "one_factor" and gp.tool.axes() == [0] and gp.graph.png
+    gp.set_graph("interaction")
+    assert gp.tool.axes() == [0, 1] and gp.graph.png
+    assert not gp.buttons["contour"].isEnabled()
+    doc.modified = False
+    w.close()
 
 
 def test_filtration_factorial_analysis(win):

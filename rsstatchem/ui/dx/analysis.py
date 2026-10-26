@@ -728,6 +728,8 @@ PROCESS_GRAPHS = [("perturbation", "perturbation", "Perturbation"),
                   ("interaction", "interaction", "Interaction"),
                   ("contour", "contour", "Contour"), ("surface", "surface", "3D Surface"),
                   ("cube", "cube", "Cube")]
+GRAPH_AXES = {"contour": 2, "surface": 2, "interaction": 2, "one_factor": 1, "cube": 3,
+              "ternary": 3, "perturbation": 0, "trace": 0}
 MIXTURE_GRAPHS = [("ternary", "ternary", "Contour (Ternary)"), ("trace", "trace", "Trace (Cox)"),
                   ("one_factor", "onefactor", "One Factor")]
 
@@ -793,10 +795,12 @@ class ModelGraphsPage(QWidget):
             default = "one_factor"
         self.graph_key = default
         self.buttons[default].setChecked(True)
+        self.tool.set_active_axes(GRAPH_AXES[default])
 
     def set_graph(self, key: str) -> None:
         self.graph_key = key
         self.buttons[key].setChecked(True)
+        self.tool.set_active_axes(GRAPH_AXES[key])
         self.render()
 
     def refresh(self) -> None:
@@ -813,8 +817,7 @@ class ModelGraphsPage(QWidget):
             return
         key = self.graph_key
         axes = self.tool.axes()
-        need = {"contour": 2, "surface": 2, "interaction": 2, "one_factor": 1, "cube": 3,
-                "ternary": 3, "perturbation": 0, "trace": 0}[key]
+        need = GRAPH_AXES[key]
         self.axes_hint.setText({0: "All factors are shown; the sliders set the reference point.",
                                 1: "X1 axis: the factor on the horizontal axis.",
                                 2: "X1 / X2 axis: the factors on the axes"
