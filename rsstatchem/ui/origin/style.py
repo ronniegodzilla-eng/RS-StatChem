@@ -81,6 +81,20 @@ QPlainTextEdit#resultsLog, QPlainTextEdit#messagesLog {{ border: none;
     font-family: Consolas, Menlo, "Courier New", monospace; font-size: 9pt; }}
 QSplitter::handle {{ background: #dcdcdc; }}
 QTextBrowser#originReport {{ border: none; background: #ffffff; }}
+QScrollArea#originReport {{ border: none; background: #ffffff; }}
+QWidget#reportPage {{ background: #ffffff; }}
+QWidget#reportSectionHeader {{ background: #dbe3f1; border: 1px solid #aab8d2; }}
+QLabel#reportSectionTitle {{ font-weight: bold; color: #102a5c; }}
+QToolButton#reportToggle {{ border: none; padding: 0px; font-size: 12pt; color: #1f3d7a; }}
+QLabel#reportTitle {{ font-size: 11pt; font-weight: bold; color: #1f3d7a; }}
+QLabel#reportNote {{ color: #505050; font-size: 8pt; }}
+QLabel#reportWarning {{ color: #a05a00; }}
+QLabel#reportImage {{ border: 1px solid #c8c8c8; background: #ffffff; }}
+QTableWidget#reportTable {{ gridline-color: #cfcfcf; border: 1px solid #b8b8b8;
+    background: #ffffff; selection-background-color: {SELECT}; selection-color: #000; }}
+QTableView#matrixSheet {{ gridline-color: #d4d4d4; }}
+QLabel#matrixImage {{ background: #ffffff; }}
+QToolBar#formatToolbar QComboBox {{ min-height: 18px; }}
 """
 
 

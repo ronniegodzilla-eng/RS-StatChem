@@ -711,6 +711,9 @@ class GraphWindow(QMainWindow):
         if self._place and self._place_start is not None:
             self._finish_placement(event)
             return
+        if self._capture_3d_view():
+            self._drag = None
+            return
         d, self._drag = self._drag, None
         if d is None or not d["moved"]:
             return
@@ -764,6 +767,41 @@ class GraphWindow(QMainWindow):
             self.redraw()
             self.show_properties(self.selected)
 
+    def _capture_3d_view(self) -> bool:
+        """After dragging a 3D layer (matplotlib rotates it with the mouse), keep the new
+        elevation / azimuth in the layer so redraws, saving and export use them."""
+        if self.rmap is None:
+            return False
+        changes = []
+        for info in self.rmap.axes.values():
+            layer, ax = info["layer"], info["ax"]
+            if layer.kind != "3d" or getattr(ax, "name", "") != "3d":
+                continue
+            elev, azim = float(ax.elev), float(ax.azim)
+            if abs(elev - layer.elev) > 0.05 or abs(azim - layer.azim) > 0.05:
+                changes.append((layer, round(elev, 1), round(azim, 1)))
+        if not changes:
+            return False
+        self.push_undo()
+        for layer, elev, azim in changes:
+            layer.elev, layer.azim = elev, azim
+        self.redraw()
+        self.show_properties(self.selected)
+        return True
+
+    def rotate_3d(self, d_azim: float = 0.0, d_elev: float = 0.0) -> None:
+        """Rotate the active 3D layer (keyboard / menu equivalent of dragging it)."""
+        layer = self.active_layer()
+        if layer is None or layer.kind != "3d":
+            layer = next((lay for lay in self.graph.layers if lay.kind == "3d"), None)
+        if layer is None:
+            return
+
+        def fn():
+            layer.azim = (layer.azim + d_azim + 180) % 360 - 180
+            layer.elev = max(-90.0, min(90.0, layer.elev + d_elev))
+        self.mutate(fn, rebuild_tree=False)
+
     def rescale(self) -> None:
         def fn():
             for layer in self.graph.layers:
@@ -811,8 +849,8 @@ class GraphWindow(QMainWindow):
             return
         ax = event.inaxes
         if getattr(ax, "name", "") == "3d":
-            self.reader.setText("3D layer — drag to rotate is not available; set elevation "
-                                "and azimuth in the layer properties.")
+            self.reader.setText(f"3D layer — drag to rotate (elevation {ax.elev:.0f}°, "
+                                f"azimuth {ax.azim:.0f}°).")
             return
         li = next((k for k, info in self.rmap.axes.items()
                    if info["ax"] is ax or info["ax2"] is ax), None)

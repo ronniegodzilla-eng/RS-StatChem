@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 from rsstatchem.core.analysis import functions as fl
 from rsstatchem.core.analysis.fitting import WEIGHTINGS
 from rsstatchem.ui.origin import formula as fx
-from rsstatchem.ui.origin.model import DESIGNATIONS, Worksheet
+from rsstatchem.ui.origin.model import DESIGNATIONS, RECALC_MODES, Worksheet
 from rsstatchem.ui.origin.plotting import PLOT_TYPES
 
 
@@ -258,6 +258,7 @@ class InputChoice:
     ycol: str
     xcol: str | None
     plot_id: str | None = None
+    rows: tuple[int, int] | None = None   # 1-based inclusive row range (None = all rows)
 
 
 class FitDialog(QDialog):
@@ -271,6 +272,14 @@ class FitDialog(QDialog):
         self.setWindowTitle({"linear": "Linear Fit", "poly": "Polynomial Fit",
                              "nlfit": "NLFit - Nonlinear Curve Fit"}[kind])
         layout = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.mode = QComboBox()
+        for key, text in RECALC_MODES.items():
+            self.mode.addItem(text, key)
+        top.addWidget(QLabel("Recalculate"))
+        top.addWidget(self.mode)
+        top.addStretch(1)
+        layout.addLayout(top)
         inp = QGroupBox("Input Data")
         g = QFormLayout(inp)
         self.data = QComboBox()
@@ -406,8 +415,32 @@ class FitDialog(QDialog):
             fixed.setCheckState(Qt.CheckState.Unchecked)
             self.params.setItem(i, 2, fixed)
 
+    def preset(self, s: dict) -> None:
+        """Show the settings of an earlier fit (Change Parameters)."""
+        self.weight.setCurrentIndex(max(0, self.weight.findData(s.get("weighting", "none"))))
+        self.level.setValue(float(s.get("level", 0.95)) * 100)
+        self.conf.setChecked(bool(s.get("conf_band", True)))
+        self.pred.setChecked(bool(s.get("pred_band", False)))
+        self.resid.setChecked(bool(s.get("residual_plot", True)))
+        self.fitted.setChecked(bool(s.get("output_fitted", False)))
+        self.to_graph.setChecked(False)
+        model = str(s.get("model", ""))
+        if self.kind == "poly" and model.startswith("Poly") and model[4:].isdigit():
+            self.order.setValue(int(model[4:]))
+        elif self.kind == "nlfit" and model:
+            for cat in fl.CATEGORIES:
+                if model in [f.name for f in fl.functions_in(cat)]:
+                    self.category.setCurrentText(cat)
+                    self.function.setCurrentText(model)
+                    break
+            else:
+                self.category.setCurrentText("User Defined")
+                self.equation.setText(model)
+                self._fill_params()
+
     def values(self) -> dict:
         out = {"input": self.inputs[self.data.currentIndex()] if self.inputs else None,
+               "mode": self.mode.currentData(),
                "model": self.model(), "weighting": self.weight.currentData(),
                "level": self.level.value() / 100, "conf_band": self.conf.isChecked(),
                "pred_band": self.pred.isChecked(), "residual_plot": self.resid.isChecked(),
@@ -435,6 +468,131 @@ class FitDialog(QDialog):
         return out
 
 
+# ====================================================================== matrices
+class MatrixValuesDialog(QDialog):
+    """Origin's Set Matrix Values: ``Mat(1) = f(x, y, i, j)`` with Apply / OK.
+    ``apply(formula)`` raises ValueError with a message on errors."""
+
+    EXAMPLES = (("sin(x)*cos(y)", "surface of x and y"),
+                ("exp(-((x-16)^2+(y-16)^2)/50)", "Gaussian peak"),
+                ("i*j", "row × column"), ("sqrt(x^2+y^2)", "distance from the origin"),
+                ("x^2 - y^2", "saddle"))
+
+    def __init__(self, ms, apply, parent=None):
+        super().__init__(parent)
+        self._apply = apply
+        self.setWindowTitle(f"Set Values - [{ms.name}]")
+        head = QLabel(f"Mat({ms.name}) =")
+        head.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        self.edit = QPlainTextEdit(ms.formula or "")
+        self.edit.setFont(QFont("Consolas", 10))
+        self.edit.setFixedHeight(80)
+        info = QLabel(f"x: {ms.x1:g} … {ms.x2:g} ({ms.n_cols} columns)    "
+                      f"y: {ms.y1:g} … {ms.y2:g} ({ms.n_rows} rows)    "
+                      "i = row, j = column (1-based)")
+        info.setStyleSheet("color:#444")
+        ex_b = QPushButton("Examples")
+        ex_b.setObjectName("menuButton")
+        ex_menu = QMenu(ex_b)
+        for text, desc in self.EXAMPLES:
+            ex_menu.addAction(f"{text}    — {desc}", lambda t=text: self.edit.setPlainText(t))
+        ex_b.setMenu(ex_menu)
+        self.error = QLabel("")
+        self.error.setStyleSheet("color:#b00000")
+        self.error.setWordWrap(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Apply
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._ok)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
+        top = QHBoxLayout()
+        top.addWidget(head)
+        top.addStretch(1)
+        top.addWidget(ex_b)
+        layout = QVBoxLayout(self)
+        layout.addLayout(top)
+        layout.addWidget(self.edit)
+        layout.addWidget(info)
+        layout.addWidget(self.error)
+        layout.addWidget(buttons)
+        self.resize(560, 0)
+
+    def apply(self) -> bool:
+        try:
+            self._apply(self.edit.toPlainText().strip())
+        except ValueError as exc:
+            self.error.setText(str(exc))
+            return False
+        self.error.setText("")
+        return True
+
+    def _ok(self) -> None:
+        if self.apply():
+            self.accept()
+
+
+class MatrixDimensionsDialog(QDialog):
+    """Origin's Matrix Dimensions and Labels: rows × columns, the X/Y coordinate mapping
+    (first / last X and Y) and the Long Name / Units of X, Y and Z."""
+
+    def __init__(self, ms, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Matrix Dimensions and Labels - {ms.name}")
+        self.cols = QSpinBox()
+        self.rows = QSpinBox()
+        for w, v in ((self.cols, ms.n_cols), (self.rows, ms.n_rows)):
+            w.setRange(1, 100000)
+            w.setValue(v)
+        dims = QGroupBox("Dimensions")
+        g = QFormLayout(dims)
+        g.addRow("Columns:", self.cols)
+        g.addRow("Rows:", self.rows)
+        self.xy = {}
+        mapping = QGroupBox("XY Mapping")
+        m = QGridLayout(mapping)
+        for r, (axis, lo, hi) in enumerate((("X", ms.x1, ms.x2), ("Y", ms.y1, ms.y2))):
+            a, b = QDoubleSpinBox(), QDoubleSpinBox()
+            for w, v in ((a, lo), (b, hi)):
+                w.setRange(-1e15, 1e15)
+                w.setDecimals(6)
+                w.setValue(v)
+            self.xy[axis] = (a, b)
+            m.addWidget(QLabel(f"{axis}: first"), r, 0)
+            m.addWidget(a, r, 1)
+            m.addWidget(QLabel("last"), r, 2)
+            m.addWidget(b, r, 3)
+        labels = QGroupBox("Labels")
+        lg = QGridLayout(labels)
+        lg.addWidget(QLabel("Long Name"), 0, 1)
+        lg.addWidget(QLabel("Units"), 0, 2)
+        self.labels = {}
+        for r, (axis, name, units) in enumerate((("X", ms.x_name, ms.x_units),
+                                                 ("Y", ms.y_name, ms.y_units),
+                                                 ("Z", ms.long_name, ms.units)), start=1):
+            ln, un = QLineEdit(name), QLineEdit(units)
+            self.labels[axis] = (ln, un)
+            lg.addWidget(QLabel(axis), r, 0)
+            lg.addWidget(ln, r, 1)
+            lg.addWidget(un, r, 2)
+        layout = QVBoxLayout(self)
+        for box in (dims, mapping, labels):
+            layout.addWidget(box)
+        layout.addWidget(_buttons(self))
+        self.resize(460, 0)
+
+    def values(self) -> dict:
+        return {"rows": self.rows.value(), "cols": self.cols.value(),
+                "x1": self.xy["X"][0].value(), "x2": self.xy["X"][1].value(),
+                "y1": self.xy["Y"][0].value(), "y2": self.xy["Y"][1].value(),
+                "x_name": self.labels["X"][0].text().strip(),
+                "x_units": self.labels["X"][1].text().strip(),
+                "y_name": self.labels["Y"][0].text().strip(),
+                "y_units": self.labels["Y"][1].text().strip(),
+                "long_name": self.labels["Z"][0].text().strip(),
+                "units": self.labels["Z"][1].text().strip()}
+
+
 # ====================================================================== add plot to layer
 class AddPlotDialog(QDialog):
     """Origin's Layer Contents / Plot Setup in short: pick a sheet, Y columns and a type."""
@@ -455,9 +613,22 @@ class AddPlotDialog(QDialog):
         self.type = QComboBox()
         for key in ("line_symbol", "line", "scatter", "yerror", "column", "area"):
             self.type.addItem(PLOT_TYPES[key][0], key)
+        self.first = QLineEdit()
+        self.first.setPlaceholderText("1")
+        self.last = QLineEdit()
+        self.last.setPlaceholderText("<last>")
+        for e in (self.first, self.last):
+            e.setFixedWidth(70)
+        rows = QHBoxLayout()
+        rows.addWidget(QLabel("From"))
+        rows.addWidget(self.first)
+        rows.addWidget(QLabel("To"))
+        rows.addWidget(self.last)
+        rows.addStretch(1)
         form = QFormLayout()
         form.addRow("Worksheet:", self.sheet)
         form.addRow("Plot Type:", self.type)
+        form.addRow("Rows:", rows)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(QLabel("Y columns (each is plotted against its designated X):"))
@@ -482,4 +653,8 @@ class AddPlotDialog(QDialog):
             return None
         book, ws = self.entries[self.sheet.currentIndex()]
         cols = [it.data(Qt.ItemDataRole.UserRole) for it in self.columns.selectedItems()]
-        return {"book": book, "sheet": ws, "cols": cols, "kind": self.type.currentData()}
+        lo, hi = self.first.text().strip(), self.last.text().strip()
+        rows = (int(lo) if lo.isdigit() else 1, int(hi) if hi.isdigit() else 0) \
+            if lo.isdigit() or hi.isdigit() else None
+        return {"book": book, "sheet": ws, "cols": cols, "kind": self.type.currentData(),
+                "rows": rows}

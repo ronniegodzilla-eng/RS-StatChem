@@ -21,7 +21,8 @@ from rsstatchem.core.analysis import mathematics as maths
 from rsstatchem.core.analysis import signal as sig
 from rsstatchem.core.analysis.common import num, pval
 from rsstatchem.core.analysis.fitting import FitResult
-from rsstatchem.ui.origin.model import ReportSheet, Workbook, Worksheet
+from rsstatchem.ui.origin.model import (ReportSheet, Workbook, Worksheet, jsonable, row_window,
+                                        rows_text)
 
 
 class AnalysisError(ValueError):
@@ -40,6 +41,7 @@ class XYData:
     x: np.ndarray
     y: np.ndarray
     yerr: np.ndarray | None = None
+    row_range: tuple[int, int] | None = None   # 1-based inclusive, None = whole column
 
     @property
     def xtitle(self) -> str:
@@ -55,30 +57,45 @@ class XYData:
 
     @property
     def range_text(self) -> str:
-        """Origin's range notation, e.g. ``[Book1]Sheet1!B"Signal"``."""
+        """Origin's range notation, e.g. ``[Book1]Sheet1!B"Signal"`` or, for a row range,
+        ``[Book1]Sheet1!B"Signal"[3:10]``."""
         c = self.sheet.columns[self.ycol]
         long = f'"{c.long_name}"' if c.long_name else ""
-        return f"[{self.book.name}]{self.sheet.name}!{c.name}{long}"
+        return f"[{self.book.name}]{self.sheet.name}!{c.name}{long}" + \
+            rows_text(*(self.row_range or (None, None)))
+
+    def source(self) -> dict:
+        """The input as stored in a report's recalculation info."""
+        ws = self.sheet
+        return {"book": self.book.name, "sheet": ws.name, "y": ws.columns[self.ycol].name,
+                "x": ws.columns[self.xcol].name if self.xcol is not None else None,
+                "rows": list(self.row_range) if self.row_range else None}
 
 
 def xy_data(book: Workbook, ws: Worksheet, ycol: int, xcol: int | None = -1,
-            with_error: bool = False) -> XYData:
-    """Column ``ycol`` against its X (``xcol=-1``: the designated X; None: row numbers)."""
+            with_error: bool = False, rows: tuple[int, int] | None = None) -> XYData:
+    """Column ``ycol`` against its X (``xcol=-1``: the designated X; None: row numbers),
+    over the 1-based inclusive row range ``rows`` (None: the whole column)."""
     if xcol == -1:
         xcol = ws.x_of(ycol)
     n = ws.n_rows
+    lo, hi = row_window(n, rows) if rows else (0, n)
     y = ws.columns[ycol].numeric(n)
     x = ws.columns[xcol].numeric(n) if xcol is not None else np.arange(1, n + 1, dtype=float)
     ok = np.isfinite(x) & np.isfinite(y)
+    ok[:lo] = False
+    ok[hi:] = False
     e = None
     ecol = ws.yerr_of(ycol) if with_error else None
     if ecol is not None:   # error bars / instrumental weights, when complete
         e_all = ws.columns[ecol].numeric(n)[ok]
         e = e_all if np.isfinite(e_all).all() else None
-    rows = np.flatnonzero(ok)
-    if len(rows) == 0:
-        raise AnalysisError(f"Column {ws.columns[ycol].name} has no numeric data.")
-    return XYData(book, ws, ycol, xcol, rows, x[ok], y[ok], e)
+    idx = np.flatnonzero(ok)
+    if len(idx) == 0:
+        raise AnalysisError(f"Column {ws.columns[ycol].name} has no numeric data" +
+                            (" in the selected rows." if rows else "."))
+    return XYData(book, ws, ycol, xcol, idx, x[ok], y[ok], e,
+                  (lo + 1, hi) if rows else None)
 
 
 def _stamp(book: Workbook) -> str:
@@ -112,12 +129,28 @@ FIT_KINDS = {"linear": ("FitLinear", "Linear Fit"), "poly": ("FitPolynomial", "P
              "nlfit": ("FitNL", "Nonlinear Curve Fit")}
 
 
+def _residual_histogram(res: FitResult, ylabel: str) -> bytes:
+    from rsstatchem.core.analysis.common import figure, png
+    fig = figure(5.2, 3.4)
+    ax = fig.add_subplot(111)
+    r = np.asarray(res.residuals, float)
+    r = r[np.isfinite(r)]
+    ax.hist(r, bins=max(5, min(30, int(np.sqrt(len(r))) + 1)), color="#7fa7e0",
+            edgecolor="#1f1f1f", linewidth=0.6)
+    ax.set_xlabel(f"Residual of {ylabel}")
+    ax.set_ylabel("Count")
+    ax.set_title("Histogram of the Residual", fontsize=10)
+    return png(fig)
+
+
 def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none",
             params0=None, fixed=None, bounds=None, level: float = 0.95,
             conf_band: bool = True, pred_band: bool = False, residual_plot: bool = True,
-            points: int = 200, output_fitted: bool = False) -> FitOutcome:
+            points: int = 200, output_fitted: bool = False, report: ReportSheet | None = None,
+            curve: Worksheet | None = None, mode: str = "manual") -> FitOutcome:
     """Fit ``model`` (library name / FitFunction / "y = ..." equation) to ``data`` and put an
-    Origin-style report sheet and fitted-curve sheet into the source workbook."""
+    Origin-style report sheet and fitted-curve sheet into the source workbook. With
+    ``report`` / ``curve`` (a recalculation) those sheets are updated in place."""
     book, ws = data.book, data.sheet
     f = fit.resolve_model(model)
     w = fit.make_weights(weighting, data.y, data.yerr) if weighting != "none" else None
@@ -130,53 +163,86 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
     except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
         raise AnalysisError(str(exc)) from None
     base, label = FIT_KINDS.get(kind, FIT_KINDS["nlfit"])
-    report = ReportSheet(title=f"{label} ({f.name}) of {data.range_text}")
-    add_report(book, report, base)
+    rerun = report is not None
+    new = ReportSheet(title=f"{label} ({f.name}) of {data.range_text}")
+    if not rerun:
+        report = add_report(book, new, base)
     yname = data.yname
-    report.add_table("Notes", ["", "Value"], [
+    new.add_table("Notes", ["", "Value"], [
         ["Description", label + (f" ({f.name})" if kind == "nlfit" else "")],
         ["Input Data", f"X = {data.xtitle};  Y = {data.range_text}"],
         ["Model", f.name], ["Equation", f.formula],
         ["Weight", fit.WEIGHTINGS.get(weighting, weighting)],
         ["Number of Points", str(res.n)], ["Fit Status", res.message or "Succeeded"]])
+    src = data.source()
+    rng = rows_text(*(data.row_range or (None, None)))
+    new.add_table("Input Data", ["", "Range", "Data"], [
+        ["X", f"[{book.name}]{ws.name}!{src['x']}{rng}" if src["x"] else "(row numbers)",
+         data.xtitle],
+        ["Y", f"[{book.name}]{ws.name}!{src['y']}{rng}", data.ytitle]] +
+        ([["Y Error", f"[{book.name}]{ws.name}!{ws.columns[ws.yerr_of(data.ycol)].name}{rng}",
+           "weights"]] if data.yerr is not None and weighting != "none" else []))
     for note in res.notes:
-        report.add_text("Warning", note, "warning")
-    _table_into(report, fit.parameter_table(res, yname, level))
-    _table_into(report, fit.statistics_table(res, yname))
+        new.add_text("Warning", note, "warning")
+    _table_into(new, fit.parameter_table(res, yname, level))
+    _table_into(new, fit.statistics_table(res, yname))
     if res.dof > 0:
-        _table_into(report, fit.anova_table(res, yname))
-    report.add_image("Fitted Curves Plot",
-                     fit.fit_plot(res, data.xtitle, data.ytitle, level, conf_band, pred_band,
-                                  data.yerr if weighting == "instrumental" else None,
-                                  title=f"{label} of {yname}"))
-    if residual_plot:
-        report.add_image("Residual vs. Independent Plot",
-                         fit.residual_plot(res, data.xtitle, data.ytitle), width=520)
+        _table_into(new, fit.anova_table(res, yname))
     # fitted curve sheet (Origin's FitLinearCurve1)
     lo, hi = float(np.min(data.x)), float(np.max(data.x))
     xx = np.linspace(lo, hi, max(points, 10)) if hi > lo else np.array([lo])
     yy = res.predict(xx)
-    curve = Worksheet(name=book.unique_sheet_name(base + "Curve"), n_rows=len(xx))
-    cx = curve.add_column("X")
+    curve_name = curve.name if curve is not None else book.unique_sheet_name(base + "Curve")
+    new.add_image("Fitted Curves Plot",
+                  fit.fit_plot(res, data.xtitle, data.ytitle, level, conf_band, pred_band,
+                               data.yerr if weighting == "instrumental" else None,
+                               title=f"{label} of {yname}"),
+                  graph={"kind": "fit", "curve": curve_name, **src})
+    if residual_plot:
+        new.add_image("Residual vs. Independent Plot",
+                      fit.residual_plot(res, data.xtitle, data.ytitle), width=460,
+                      group="Residual Plots")
+        new.add_image("Histogram of the Residual", _residual_histogram(res, yname),
+                      width=460, group="Residual Plots")
+    new.op = {"kind": "fit", "fit_kind": kind, "input": src, "curve": curve_name,
+              "mode": report.op.get("mode", mode) if rerun else mode,
+              "settings": jsonable({"model": model if isinstance(model, str) else f.name,
+                                    "weighting": weighting, "params0": params0,
+                                    "fixed": fixed, "bounds": bounds, "level": level,
+                                    "conf_band": conf_band, "pred_band": pred_band,
+                                    "residual_plot": residual_plot,
+                                    "output_fitted": output_fitted, "points": points})}
+    if rerun:
+        report.replace_items(new)
+        report.op.update({k: v for k, v in new.op.items()})
+    else:
+        report.op = new.op
+    report.op["dirty"] = False
+    fresh = Worksheet(name=curve_name, n_rows=len(xx))
+    cx = fresh.add_column("X")
     cx.long_name, cx.comments = "Independent Variable", data.xtitle
-    curve.set_column_values(0, list(xx))
-    curve_name = f"{label} of {yname}"
-    cy = curve.add_column("Y")
-    cy.long_name, cy.comments = curve_name, f.formula
-    curve.set_column_values(1, list(yy))
+    fresh.set_column_values(0, list(xx))
+    curve_title = f"{label} of {yname}"
+    cy = fresh.add_column("Y")
+    cy.long_name, cy.comments = curve_title, f.formula
+    fresh.set_column_values(1, list(yy))
     if conf_band and res.dof > 0:
         a, b = res.confidence_band(xx, level)
         for title, vals in ((f"Lower {level * 100:g}% Confidence Limit", a),
                             (f"Upper {level * 100:g}% Confidence Limit", b)):
-            c = curve.add_column("Y")
+            c = fresh.add_column("Y")
             c.long_name = title
-            curve.set_column_values(len(curve.columns) - 1, list(vals))
-    book.sheets.append(curve)
+            fresh.set_column_values(len(fresh.columns) - 1, list(vals))
+    if curve is None:
+        curve = fresh
+        book.sheets.append(curve)
+    else:   # keep the sheet object (graph links point at its name and columns)
+        curve.columns, curve.n_rows = fresh.columns, fresh.n_rows
     if output_fitted:
         _append_column(ws, f"Fitted Y ({f.name})", data.rows, res.fitted,
-                       comments=f"{label} of {yname}")
+                       comments=f"{label} of {yname}", reuse=rerun)
         _append_column(ws, f"Residual ({f.name})", data.rows, res.residuals,
-                       comments=f"{label} of {yname}")
+                       comments=f"{label} of {yname}", reuse=rerun)
     lines = [f"{_stamp(book)}", f"{label} ({f.name}) of {data.range_text} vs X = {data.xtitle}",
              f"  Equation: {f.formula}"]
     for i, pname in enumerate(res.names):
@@ -187,14 +253,46 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
         lines.append(f"  Pearson's r = {num(res.pearson_r)}")
     lines.append(f"  Reduced Chi-Sqr = {num(res.red_chisq)}   N = {res.n}")
     lines.append(f"  Report: [{book.name}]{report.name}   Curve: [{book.name}]{curve.name}")
-    return FitOutcome(res, report, curve, "\n".join(lines), data, xx, yy, curve_name)
+    return FitOutcome(res, report, curve, "\n".join(lines), data, xx, yy, curve_title)
+
+
+def refit(book: Workbook, report: ReportSheet, books: dict) -> FitOutcome:
+    """Re-run the fit that produced ``report`` (Recalculate) with its stored settings."""
+    op = report.op
+    src = op["input"]
+    src_book = books.get(src["book"])
+    ws = src_book.sheet(src["sheet"]) if src_book is not None else None
+    if not isinstance(ws, Worksheet):
+        raise AnalysisError(f"The input sheet [{src['book']}]{src['sheet']} no longer exists.")
+    try:
+        y = ws.index_of(src["y"])
+        x = ws.index_of(src["x"]) if src.get("x") else None
+    except KeyError as exc:
+        raise AnalysisError(f"The input column {exc} no longer exists.") from None
+    data = xy_data(src_book, ws, y, x, with_error=True,
+                   rows=tuple(src["rows"]) if src.get("rows") else None)
+    s = dict(op.get("settings", {}))
+    curve = book.sheet(op.get("curve", ""))
+    bounds = {k: tuple(v) for k, v in (s.get("bounds") or {}).items()} or None
+    return run_fit(data, s.get("model", "Line"), op.get("fit_kind", "nlfit"),
+                   weighting=s.get("weighting", "none"), params0=s.get("params0"),
+                   fixed=s.get("fixed"), bounds=bounds, level=s.get("level", 0.95),
+                   conf_band=s.get("conf_band", True), pred_band=s.get("pred_band", False),
+                   residual_plot=s.get("residual_plot", True), points=s.get("points", 200),
+                   output_fitted=s.get("output_fitted", False), report=report,
+                   curve=curve if isinstance(curve, Worksheet) else None)
 
 
 def _append_column(ws: Worksheet, long_name: str, rows, values, comments: str = "",
-                   designation: str = "Y") -> int:
-    col = ws.add_column(designation)
-    col.long_name, col.comments = long_name, comments
-    idx = len(ws.columns) - 1
+                   designation: str = "Y", reuse: bool = False) -> int:
+    existing = next((i for i, c in enumerate(ws.columns) if c.long_name == long_name and
+                     c.comments == comments), None) if reuse else None
+    if existing is None:
+        col = ws.add_column(designation)
+        col.long_name, col.comments = long_name, comments
+        idx = len(ws.columns) - 1
+    else:
+        idx = existing
     out = [None] * ws.n_rows
     for r, v in zip(rows, values):
         out[int(r)] = float(v) if np.isfinite(v) else None

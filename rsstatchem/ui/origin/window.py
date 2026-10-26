@@ -1,11 +1,15 @@
 """The Graph & Analysis main window, laid out like OriginLab Origin.
 
 Menu bar (context-sensitive like Origin's: worksheet menus when a workbook is active, Graph /
-Insert when a graph is active), the Standard and Column toolbars on top, the Tools toolbar on
-the left, the 2D Graphs toolbar at the bottom, Project Explorer (left), Object Manager
-(right), Results Log and Messages Log (bottom) and an MDI workspace with Workbook, Graph and
-Notes windows. A project (:class:`~rsstatchem.ui.origin.model.Project`) is saved as one
-``.rsop`` file.
+Insert when a graph is active, Matrix when a matrix book is active), the Standard, Column and
+Format toolbars on top, the Tools toolbar on the left, the 2D Graphs toolbar at the bottom,
+Project Explorer (left), Object Manager (right), Results Log and Messages Log (bottom) and an
+MDI workspace with Workbook, Matrix, Graph and Notes windows. A project
+(:class:`~rsstatchem.ui.origin.model.Project`) is saved as one ``.rsop`` file.
+
+Selecting a block of cells (e.g. rows 3–10 of B:C) makes plots and fits use only those rows
+(``[Book1]Sheet1!B[3:10]``). Analysis reports remember how they were made; when their source
+data change they are recalculated (Auto) or flagged with a yellow lock (Manual).
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QInputDia
                                QTreeWidget, QTreeWidgetItem)
 
 from rsstatchem import __version__
+from rsstatchem.core.analysis import matrix as mx
 from rsstatchem.core.graph.export import EXTENSION as GRAPH_EXT
 from rsstatchem.core.graph.export import load_graph
 from rsstatchem.core.graph.model import Annotation, Graph, Layer
@@ -29,17 +34,25 @@ from rsstatchem.core.graph.themes import THEMES, apply_theme
 from rsstatchem.ui.modules import add_module_menu
 from rsstatchem.ui.origin import analysis as an
 from rsstatchem.ui.origin import formula as fx
+from rsstatchem.ui.origin import recalc
+from rsstatchem.ui.origin import stat_dialogs as sd
+from rsstatchem.ui.origin import stat_tests as st
 from rsstatchem.ui.origin import style
 from rsstatchem.ui.origin.dialogs import (AddPlotDialog, ColumnPropertiesDialog, FitDialog,
-                                          InputChoice, ParamDialog, SetValuesDialog)
+                                          InputChoice, MatrixDimensionsDialog,
+                                          MatrixValuesDialog, ParamDialog, SetValuesDialog)
 from rsstatchem.ui.origin.explorer import ProjectExplorer
+from rsstatchem.ui.origin.format_bar import FormatToolbar
 from rsstatchem.ui.origin.graph_view import OriginGraphWindow
 from rsstatchem.ui.origin.icons import icon
+from rsstatchem.ui.origin.matrix_view import MatrixWindow
 from rsstatchem.ui.origin.model import (DEFAULT_ROWS, DESIGNATIONS, EXTENSION, Folder, GraphDoc,
-                                        Notes, Project, ReportSheet, Workbook, Worksheet,
-                                        load_project, save_project)
-from rsstatchem.ui.origin.plotting import (ORIGIN_THEME, PLOT_TYPES, PlotError, add_xy_plot,
-                                           column_key, plot_columns, refresh_links, rekey)
+                                        MatrixBook, MatrixSheet, Notes, Project, ReportSheet,
+                                        Workbook, Worksheet, load_project, range_text,
+                                        rename_refs, rows_text, save_project)
+from rsstatchem.ui.origin.plotting import (MATRIX_PLOTS, ORIGIN_THEME, PLOT_TYPES, PlotError,
+                                           add_xy_plot, column_key, plot_columns, plot_matrix,
+                                           refresh_links, rekey, update_data_ranges)
 from rsstatchem.ui.origin.sheet_view import BookWindow
 
 APP_TITLE = "RS-StatChem Graph & Analysis"
@@ -199,6 +212,8 @@ class OriginMainWindow(QMainWindow):
         self.act_new_book = a("&Workbook", self.new_book, None, "o_new_book", "New Workbook")
         self.act_new_graph = a("&Graph", self.new_graph, None, "o_new_graph", "New Graph")
         self.act_new_notes = a("&Notes", self.new_notes, None, "o_new_notes", "New Notes")
+        self.act_new_matrix = a("&Matrix", self.new_matrix, None, "o_new_matrix",
+                                "New Matrix")
         self.act_new_folder = a("&Folder", self.new_folder, None, "o_new_folder", "New Folder")
         self.act_open = a("&Open...", self.open_dialog, "Ctrl+O", "o_open",
                           "Open a project (.rsop) or graph (.rsg)")
@@ -256,6 +271,13 @@ class OriginMainWindow(QMainWindow):
                                  None, None, checkable=True)
         self.act_folder_only.setChecked(self._setting("folder_only", "true") == "true")
         self.act_full_screen = a("&Full Screen", self._full_screen, "Ctrl+Shift+F", None)
+        self.act_sparklines = a("&Sparklines", self.toggle_sparklines, None, None,
+                                "Show a tiny line plot of each column in the header",
+                                checkable=True)
+        self.act_image_mode = a("&Image Mode", self.toggle_image_mode, None, "m_image",
+                                "Show the matrix as an image", checkable=True)
+        self.act_show_xy = a("Show &X/Y", self.toggle_show_xy, None, None,
+                             "Show the X/Y coordinates in the matrix headers", checkable=True)
 
         # Column menu
         self.act_desig = {}
@@ -295,6 +317,26 @@ class OriginMainWindow(QMainWindow):
         self.act_delete_sheet = a("&Delete Sheet", self.delete_sheet)
         self.act_duplicate_sheet = a("D&uplicate Sheet", self.duplicate_sheet)
         self.act_set_rows = a("Set Number of &Rows...", self.set_rows_dialog)
+        self.act_to_matrix_direct = a("&Direct...", self.convert_to_matrix_direct)
+        self.act_to_matrix_xyz = a("&XYZ Gridding...", self.convert_to_matrix_xyz)
+
+        # Matrix menu
+        self.act_m_values = a("Set &Values...", self.matrix_values_dialog, None,
+                              "o_set_values", "Set Matrix Values")
+        self.act_m_dims = a("Set &Dimensions/Labels...", self.matrix_dimensions_dialog)
+        self.act_m_transpose = a("&Transpose", lambda: self.matrix_geometry("transpose"),
+                                 None, "m_transpose", "Transpose")
+        self.act_m_flip_h = a("Flip &Horizontal", lambda: self.matrix_geometry("flip_h"))
+        self.act_m_flip_v = a("Flip &Vertical", lambda: self.matrix_geometry("flip_v"))
+        self.act_m_rot90 = a("Rotate &90 (counter-clockwise)",
+                             lambda: self.matrix_geometry("rot90"))
+        self.act_m_rot270 = a("Rotate -9&0 (clockwise)",
+                              lambda: self.matrix_geometry("rot270"))
+        self.act_m_rot180 = a("Rotate &180", lambda: self.matrix_geometry("rot180"))
+        self.act_m_expand = a("&Expand...", lambda: self.matrix_resample_dialog("expand"))
+        self.act_m_shrink = a("&Shrink...", lambda: self.matrix_resample_dialog("shrink"))
+        self.act_m_to_ws = a("Convert to &Worksheet (XYZ)", self.matrix_to_worksheet)
+        self.act_m_add_sheet = a("&Add Sheet", self.matrix_add_sheet)
 
         # Graph menu / Tools toolbar
         self.act_add_plot = a("&Add Plot to Layer...", self.add_plot_active, None, "add_plot",
@@ -328,8 +370,8 @@ class OriginMainWindow(QMainWindow):
                                 "o_fit", "Linear Fit")
         self.act_fit_poly = a("&Polynomial Fit...", lambda: self.fit_dialog("poly"))
         self.act_fit_nl = a("&Nonlinear Curve Fit...", lambda: self.fit_dialog("nlfit"))
-        self.act_stats_cols = a("Statistics on &Columns", self.statistics_on_columns, None,
-                                "o_stats", "Statistics on Columns")
+        self.act_stats_cols = a("Statistics on &Columns...", lambda: self.stat_dialog("desc"),
+                                None, "o_stats", "Statistics on Columns")
 
     def _setting(self, key: str, default=None):
         s = getattr(self.ctx, "settings", None)
@@ -351,8 +393,8 @@ class OriginMainWindow(QMainWindow):
 
         f = menu("file", "&File")
         new = f.addMenu(icon("o_new_project"), "&New")
-        new.addActions([self.act_new_project, self.act_new_book, self.act_new_graph,
-                        self.act_new_notes])
+        new.addActions([self.act_new_project, self.act_new_book, self.act_new_matrix,
+                        self.act_new_graph, self.act_new_notes])
         new.addSeparator()
         new.addAction(self.act_new_folder)
         f.addAction(self.act_open)
@@ -389,6 +431,8 @@ class OriginMainWindow(QMainWindow):
         v.addSeparator()
         v.addAction(self.act_folder_only)
         v.addAction(self.act_full_screen)
+        v.addSeparator()
+        v.addActions([self.act_sparklines, self.act_image_mode, self.act_show_xy])
         v.addSeparator()
         v.addAction(self._act("Zoom &In", lambda: self._gw_zoom(1.25), "Ctrl+="))
         v.addAction(self._act("Zoom &Out", lambda: self._gw_zoom(0.8), "Ctrl+-"))
@@ -440,9 +484,33 @@ class OriginMainWindow(QMainWindow):
         sort_ws = w.addMenu("&Sort Worksheet")
         sort_ws.addActions([self.act_sort_ws_asc, self.act_sort_ws_desc])
         w.addAction(self.act_transpose)
+        conv = w.addMenu(icon("e_matrix"), "Convert to &Matrix")
+        conv.addActions([self.act_to_matrix_direct, self.act_to_matrix_xyz])
         w.addSeparator()
         w.addActions([self.act_add_sheet, self.act_duplicate_sheet, self.act_rename_sheet,
                       self.act_delete_sheet])
+
+        mp = menu("mplot", "&Plot")
+        cont_m = mp.addMenu(icon("g_contour"), "&Contour")
+        for k in ("contour", "contour_lines", "heatmap", "image"):
+            cont_m.addAction(self._matrix_plot_action(k))
+        three_m = mp.addMenu(icon("g_3d"), "3&D")
+        for k in ("surface3d_colormap", "surface3d", "wireframe"):
+            three_m.addAction(self._matrix_plot_action(k))
+
+        mm = menu("matrix", "&Matrix")
+        mm.addActions([self.act_m_values, self.act_m_dims])
+        mm.addSeparator()
+        mm.addAction(self.act_m_transpose)
+        flip = mm.addMenu("&Flip")
+        flip.addActions([self.act_m_flip_h, self.act_m_flip_v])
+        rot = mm.addMenu("&Rotate")
+        rot.addActions([self.act_m_rot90, self.act_m_rot270, self.act_m_rot180])
+        mm.addActions([self.act_m_expand, self.act_m_shrink])
+        mm.addSeparator()
+        mm.addAction(self.act_m_to_ws)
+        mm.addSeparator()
+        mm.addActions([self.act_image_mode, self.act_show_xy, self.act_m_add_sheet])
 
         g = menu("graph", "&Graph")
         g.addActions([self.act_add_plot, self.act_rescale])
@@ -472,18 +540,28 @@ class OriginMainWindow(QMainWindow):
         pk.addAction(self._act("&Find Peaks...", self.peaks_dialog))
         pk.addAction(self._act("&Multiple Peak Fit...", self.multi_peak_dialog))
 
-        st = menu("statistics", "&Statistics")
-        d = st.addMenu("&Descriptive Statistics")
+        stm = menu("statistics", "&Statistics")
+        d = stm.addMenu("&Descriptive Statistics")
         d.addAction(self.act_stats_cols)
-        d.addAction(self._act("Statistics on &Rows", self.statistics_on_rows))
-        d.addAction(self._act("&Correlation Coefficient", self.correlation))
-        d.addAction(self._act("&Normality Test (Shapiro-Wilk)", self.normality))
-        h = st.addMenu("&Hypothesis Testing")
-        h.addAction(self._act("&One-Sample t-Test...", self.one_sample_t_dialog))
-        h.addAction(self._act("&Two-Sample t-Test", lambda: self.two_sample_t(False)))
-        h.addAction(self._act("&Pair-Sample t-Test", lambda: self.two_sample_t(True)))
-        av = st.addMenu("&ANOVA")
-        av.addAction(self._act("&One-Way ANOVA (columns as groups)", self.one_way_anova))
+        sdlg = self.stat_dialog
+        d.addAction(self._act("Statistics on &Rows...", lambda: sdlg("rows")))
+        d.addAction(self._act("&Frequency Counts...", lambda: sdlg("freq")))
+        d.addSeparator()
+        d.addAction(self._act("&Correlation Coefficient...", lambda: sdlg("correlation")))
+        d.addAction(self._act("&Normality Test...", lambda: sdlg("normality")))
+        h = stm.addMenu("&Hypothesis Testing")
+        h.addAction(self._act("&One-Sample t-Test...", lambda: sdlg("ttest1")))
+        h.addAction(self._act("&Two-Sample t-Test...", lambda: sdlg("ttest2")))
+        h.addAction(self._act("&Pair-Sample t-Test...", lambda: sdlg("ttest_pair")))
+        av = stm.addMenu("&ANOVA")
+        av.addAction(self._act("&One-Way ANOVA...", lambda: sdlg("anova1")))
+        av.addAction(self._act("&Two-Way ANOVA...", lambda: sdlg("anova2")))
+        npm = stm.addMenu("&Nonparametric Tests")
+        for key, text in (("mann_whitney", "&Mann-Whitney Test..."),
+                          ("wilcoxon", "Paired Sample &Wilcoxon Signed Rank Test..."),
+                          ("kruskal", "&Kruskal-Wallis ANOVA..."),
+                          ("friedman", "&Friedman ANOVA...")):
+            npm.addAction(self._act(text, lambda k=key: sdlg("nonparam", {"test": k})))
 
         t = menu("tools", "&Tools")
         t.addAction(self._act("&Options...", self.options_dialog))
@@ -519,10 +597,13 @@ class OriginMainWindow(QMainWindow):
         if mode == self._menu_mode:
             return
         self._menu_mode = mode
-        order = ["file", "edit", "view", "plot", "column", "worksheet", "analysis",
-                 "statistics", "tools", "format", "window", "help"] if mode == "book" else \
-            ["file", "edit", "view", "graph", "format", "insert", "analysis", "tools", "window",
-             "help"]
+        order = {
+            "book": ["file", "edit", "view", "plot", "column", "worksheet", "analysis",
+                     "statistics", "tools", "format", "window", "help"],
+            "graph": ["file", "edit", "view", "graph", "format", "insert", "analysis", "tools",
+                      "window", "help"],
+            "matrix": ["file", "edit", "view", "mplot", "matrix", "tools", "format", "window",
+                       "help"]}[mode]
         bar = self.menuBar()
         bar.clear()
         for key in order:
@@ -540,6 +621,12 @@ class OriginMainWindow(QMainWindow):
               "contour": "g_contour", "heatmap": "g_heatmap", "scatter3d": "g_3d",
               "surface3d": "g_3d", "polar": "g_polar", "ternary": "g_ternary"}[kind]
         return self._act(text, lambda k=kind: self.plot(k), None, ic, text)
+
+    def _matrix_plot_action(self, kind: str) -> QAction:
+        text = MATRIX_PLOTS[kind][0]
+        ic = {"contour": "g_contour", "contour_lines": "g_contour", "heatmap": "g_heatmap",
+              "image": "m_image"}.get(kind, "g_3d")
+        return self._act(text, lambda k=kind: self.plot_matrix(k), None, ic, text)
 
     def _fill_format(self) -> None:
         fm = self.menus["format"]
@@ -561,6 +648,16 @@ class OriginMainWindow(QMainWindow):
                 lambda: apply_theme(gwin.graph, ORIGIN_THEME), rebuild_tree=False))
             fm.addSeparator()
             fm.addAction("Save as &Template...", gwin.save_template)
+            if any(layer.kind == "3d" for layer in gwin.graph.layers):
+                fm.addSeparator()
+                rot = fm.addMenu("&Rotate 3D")
+                rot.addAction("Azimuth +15°", lambda: gwin.rotate_3d(15, 0))
+                rot.addAction("Azimuth −15°", lambda: gwin.rotate_3d(-15, 0))
+                rot.addAction("Elevation +10°", lambda: gwin.rotate_3d(0, 10))
+                rot.addAction("Elevation −10°", lambda: gwin.rotate_3d(0, -10))
+            return
+        if self.active_matrix_window() is not None:
+            fm.addActions([self.act_m_dims, self.act_image_mode, self.act_show_xy])
             return
         fm.addAction(self.act_column_props)
         fm.addAction("&Worksheet Rows...", self.set_rows_dialog)
@@ -607,8 +704,8 @@ class OriginMainWindow(QMainWindow):
 
     def _build_toolbars(self) -> None:
         std = self._toolbar("Standard", "standardToolbar")
-        std.addActions([self.act_new_project, self.act_new_book, self.act_new_graph,
-                        self.act_new_notes, self.act_new_folder])
+        std.addActions([self.act_new_project, self.act_new_book, self.act_new_matrix,
+                        self.act_new_graph, self.act_new_notes, self.act_new_folder])
         std.addSeparator()
         std.addActions([self.act_open, self.act_save])
         std.addSeparator()
@@ -629,6 +726,11 @@ class OriginMainWindow(QMainWindow):
         col.addActions([self.act_set_values, self.act_add_column, self.act_sort_asc])
         col.addSeparator()
         col.addActions([self.act_stats_cols, self.act_fit_linear])
+
+        self.format_bar = FormatToolbar(self)
+        self.format_bar.setObjectName("formatToolbar")
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.format_bar)
+        self.toolbar_menu.addAction(self.format_bar.toggleViewAction())
 
         tools = self._toolbar("Tools", "toolsToolbar", Qt.ToolBarArea.LeftToolBarArea)
         tools.setOrientation(Qt.Orientation.Vertical)
@@ -740,11 +842,19 @@ class OriginMainWindow(QMainWindow):
         v = self.active_view()
         return v if isinstance(v, OriginGraphWindow) else None
 
+    def active_matrix_window(self) -> MatrixWindow | None:
+        v = self.active_view()
+        return v if isinstance(v, MatrixWindow) else None
+
+    def matrix_window(self, book: MatrixBook) -> MatrixWindow | None:
+        v = self.view_of(book.name)
+        return v if isinstance(v, MatrixWindow) else None
+
     def _add_sub(self, obj, widget, size: tuple[int, int]) -> _SubWindow:
         sub = _SubWindow(self, obj)
         sub.setWidget(widget)
         sub.setWindowTitle(obj.title)
-        sub.setWindowIcon(icon({"book": "e_book", "graph": "e_graph",
+        sub.setWindowIcon(icon({"book": "e_book", "graph": "e_graph", "matrix": "e_matrix",
                                 "notes": "e_notes"}[obj.kind]))
         self.mdi.addSubWindow(sub)
         sub.resize(*size)
@@ -754,8 +864,13 @@ class OriginMainWindow(QMainWindow):
         return sub
 
     def _register(self, obj, folder: Folder | None = None) -> None:
-        if obj.name not in self.project.windows:
-            self.project.add(obj, folder or self.explorer.current or self.project.root)
+        # a new object whose name is taken is renamed (Book1 → Book2) by Project.add; objects
+        # of the project itself (opening a project) are already registered
+        existing = self.project.windows.get(obj.name)
+        if existing is obj or (isinstance(existing, GraphDoc) and isinstance(obj, GraphDoc)
+                               and existing.graph is obj.graph):
+            return
+        self.project.add(obj, folder or self.explorer.current or self.project.root)
 
     def default_rows(self) -> int:
         try:
@@ -782,6 +897,25 @@ class OriginMainWindow(QMainWindow):
         if self.project.windows and len(self.project.windows) > 1:
             self.set_modified(True)
         return bw
+
+    def new_matrix(self, book: MatrixBook | None = None, show: bool = True,
+                   folder: Folder | None = None) -> MatrixWindow:
+        """File > New > Matrix (an MBook with one 32 × 32 matrix sheet)."""
+        if book is None:
+            book = MatrixBook.new(self.project.unique_name("MBook"))
+        self._register(book, folder)
+        mw = MatrixWindow(book, self)
+        mw.changed.connect(self._matrix_changed)
+        sub = self._add_sub(book, mw, (520, 400))
+        if show and book.name not in self.project.hidden:
+            sub.show()
+            self.mdi.setActiveSubWindow(sub)
+        else:
+            self.project.hidden.add(book.name)
+            sub.hide()
+        self.explorer.fill_windows()
+        self.set_modified(True)
+        return mw
 
     def new_graph(self, graph: Graph | None = None, show: bool = True,
                   folder: Folder | None = None, name: str | None = None) -> OriginGraphWindow:
@@ -954,12 +1088,21 @@ class OriginMainWindow(QMainWindow):
             for link in gwin.graph.meta.get("links", {}).values():
                 if link.get("book") == name:
                     link["book"] = new.strip()
+            update_data_ranges(gwin.graph)
+            gwin.rebuild_tree()
         sub.setWindowTitle(sub.obj.title)
         self.explorer.fill_windows()
         self.set_modified(True)
         return True
 
     def sheet_renamed(self, book: Workbook, old: str, new: str) -> None:
+        for wb, rep in recalc.reports(self.project):   # report inputs follow the sheet
+            src = rep.op.get("input")
+            if src and src.get("book") == book.name and src.get("sheet") == old:
+                src["sheet"] = new
+            if rep.op.get("settings"):
+                rep.op["settings"] = rename_refs(rep.op["settings"], f"[{book.name}]{old}!",
+                                                 f"[{book.name}]{new}!", key="text")
         for gwin in self.graph_windows():
             for link in gwin.graph.meta.get("links", {}).values():
                 if link.get("book") == book.name and link.get("sheet") == old:
@@ -969,6 +1112,7 @@ class OriginMainWindow(QMainWindow):
                     src = p.options.get("source")
                     if src and src.get("book") == book.name and src.get("sheet") == old:
                         src["sheet"] = new
+            update_data_ranges(gwin.graph)
 
     def duplicate_window(self, name: str | None) -> None:
         name = name or self.active_name()
@@ -981,6 +1125,11 @@ class OriginMainWindow(QMainWindow):
             copy_ = window_from_dict(window_to_dict(obj))
             copy_.name = self.project.unique_name("Book")
             self.new_book(copy_, folder=folder)
+        elif isinstance(obj, MatrixBook):
+            from rsstatchem.ui.origin.model import window_from_dict, window_to_dict
+            copy_ = window_from_dict(window_to_dict(obj))
+            copy_.name = self.project.unique_name("MBook")
+            self.new_matrix(copy_, folder=folder)
         elif isinstance(obj, GraphDoc):
             gwin = self.view_of(name)
             self.new_graph(gwin.graph.copy(), folder=folder,
@@ -1033,6 +1182,10 @@ class OriginMainWindow(QMainWindow):
             self.om_dock.setWindowTitle("Object Manager - " + widget.graph.title)
             self.range_label.setText(f"[{widget.graph.title}] Layer 1")
             self.set_tool(self._current_tool(), quiet=True)
+        elif isinstance(widget, MatrixWindow):
+            self._set_menu_mode("matrix")
+            self.obj_stack.setCurrentWidget(self.book_tree)
+            self.matrix_view_changed(widget)
         else:
             self._set_menu_mode("book")
             self.obj_stack.setCurrentWidget(self.book_tree)
@@ -1046,6 +1199,15 @@ class OriginMainWindow(QMainWindow):
         for act in (self.act_add_plot, self.act_rescale, self.act_copy_page,
                     self.act_export_graph, *self.tool_acts.values()):
             act.setEnabled(enable_graph)
+        is_matrix = isinstance(widget, MatrixWindow)
+        self.act_image_mode.setEnabled(is_matrix)
+        self.act_show_xy.setEnabled(is_matrix)
+        self.act_image_mode.setChecked(is_matrix and widget.image_mode)
+        self.act_show_xy.setChecked(is_matrix and widget.show_xy)
+        ws = widget.worksheet() if isinstance(widget, BookWindow) else None
+        self.act_sparklines.setEnabled(ws is not None)
+        self.act_sparklines.setChecked(bool(ws is not None and ws.sparklines))
+        self.format_bar.sync()
         self.explorer.fill_windows()
 
     def _current_tool(self) -> str:
@@ -1060,14 +1222,19 @@ class OriginMainWindow(QMainWindow):
         if ws is not None:
             cols = bw.selected_columns()
             n = ws.data_rows()
+            rows = bw.selected_row_range()
             if cols:
                 names = ",".join(ws.columns[c].name for c in cols[:4]) + \
                     ("…" if len(cols) > 4 else "")
-                self.range_label.setText(f"[{bw.book.name}]{ws.name}!Col({names})[1:{n}]")
+                rng = f"[{rows[0]}:{rows[1]}]" if rows else f"[1:{n}]"
+                self.range_label.setText(f"[{bw.book.name}]{ws.name}!Col({names}){rng}")
             else:
                 self.range_label.setText(f"[{bw.book.name}]{ws.name}")
+            self.act_sparklines.setEnabled(True)
+            self.act_sparklines.setChecked(ws.sparklines)
         elif sheet is not None:
             self.range_label.setText(f"[{bw.book.name}]{sheet.name}")
+            self.act_sparklines.setEnabled(False)
         view = bw.sheet_view()
         if view is not None and not getattr(view, "_origin_hooked", False):
             view.selectionModel().selectionChanged.connect(lambda *_: self.book_view_changed(bw))
@@ -1097,6 +1264,10 @@ class OriginMainWindow(QMainWindow):
 
     def _book_tree_clicked(self, item, _col) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole)
+        mw = self.active_matrix_window()
+        if mw is not None and data:
+            mw.tabs.setCurrentIndex(data[0])
+            return
         bw = self.active_book_window()
         if not data or bw is None:
             return
@@ -1116,21 +1287,140 @@ class OriginMainWindow(QMainWindow):
 
     def _book_changed(self, book: Workbook) -> None:
         self.set_modified(True)
+        self.check_reports(book.name)
         self.refresh_graphs()
         bw = self.book_window(book)
         if bw is not None:
             self.book_view_changed(bw)
         self.explorer.fill_windows()
 
+    def _matrix_changed(self, book: MatrixBook) -> None:
+        self.set_modified(True)
+        self.refresh_graphs()
+        mw = self.matrix_window(book)
+        if mw is not None:
+            self.matrix_view_changed(mw)
+        self.explorer.fill_windows()
+
     def graph_changed(self, gwin: OriginGraphWindow) -> None:
         self.explorer.fill_windows()
 
     def refresh_graphs(self) -> None:
-        """Origin keeps graphs linked to their worksheet data."""
-        books = {b.name: b for b in self.project.books()}
+        """Origin keeps graphs linked to their worksheet and matrix data."""
+        books = self.project.data_windows()
         for gwin in self.graph_windows():
             if refresh_links(gwin.graph, books):
                 gwin.redraw()
+
+    # ================================================================== recalculation
+    def check_reports(self, changed: str | None = None) -> None:
+        """After a data change: re-run Auto reports, flag Manual ones (Origin's lock)."""
+        if getattr(self, "_recalculating", False):
+            return
+        for book, rep in recalc.stale_reports(self.project, changed):
+            if rep.mode == "auto":
+                self.recalculate_report(book, rep, quiet=True)
+            elif not rep.dirty:
+                rep.op["dirty"] = True
+                bw = self.book_window(book)
+                if bw is not None:
+                    bw.refresh()
+                self.message(f"[{book.name}]{rep.name}: the source data changed — "
+                             "Recalculate to update (Manual mode).")
+
+    def recalculate_report(self, book: Workbook, report: ReportSheet,
+                           quiet: bool = False) -> bool:
+        """Re-run the analysis of ``report`` in place (one undo step in its workbook)."""
+        self._recalculating = True
+        try:
+            text = self._run_in_book(book, "Recalculate",
+                                     lambda: recalc.recalculate(self.project, book, report))
+        except (ValueError, KeyError) as exc:
+            self._warn(f"Recalculate [{book.name}]{report.name}: {exc}")
+            return False
+        finally:
+            self._recalculating = False
+        self.result(text)
+        self.refresh_graphs()
+        bw = self.book_window(book)
+        if bw is not None:
+            bw.refresh()
+        if not quiet:
+            self.message(f"Recalculated [{book.name}]{report.name}")
+        return True
+
+    def set_report_mode(self, book: Workbook, report: ReportSheet, mode: str) -> None:
+        report.op["mode"] = mode
+        self.set_modified(True)
+        if mode == "auto" and (report.dirty or recalc.fingerprint(
+                self.project.data_windows(), report.op) != report.op.get("hash")):
+            self.recalculate_report(book, report)
+        elif mode == "none":
+            report.op["dirty"] = False
+        bw = self.book_window(book)
+        if bw is not None:
+            bw.refresh()
+
+    def change_report_parameters(self, book: Workbook, report: ReportSheet) -> None:
+        """Reopen the dialog of a report with its settings; OK recalculates it."""
+        op = report.op
+        if op.get("kind") == "stats":
+            settings = dict(op.get("settings") or {})
+            settings["mode"] = op.get("mode", "manual")
+            dlg = sd.make_dialog(op["test"], self, settings)
+            if not dlg.exec():
+                return
+            values = dlg.values()
+            report.op["settings"] = {k: v for k, v in values.items() if k != "mode"}
+            report.op["mode"] = values["mode"]
+            self.recalculate_report(book, report)
+        elif op.get("kind") == "fit":
+            src = op["input"]
+            label = range_text(src["book"], src["sheet"], src["y"],
+                               *(src.get("rows") or (None, None)))
+            choice = InputChoice(label, src["book"], src["sheet"], src["y"], src.get("x"),
+                                 None, tuple(src["rows"]) if src.get("rows") else None)
+            dlg = FitDialog(op.get("fit_kind", "nlfit"), [choice], self)
+            dlg.preset(op.get("settings", {}))
+            if not dlg.exec():
+                return
+            try:
+                params = dlg.values()
+            except ValueError as exc:
+                self._warn(str(exc))
+                return
+            s = report.op["settings"]
+            for k in ("model", "weighting", "params0", "fixed", "bounds", "level", "conf_band",
+                      "pred_band", "residual_plot", "output_fitted"):
+                s[k] = params.get(k, s.get(k))
+            self.recalculate_report(book, report)
+
+    def open_report_graph(self, book: Workbook, report: ReportSheet, item: dict) -> None:
+        """Double-click on a report's fitted-curves plot: open it as a graph window (the
+        source data and the fitted curve, both linked to the workbook)."""
+        spec = item.get("graph") or {}
+        if spec.get("kind") != "fit":
+            return
+        src_book = self.project.windows.get(spec.get("book"))
+        ws = src_book.sheet(spec.get("sheet", "")) if isinstance(src_book, Workbook) else None
+        curve = book.sheet(spec.get("curve", ""))
+        if not isinstance(ws, Worksheet) or not isinstance(curve, Worksheet):
+            self._warn("The data of this plot no longer exist.")
+            return
+        try:
+            y = ws.index_of(spec["y"])
+            graph = plot_columns(src_book, ws, [y], "scatter", self.project.unique_name("Graph"),
+                                 rows=tuple(spec["rows"]) if spec.get("rows") else None)
+        except (KeyError, PlotError) as exc:
+            self._warn(str(exc))
+            return
+        add_xy_plot(graph, 0, curve.columns[0].numeric(), curve.columns[1].numeric(),
+                    curve.columns[1].long_name, "line", FIT_COLOR,
+                    link={"book": book.name, "sheet": curve.name, "x": curve.columns[0].name,
+                          "y": curve.columns[1].name},
+                    source={"book": book.name, "sheet": curve.name,
+                            "x": curve.columns[0].name, "y": curve.columns[1].name})
+        self.new_graph(graph, folder=self.project.root.find_window(book.name))
 
     def refresh_all(self) -> None:
         for book in self.project.books():
@@ -1147,7 +1437,7 @@ class OriginMainWindow(QMainWindow):
     # ================================================================== edit commands
     def undo(self) -> None:
         v = self.active_view()
-        if isinstance(v, BookWindow):
+        if isinstance(v, (BookWindow, MatrixWindow)):
             v.undo_stack.undo()
             self.refresh_graphs()
         elif isinstance(v, OriginGraphWindow):
@@ -1157,7 +1447,7 @@ class OriginMainWindow(QMainWindow):
 
     def redo(self) -> None:
         v = self.active_view()
-        if isinstance(v, BookWindow):
+        if isinstance(v, (BookWindow, MatrixWindow)):
             v.undo_stack.redo()
             self.refresh_graphs()
         elif isinstance(v, OriginGraphWindow):
@@ -1169,6 +1459,8 @@ class OriginMainWindow(QMainWindow):
         v = self.active_view()
         if isinstance(v, BookWindow):
             v.copy(with_headers)
+        elif isinstance(v, MatrixWindow):
+            QApplication.clipboard().setText(v.copy_text())
         elif isinstance(v, OriginGraphWindow):
             v.copy_to_clipboard()
         elif isinstance(v, QPlainTextEdit):
@@ -1186,6 +1478,9 @@ class OriginMainWindow(QMainWindow):
         v = self.active_view()
         if isinstance(v, BookWindow):
             v.paste()
+        elif isinstance(v, MatrixWindow):
+            block = v.view().selected_block() if v.view() is not None else None
+            v.paste_text(QApplication.clipboard().text(), *(block[:2] if block else (0, 0)))
         elif isinstance(v, QPlainTextEdit):
             v.paste()
 
@@ -1499,8 +1794,14 @@ class OriginMainWindow(QMainWindow):
         menu.addSeparator()
         stats = menu.addMenu("Statistics")
         stats.addAction(self.act_stats_cols)
-        stats.addAction("Normality Test", self.normality)
+        stats.addAction("Frequency Counts...", lambda: self.stat_dialog("freq"))
+        stats.addAction("Normality Test...", lambda: self.stat_dialog("normality"))
         menu.addSeparator()
+        ws = bw.worksheet()
+        spark = menu.addAction("Sparklines", lambda: self.toggle_sparklines(
+            not (ws is not None and ws.sparklines)))
+        spark.setCheckable(True)
+        spark.setChecked(bool(ws is not None and ws.sparklines))
         menu.addAction(self.act_column_props)
         menu.exec(pos)
 
@@ -1520,22 +1821,52 @@ class OriginMainWindow(QMainWindow):
 
     # ================================================================== plotting
     def plot(self, kind: str) -> OriginGraphWindow | None:
-        """Plot the selected columns of the active worksheet in a new graph window."""
+        """Plot the selected columns of the active worksheet in a new graph window. A
+        selected block of cells (e.g. rows 3–10) plots only those rows."""
+        mw = self.active_matrix_window()
+        if mw is not None:   # the 2D Graphs toolbar also plots matrices
+            mkind = {"contour": "contour", "heatmap": "heatmap",
+                     "surface3d": "surface3d_colormap"}.get(kind)
+            if mkind is None:
+                self._warn(f"{PLOT_TYPES[kind][0]} needs worksheet columns; for a matrix use "
+                           "Contour, Heatmap or 3D plots.", "Plot")
+                return None
+            return self.plot_matrix(mkind)
         bw = self.active_book_window()
         ws = bw.worksheet() if bw is not None else None
         if ws is None:
             self._warn("Activate a workbook and select the columns to plot.")
             return None
         cols = bw.selected_columns()
+        rows = bw.selected_row_range()
         try:
-            graph = plot_columns(bw.book, ws, cols, kind, self.project.unique_name("Graph"))
+            graph = plot_columns(bw.book, ws, cols, kind, self.project.unique_name("Graph"),
+                                 rows=rows)
         except PlotError as exc:
             self._warn(str(exc), "Plot")
             return None
         folder = self.project.root.find_window(bw.book.name)
         gwin = self.new_graph(graph, folder=folder)
         self.message(f"Plot {PLOT_TYPES[kind][0]} of [{bw.book.name}]{ws.name}!"
-                     f"({', '.join(ws.columns[c].name for c in cols)}) → {graph.title}")
+                     f"({', '.join(ws.columns[c].name for c in cols)})"
+                     f"{rows_text(*(rows or (None, None)))} → {graph.title}")
+        return gwin
+
+    def plot_matrix(self, kind: str) -> OriginGraphWindow | None:
+        """Contour / heatmap / image / 3D surface of the active matrix sheet."""
+        mw = self.active_matrix_window()
+        ms = mw.sheet() if mw is not None else None
+        if ms is None:
+            self._warn("Activate a matrix window to plot it.")
+            return None
+        try:
+            graph = plot_matrix(mw.book, ms, kind, self.project.unique_name("Graph"))
+        except PlotError as exc:
+            self._warn(str(exc), "Plot")
+            return None
+        gwin = self.new_graph(graph, folder=self.project.root.find_window(mw.book.name))
+        self.message(f"Plot {MATRIX_PLOTS[kind][0]} of [{mw.book.name}]{ms.name} → "
+                     f"{graph.title}")
         return gwin
 
     def add_plot_active(self) -> None:
@@ -1550,12 +1881,13 @@ class OriginMainWindow(QMainWindow):
         values = dlg.values()
         if values:
             self.add_columns_to_graph(gwin, values["book"], values["sheet"], values["cols"],
-                                      values["kind"])
+                                      values["kind"], values.get("rows"))
 
     def add_columns_to_graph(self, gwin: OriginGraphWindow, book: Workbook, ws: Worksheet,
-                             cols: list[int], kind: str = "line_symbol") -> bool:
+                             cols: list[int], kind: str = "line_symbol",
+                             rows: tuple[int, int] | None = None) -> bool:
         try:
-            src = plot_columns(book, ws, cols, kind, gwin.graph.title)
+            src = plot_columns(book, ws, cols, kind, gwin.graph.title, rows=rows)
         except PlotError as exc:
             self._warn(str(exc), "Add Plot to Layer")
             return False
@@ -1576,6 +1908,7 @@ class OriginMainWindow(QMainWindow):
                 layer.x.title, layer.y.title = src.layers[0].x.title, src.layers[0].y.title
                 for axis in (layer.x, layer.y):
                     axis.min = axis.max = None
+            update_data_ranges(gwin.graph)
         gwin.mutate(fn)
         return True
 
@@ -1642,10 +1975,13 @@ class OriginMainWindow(QMainWindow):
             layer = gwin.active_layer()
             for p in layer.plots if layer is not None else []:
                 src = p.options.get("source") or {}
-                if src.get("book") in self.project.windows and src.get("y"):
+                if src.get("book") in self.project.windows and src.get("y") and \
+                        not src.get("matrix"):
+                    rows = tuple(src["rows"]) if src.get("rows") else None
                     choices.append(InputChoice(
-                        f"[{src['book']}]{src['sheet']}!{src['y']}  ({p.name})", src["book"],
-                        src["sheet"], src["y"], src.get("x"), p.id))
+                        f"[{src['book']}]{src['sheet']}!{src['y']}"
+                        f"{rows_text(*(rows or (None, None)))}  ({p.name})", src["book"],
+                        src["sheet"], src["y"], src.get("x"), p.id, rows))
             current = 0
             if gwin.selected[0] == "plot":
                 current = next((i for i, c in enumerate(choices)
@@ -1656,17 +1992,21 @@ class OriginMainWindow(QMainWindow):
         if ws is None:
             return [], 0, None
         sel = bw.selected_columns()
+        rows = bw.selected_row_range()
         cols = [i for i, c in enumerate(ws.columns) if c.designation in ("Y", "Z", "N")
                 and not c.is_text()]
         cols = [c for c in sel if c in cols] + [c for c in cols if c not in sel]
         for c in cols:
             x = ws.x_of(c)
             col = ws.columns[c]
+            r = rows if c in sel else None   # the selected row range applies to the selection
             choices.append(InputChoice(
                 f"[{bw.book.name}]{ws.name}!{col.name}" +
                 (f'"{col.long_name}"' if col.long_name else "") +
+                rows_text(*(r or (None, None))) +
                 (f"  vs  {ws.columns[x].name}" if x is not None else "  vs  row"),
-                bw.book.name, ws.name, col.name, ws.columns[x].name if x is not None else None))
+                bw.book.name, ws.name, col.name, ws.columns[x].name if x is not None else None,
+                None, r))
         return choices, 0, None
 
     def resolve(self, choice: InputChoice) -> an.XYData:
@@ -1676,7 +2016,7 @@ class OriginMainWindow(QMainWindow):
             raise an.AnalysisError(f"Sheet {choice.sheet} not found in {choice.book}.")
         y = ws.index_of(choice.ycol)
         x = ws.index_of(choice.xcol) if choice.xcol else None
-        return an.xy_data(book, ws, y, x, with_error=True)
+        return an.xy_data(book, ws, y, x, with_error=True, rows=choice.rows)
 
     def _need_inputs(self):
         choices, current, gwin = self.analysis_inputs()
@@ -1720,10 +2060,12 @@ class OriginMainWindow(QMainWindow):
                 conf_band=params.get("conf_band", True),
                 pred_band=params.get("pred_band", False),
                 residual_plot=params.get("residual_plot", True),
-                output_fitted=params.get("output_fitted", False)))
+                output_fitted=params.get("output_fitted", False),
+                mode=params.get("mode", "manual")))
         except (an.AnalysisError, ValueError, KeyError) as exc:
             self._warn(f"Fit failed: {exc}", "Fitting")
             return None
+        recalc.stamp(self.project, outcome.report)
         self.result(outcome.log)
         if gwin is not None and params.get("to_graph", True):
             self._add_fit_to_graph(gwin, outcome, choice)
@@ -1940,115 +2282,360 @@ class OriginMainWindow(QMainWindow):
                              "x": curve.columns[0].name, "y": curve.columns[1].name}))
 
     # ================================================================== statistics
-    def _stat_target(self, minimum: int = 1):
+    def selection_ranges(self) -> list[str]:
+        """The selected columns of the active worksheet as ranges (with the selected row
+        range), e.g. ``["[Book1]Sheet1!B[3:10]", "[Book1]Sheet1!C[3:10]"]``; the Y columns
+        when nothing is selected."""
         bw = self.active_book_window()
         ws = bw.worksheet() if bw is not None else None
         if ws is None:
-            self._warn("Activate a worksheet and select the columns.")
-            return None
+            return []
         cols = bw.selected_columns() or [i for i, c in enumerate(ws.columns)
                                          if c.designation == "Y"]
-        if len(cols) < minimum:
-            self._warn(f"Select at least {minimum} column(s).")
+        rows = bw.selected_row_range()
+        return [range_text(bw.book.name, ws.name, ws.columns[c].name,
+                           *(rows or (None, None))) for c in cols]
+
+    def range_sources(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        """Every worksheet column for the dialogs' range menus: (sheet, [(range, label)])."""
+        out = []
+        for book in self.project.books():
+            for s in book.sheets:
+                if isinstance(s, Worksheet):
+                    out.append((f"[{book.name}]{s.name}",
+                                [(range_text(book.name, s.name, c.name),
+                                  s.label(i) + (f"  {c.long_name}" if c.long_name else ""))
+                                 for i, c in enumerate(s.columns)]))
+        return out
+
+    def stat_dialog(self, key: str, settings: dict | None = None):
+        """Open the Statistics dialog ``key`` and run it on OK."""
+        dlg = sd.make_dialog(key, self, settings, self.selection_ranges())
+        if not dlg.exec():
             return None
-        return bw, ws, cols
+        return self.run_stat(key, dlg.values())
 
-    def _report_done(self, bw: BookWindow, report, text: str) -> None:
-        self.result(text)
-        bw.show_sheet(report)
-
-    def statistics_on_columns(self) -> None:
-        t = self._stat_target()
-        if t is None:
-            return
-        bw, ws, cols = t
+    def run_stat(self, key: str, settings: dict):
+        """Run a Statistics analysis with dialog ``settings``; returns the report (or the
+        output worksheet / new column indices) or None after an error."""
+        books = self.project.data_windows()
+        mode = settings.get("mode", "manual")
+        values = {k: v for k, v in settings.items() if k != "mode"}
         try:
-            report, text = bw.change("Statistics on Columns", lambda: an.statistics_on_columns(
-                bw.book, ws, cols), recalc=False)
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
-            return
-        self._report_done(bw, report, text)
+            if key == "rows":
+                first = st.read_ranges(books, values.get("ranges", []))[0]
+                _, added, text = self._run_in_book(first.book, "Statistics on Rows",
+                                                   lambda: st.stats_on_rows(books, values))
+                self.result(text)
+                return added
+            if key == "freq":
+                first = st.read_range(books, values.get("range", ""))
+                out, text = self._run_in_book(first.book, "Frequency Counts",
+                                              lambda: st.frequency_counts(books, values))
+                self.result(text)
+                bw = self.book_window(first.book)
+                if bw is not None:
+                    bw.show_sheet(out)
+                return out
+            first = st.read_range(books, (st.range_strings(values) or [""])[0])
+            report, text = self._run_in_book(first.book, sd.spec(key, [])[0],
+                                             lambda: st.run(key, books, values, mode=mode))
+        except (st.StatError, ValueError) as exc:
+            self._warn(str(exc), "Statistics")
+            return None
+        recalc.stamp(self.project, report)
+        self.result(text)
+        bw = self.book_window(first.book)
+        if bw is not None:
+            bw.refresh()
+            bw.show_sheet(report)
+        return report
+
+    # direct commands (toolbar / context menus / scripts) with the default settings
+    def statistics_on_columns(self) -> None:
+        self.run_stat("desc", {"ranges": self.selection_ranges()})
 
     def statistics_on_rows(self) -> None:
-        t = self._stat_target(2)
-        if t is None:
-            return
-        bw, ws, cols = t
-        try:
-            bw.change("Statistics on Rows", lambda: an.statistics_on_rows(ws, cols))
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
+        self.run_stat("rows", {"ranges": self.selection_ranges()})
 
     def correlation(self) -> None:
-        t = self._stat_target(2)
-        if t is None:
-            return
-        bw, ws, cols = t
-        try:
-            report, text = bw.change("Correlation", lambda: an.correlation(bw.book, ws, cols),
-                                     recalc=False)
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
-            return
-        self._report_done(bw, report, text)
+        self.run_stat("correlation", {"ranges": self.selection_ranges()})
 
     def normality(self) -> None:
-        t = self._stat_target()
-        if t is None:
-            return
-        bw, ws, cols = t
-        try:
-            report, text = bw.change("Normality Test", lambda: an.normality_test(
-                bw.book, ws, cols), recalc=False)
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
-            return
-        self._report_done(bw, report, text)
+        self.run_stat("normality", {"ranges": self.selection_ranges()})
 
-    def one_sample_t_dialog(self) -> None:
-        t = self._stat_target()
-        if t is None:
+    # ================================================================== sparklines
+    def toggle_sparklines(self, on: bool | None = None) -> None:
+        bw = self.active_book_window()
+        if bw is None or bw.worksheet() is None:
             return
-        bw, ws, cols = t
-        mu, ok = QInputDialog.getDouble(self, "One-Sample t-Test",
-                                        f"Test mean for {ws.columns[cols[0]].title}:", 0.0,
-                                        -1e12, 1e12, 6)
-        if not ok:
-            return
-        try:
-            report, text = bw.change("One-Sample t-Test", lambda: an.one_sample_t(
-                bw.book, ws, cols[0], mu), recalc=False)
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
-            return
-        self._report_done(bw, report, text)
+        on = self.act_sparklines.isChecked() if on is None else on
+        bw.set_sparklines(on)
+        self.act_sparklines.setChecked(on)
 
-    def two_sample_t(self, paired: bool) -> None:
-        t = self._stat_target(2)
-        if t is None:
+    # ================================================================== matrices
+    def matrix_view_changed(self, mw: MatrixWindow) -> None:
+        if mw is not self.active_matrix_window():
             return
-        bw, ws, cols = t
-        try:
-            report, text = bw.change("t-Test", lambda: an.two_sample_t(
-                bw.book, ws, cols[0], cols[1], paired), recalc=False)
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
-            return
-        self._report_done(bw, report, text)
+        self.book_tree.clear()
+        book = mw.book
+        self.om_dock.setWindowTitle("Object Manager - " + book.name)
+        root = QTreeWidgetItem([book.title])
+        root.setIcon(0, icon("e_matrix"))
+        self.book_tree.addTopLevelItem(root)
+        for si, ms in enumerate(book.sheets):
+            item = QTreeWidgetItem([f"{ms.name}  ({ms.n_rows}×{ms.n_cols})"])
+            item.setIcon(0, icon("e_matrix"))
+            item.setData(0, Qt.ItemDataRole.UserRole, (si, -1))
+            root.addChild(item)
+        root.setExpanded(True)
+        ms = mw.sheet()
+        if ms is not None:
+            self.range_label.setText(f"[{book.name}]{ms.name}  {ms.n_rows}×{ms.n_cols}  "
+                                     f"X {ms.x1:g}…{ms.x2:g}  Y {ms.y1:g}…{ms.y2:g}")
 
-    def one_way_anova(self) -> None:
-        t = self._stat_target(2)
+    def matrix_menu(self, mw: MatrixWindow, pos) -> None:
+        menu = QMenu(self)
+        menu.addActions([self.act_copy, self.act_paste])
+        menu.addSeparator()
+        menu.addActions([self.act_m_values, self.act_m_dims])
+        menu.addSeparator()
+        plot = menu.addMenu(icon("g_contour"), "Plot")
+        for k in MATRIX_PLOTS:
+            plot.addAction(self._matrix_plot_action(k))
+        menu.addSeparator()
+        menu.addActions([self.act_image_mode, self.act_show_xy])
+        menu.exec(pos)
+
+    def _matrix_target(self) -> tuple[MatrixWindow, MatrixSheet] | None:
+        mw = self.active_matrix_window()
+        ms = mw.sheet() if mw is not None else None
+        if ms is None:
+            self._warn("Activate a matrix window first.")
+            return None
+        return mw, ms
+
+    def set_matrix_values(self, mw: MatrixWindow, formula: str) -> None:
+        """Set Matrix Values (raises ValueError with a message on errors)."""
+        ms = mw.sheet()
+        values = mx.evaluate(formula, ms.data.shape, (ms.x1, ms.x2, ms.y1, ms.y2))
+
+        def fn():
+            ms.data = values
+            ms.formula = formula
+        mw.change("Set Matrix Values", fn)
+        self.message(f"[{mw.book.name}]{ms.name}: Mat = {formula}")
+
+    def matrix_values_dialog(self) -> None:
+        t = self._matrix_target()
+        if t is not None:
+            mw, ms = t
+            MatrixValuesDialog(ms, lambda f: self.set_matrix_values(mw, f), self).exec()
+
+    def matrix_dimensions_dialog(self) -> None:
+        t = self._matrix_target()
         if t is None:
             return
-        bw, ws, cols = t
-        try:
-            report, text = bw.change("One-Way ANOVA", lambda: an.one_way_anova(bw.book, ws, cols),
-                                     recalc=False)
-        except an.AnalysisError as exc:
-            self._warn(str(exc))
+        mw, ms = t
+        dlg = MatrixDimensionsDialog(ms, self)
+        if dlg.exec():
+            self.set_matrix_dimensions(mw, dlg.values())
+
+    def set_matrix_dimensions(self, mw: MatrixWindow, v: dict) -> None:
+        ms = mw.sheet()
+
+        def fn():
+            if (v["rows"], v["cols"]) != (ms.n_rows, ms.n_cols):
+                ms.set_dimensions(v["rows"], v["cols"])
+            for k in ("x1", "x2", "y1", "y2", "x_name", "x_units", "y_name", "y_units",
+                      "long_name", "units"):
+                if k in v:
+                    setattr(ms, k, v[k])
+        mw.change("Set Dimensions/Labels", fn)
+
+    def matrix_geometry(self, op: str) -> None:
+        t = self._matrix_target()
+        if t is None:
             return
-        self._report_done(bw, report, text)
+        mw, ms = t
+
+        def fn():
+            mapping = (ms.x1, ms.x2, ms.y1, ms.y2)
+            if op == "transpose":
+                data, mapping = mx.transpose(ms.data, mapping)
+                ms.x_name, ms.y_name = ms.y_name, ms.x_name
+                ms.x_units, ms.y_units = ms.y_units, ms.x_units
+            elif op in ("flip_h", "flip_v"):
+                data, mapping = mx.flip(ms.data, mapping,
+                                        "horizontal" if op == "flip_h" else "vertical")
+            else:
+                data, mapping = mx.rotate(ms.data, mapping, {"rot90": 90, "rot270": 270,
+                                                             "rot180": 180}[op])
+                if op != "rot180":
+                    ms.x_name, ms.y_name = ms.y_name, ms.x_name
+                    ms.x_units, ms.y_units = ms.y_units, ms.x_units
+            ms.data = data
+            ms.x1, ms.x2, ms.y1, ms.y2 = mapping
+        mw.change({"transpose": "Transpose", "flip_h": "Flip Horizontal",
+                   "flip_v": "Flip Vertical"}.get(op, "Rotate"), fn)
+
+    def matrix_resample_dialog(self, op: str) -> None:
+        t = self._matrix_target()
+        if t is None:
+            return
+        dlg = ParamDialog("Expand" if op == "expand" else "Shrink", [
+            ("cols", "Column Factor:", "int", 2, (1, 100)),
+            ("rows", "Row Factor:", "int", 2, (1, 100))], self,
+            "Expand interpolates (bilinear) between the cells; Shrink averages blocks of "
+            "cells." if op == "expand" else "Shrink averages blocks of row × column cells.")
+        if dlg.exec():
+            v = dlg.values()
+            self.matrix_resample(t[0], op, v["cols"], v["rows"])
+
+    def matrix_resample(self, mw: MatrixWindow, op: str, cf: int, rf: int) -> None:
+        ms = mw.sheet()
+
+        def fn():
+            if op == "expand":
+                ms.data = mx.expand(ms.data, cf, rf)
+            else:
+                shape = ms.data.shape
+                ms.data = mx.shrink(ms.data, cf, rf)
+                ms.x1, ms.x2, ms.y1, ms.y2 = mx.shrink_mapping(
+                    (ms.x1, ms.x2, ms.y1, ms.y2), shape, ms.data.shape, cf, rf)
+        mw.change("Expand" if op == "expand" else "Shrink", fn)
+
+    def matrix_add_sheet(self) -> None:
+        t = self._matrix_target()
+        if t is not None:
+            t[0].add_sheet()
+
+    def toggle_image_mode(self) -> None:
+        mw = self.active_matrix_window()
+        if mw is not None:
+            mw.set_image_mode(self.act_image_mode.isChecked())
+
+    def toggle_show_xy(self) -> None:
+        mw = self.active_matrix_window()
+        if mw is not None:
+            mw.set_show_xy(self.act_show_xy.isChecked())
+
+    def matrix_to_worksheet(self) -> BookWindow | None:
+        """Matrix > Convert to Worksheet: X, Y, Z columns in a new workbook."""
+        t = self._matrix_target()
+        if t is None:
+            return None
+        mw, ms = t
+        x, y, z = mx.to_xyz(ms.data, (ms.x1, ms.x2, ms.y1, ms.y2), drop_missing=True)
+        book = Workbook.new(self.project.unique_name("Book"), 0, max(len(z), 1))
+        ws = book.sheets[0]
+        for title, desig, vals in ((ms.x_title, "X", x), (ms.y_title, "Y", y),
+                                   (ms.z_title, "Z", z)):
+            c = ws.add_column(desig)
+            c.long_name = title
+            ws.set_column_values(len(ws.columns) - 1, list(vals))
+        book.long_name = f"{mw.book.name} {ms.name} (XYZ)"
+        bw = self.new_book(book, folder=self.project.root.find_window(mw.book.name))
+        self.message(f"Converted [{mw.book.name}]{ms.name} to XYZ columns in {book.name}")
+        return bw
+
+    def convert_to_matrix_direct(self, values: dict | None = None) -> MatrixWindow | None:
+        """Worksheet > Convert to Matrix > Direct: worksheet rows → matrix rows, selected
+        columns → matrix columns."""
+        bw = self.active_book_window()
+        ws = bw.worksheet() if bw is not None else None
+        if ws is None:
+            self._warn("Activate a worksheet and select the columns to convert.")
+            return None
+        cols = [c for c in bw.selected_columns() if not ws.columns[c].is_text()] or \
+            [i for i, c in enumerate(ws.columns) if not c.is_text()]
+        if values is None:
+            dlg = ParamDialog("Convert to Matrix - Direct", [
+                ("first_col_y", "First column contains Y values", "bool",
+                 ws.columns[cols[0]].designation == "X" if cols else False),
+                ("long_names_x", "Long Names contain X values", "bool", False)], self,
+                "Each selected column becomes a matrix column; each worksheet row a matrix "
+                "row.")
+            if not dlg.exec():
+                return None
+            values = dlg.values()
+        rows = bw.selected_row_range()
+        lo, hi = (rows[0] - 1, rows[1]) if rows else (0, ws.data_rows())
+        yv = None
+        if values.get("first_col_y") and len(cols) > 1:
+            yv = ws.columns[cols[0]].numeric(hi)[lo:hi]
+            cols = cols[1:]
+        xv = mx.number_labels([ws.columns[c].long_name for c in cols]) \
+            if values.get("long_names_x") else None
+        try:
+            data, mapping = mx.from_columns([ws.columns[c].numeric(hi)[lo:hi] for c in cols],
+                                            yv, xv)
+        except mx.MatrixError as exc:
+            self._warn(str(exc))
+            return None
+        return self._new_matrix_from(data, mapping, f"{bw.book.name} {ws.name} (direct)",
+                                     ws, cols, bw.book)
+
+    def convert_to_matrix_xyz(self, values: dict | None = None) -> MatrixWindow | None:
+        """Worksheet > Convert to Matrix > XYZ Gridding (regular data pivoted, scattered data
+        interpolated)."""
+        bw = self.active_book_window()
+        ws = bw.worksheet() if bw is not None else None
+        if ws is None:
+            self._warn("Activate a worksheet with X, Y and Z columns.")
+            return None
+        sel = bw.selected_columns()
+        z = next((c for c in sel if ws.columns[c].designation == "Z"), None)
+        if z is None:
+            z = next((i for i, c in enumerate(ws.columns) if c.designation == "Z"), None)
+        if z is None and len(sel) >= 3:
+            z = sel[2]
+        if z is None:
+            self._warn("Select X, Y and Z columns (set the Z column as Z).")
+            return None
+        y = ws.y_of(z) if ws.y_of(z) is not None else (sel[1] if len(sel) >= 3 else None)
+        x = ws.x_of(y) if y is not None else None
+        if x is None or y is None:
+            self._warn("No X and Y columns to the left of the Z column.")
+            return None
+        if values is None:
+            dlg = ParamDialog("Convert to Matrix - XYZ Gridding", [
+                ("method", "Gridding Method:", "choice", "auto", mx.GRIDDING),
+                ("cols", "Columns (for scattered data):", "int", 20, (2, 2000)),
+                ("rows", "Rows (for scattered data):", "int", 20, (2, 2000))], self,
+                f"X = {ws.columns[x].name}, Y = {ws.columns[y].name}, Z = "
+                f"{ws.columns[z].name}. Data on a regular X×Y grid are converted directly.")
+            if not dlg.exec():
+                return None
+            values = dlg.values()
+        rows = bw.selected_row_range()
+        lo, hi = (rows[0] - 1, rows[1]) if rows else (0, ws.data_rows())
+        try:
+            data, mapping, regular = mx.from_xyz(
+                ws.columns[x].numeric(hi)[lo:hi], ws.columns[y].numeric(hi)[lo:hi],
+                ws.columns[z].numeric(hi)[lo:hi], values.get("cols", 20),
+                values.get("rows", 20), values.get("method", "auto"))
+        except mx.MatrixError as exc:
+            self._warn(str(exc))
+            return None
+        mwin = self._new_matrix_from(data, mapping, f"{bw.book.name} {ws.name} (XYZ)", ws,
+                                     [z], bw.book, (ws.columns[x], ws.columns[y]))
+        self.message(f"XYZ Gridding ({'regular' if regular else mx.GRIDDING.get(values.get('method', 'auto'))}) "
+                     f"→ {mwin.book.name}: {data.shape[0]}×{data.shape[1]}")
+        return mwin
+
+    def _new_matrix_from(self, data, mapping, long_name: str, ws: Worksheet, cols, src_book,
+                         xy_cols=None) -> MatrixWindow:
+        mb = MatrixBook(self.project.unique_name("MBook"), long_name,
+                        [MatrixSheet("MSheet1", np.asarray(data, float), *mapping)])
+        ms = mb.sheets[0]
+        zc = ws.columns[cols[0]] if len(cols) == 1 else None
+        if zc is not None:
+            ms.long_name, ms.units = zc.long_name or zc.name, zc.units
+        if xy_cols is not None:
+            ms.x_name, ms.x_units = xy_cols[0].long_name or xy_cols[0].name, xy_cols[0].units
+            ms.y_name, ms.y_units = xy_cols[1].long_name or xy_cols[1].name, xy_cols[1].units
+        return self.new_matrix(mb, folder=self.project.root.find_window(src_book.name))
 
     # ================================================================== import / export
     def _start_dir(self) -> str:
@@ -2277,12 +2864,14 @@ class OriginMainWindow(QMainWindow):
         self.project = project
         view = view or {}
         self.explorer.set_project(project)
-        for folder in project.root.walk():
-            for name in folder.windows:
+        for folder in list(project.root.walk()):
+            for name in list(folder.windows):
                 obj = project.windows[name]
                 hidden = name in project.hidden
                 if isinstance(obj, Workbook):
                     self.new_book(obj, show=not hidden, folder=folder)
+                elif isinstance(obj, MatrixBook):
+                    self.new_matrix(obj, show=not hidden, folder=folder)
                 elif isinstance(obj, GraphDoc):
                     self.new_graph(obj.graph, show=not hidden, folder=folder, name=name)
                 else:
@@ -2338,8 +2927,20 @@ class OriginMainWindow(QMainWindow):
             "bottom. Double-click an axis, plot or legend in the graph to edit it.\n"
             "5. Analysis > Fitting > Linear Fit (from the graph, the fitted line is added to "
             "it; the report sheet FitLinear1 and the curve data go into the workbook).\n"
-            "6. Statistics > Descriptive Statistics > Statistics on Columns.\n"
-            "7. File > Save Project (.rsop) keeps workbooks, graphs, notes and folders.\n\n"
+            "6. Statistics > Descriptive Statistics > Statistics on Columns… (dialogs for "
+            "normality, correlation, t-tests, ANOVA with Tukey/Bonferroni…, nonparametric "
+            "tests). Reports are collapsible; their lock button sets Recalculate Auto / "
+            "Manual, so a report follows its source data.\n"
+            "7. Select a block of cells (e.g. rows 3–10) before plotting or fitting to use "
+            "only those rows: the plot keeps the range, e.g. [Book1]Sheet1!B[3:10].\n"
+            "8. View > Sparklines shows a tiny plot of each column in the header.\n"
+            "9. File > New > Matrix, Matrix > Set Values (e.g. sin(x)*cos(y)), then Plot > "
+            "Contour / 3D; Worksheet > Convert to Matrix turns XYZ columns into a matrix. "
+            "Drag a 3D graph to rotate it.\n"
+            "10. Double-click a text or axis title in a graph to edit it; the Format toolbar "
+            "sets font, size, bold, italic, underline, super/subscript and Greek.\n"
+            "11. File > Save Project (.rsop) keeps workbooks, matrices, graphs, notes and "
+            "folders (drag windows between folders in the Project Explorer).\n\n"
             "Shortcuts: Ctrl+D add column, Ctrl+Q set column values, Ctrl+R rescale, "
             "Ctrl+G export graph, Ctrl+J copy page, Ctrl+K import ASCII, F2 rename, "
             "Alt+1 Project Explorer, Alt+2 Results Log, Alt+6 Messages Log, "

@@ -202,6 +202,57 @@ _SVG = {
                 f'<path d="M8 8h8M8 11.5h8M8 15h5" stroke="{K}" stroke-width="1.2"/>'),
     "e_column": (f'<rect x="8" y="3" width="8" height="18" fill="#fff" stroke="{K}"/>'
                  f'<rect x="8" y="3" width="8" height="4" fill="{B}"/>'),
+    # matrix books: a grid with a coloured block (own design)
+    "e_matrix": (f'<rect x="3" y="4" width="18" height="16" fill="#fff" stroke="{K}" '
+                 f'stroke-width="1.3"/><rect x="3" y="4" width="18" height="4" fill="#7a3fbf"/>'
+                 + ''.join(f'<rect x="{4.2 + 4.2 * (k % 4)}" y="{9.2 + 3.6 * (k // 4)}" '
+                           f'width="3.6" height="3" fill="{c}"/>' for k, c in enumerate(
+                               ["#3b4cc0", "#6f92f3", "#f7b89c", "#d62728", "#6f92f3",
+                                "#dddcdc", "#f49a7b", "#f7b89c", "#aac7fd", "#f49a7b",
+                                "#dddcdc", "#6f92f3"]))),
+    "o_new_matrix": (f'<rect x="3" y="4" width="18" height="16" fill="#fff" stroke="{K}" '
+                     f'stroke-width="1.3"/><rect x="3" y="4" width="18" height="4" '
+                     f'fill="#7a3fbf"/><path d="M9 8v12M15 8v12M3 12h18M3 16h18" '
+                     f'stroke="#9a9a9a" stroke-width="0.8"/><circle cx="18" cy="18" r="4.3" '
+                     f'fill="{G}"/><path d="M18 15.6v4.8M15.6 18h4.8" stroke="#fff" '
+                     f'stroke-width="1.6"/>'),
+    "m_image": ''.join(f'<rect x="{3 + 3 * (k % 6)}" y="{3 + 3 * (k // 6)}" width="3" '
+                       f'height="3" fill="{c}"/>' for k, c in enumerate(
+                           (["#3b4cc0", "#6f92f3", "#aac7fd", "#f7b89c", "#f49a7b", "#d62728"]
+                            * 6)[::-1][:36])),
+    "m_transpose": (f'<rect x="3" y="3" width="11" height="11" fill="#fff" stroke="{K}"/>'
+                    f'<path d="M3 3l11 11" stroke="{B}" stroke-width="1.4"/><path d="M15 7h4v'
+                    f'12H7v-4" fill="none" stroke="{R}" stroke-width="1.6"/>'),
+    # report lock (recalculation mode)
+    "lock_auto": (f'<rect x="5" y="10" width="14" height="11" rx="1.5" fill="#2e9e3a" '
+                  f'stroke="#1b6a24"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" '
+                  f'stroke="#1b6a24" stroke-width="2"/>'),
+    "lock_manual": (f'<rect x="5" y="10" width="14" height="11" rx="1.5" fill="#f2c12e" '
+                    f'stroke="#a8800c"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" '
+                    f'stroke="#a8800c" stroke-width="2"/>'),
+    "lock_dirty": (f'<rect x="5" y="10" width="14" height="11" rx="1.5" fill="#f2c12e" '
+                   f'stroke="#a8800c"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" '
+                   f'stroke="#a8800c" stroke-width="2"/><path d="M12 12.5v4.5" stroke="{R}" '
+                   f'stroke-width="2.2"/><circle cx="12" cy="19" r="1.1" fill="{R}"/>'),
+    "lock_none": (f'<rect x="5" y="10" width="14" height="11" rx="1.5" fill="#bdbdbd" '
+                  f'stroke="#7a7a7a"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" '
+                  f'stroke="#7a7a7a" stroke-width="2"/>'),
+    # Format (text) toolbar
+    "f_bold": ('<text x="12" y="17.5" font-family="Arial" font-size="16" font-weight="bold" '
+               f'text-anchor="middle" fill="{K}">B</text>'),
+    "f_italic": ('<text x="12" y="17.5" font-family="Times New Roman" font-size="17" '
+                 f'font-style="italic" text-anchor="middle" fill="{K}">I</text>'),
+    "f_underline": ('<text x="12" y="16" font-family="Arial" font-size="15" '
+                    f'text-anchor="middle" fill="{K}">U</text><path d="M6.5 19.5h11" '
+                    f'stroke="{K}" stroke-width="1.6"/>'),
+    "f_sup": ('<text x="9" y="18.5" font-family="Arial" font-size="14" text-anchor="middle" '
+              f'fill="{K}">x</text><text x="17.5" y="10.5" font-family="Arial" font-size="9" '
+              f'text-anchor="middle" fill="{B}">2</text>'),
+    "f_sub": ('<text x="9" y="15.5" font-family="Arial" font-size="14" text-anchor="middle" '
+              f'fill="{K}">x</text><text x="17.5" y="20.5" font-family="Arial" font-size="9" '
+              f'text-anchor="middle" fill="{B}">2</text>'),
+    "f_greek": ('<text x="12" y="17.5" font-family="Times New Roman" font-size="17" '
+                f'font-style="italic" text-anchor="middle" fill="{K}">α</text>'),
 }
 
 for _name, _body in _SVG.items():

@@ -139,7 +139,7 @@ def test_linear_fit_report_matches_numpy():
     report = book.sheet("FitLinear1")
     assert isinstance(report, ReportSheet)
     titles = [t["title"] for t in report.tables()]
-    assert titles[:4] == ["Notes", "Parameters", "Statistics", "ANOVA"]
+    assert titles[:5] == ["Notes", "Input Data", "Parameters", "Statistics", "ANOVA"]
     params = report.table("Parameters")
     assert params["rows"][1][1] == "Slope" and float(params["rows"][1][2]) == \
         pytest.approx(slope, rel=1e-5)

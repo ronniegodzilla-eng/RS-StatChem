@@ -18,13 +18,28 @@ def is_regular(x: np.ndarray, y: np.ndarray) -> bool:
     return len(pairs) == len(x)
 
 
-def xyz_grid(x, y, z, method: str = "auto", n: int = 80, fill_outside: bool = False):
+def xyz_grid(x, y, z, method: str = "auto", n: int = 80, fill_outside: bool = False,
+             nx: int | None = None, ny: int | None = None):
     """Return ``(X, Y, Z, regular)`` meshes; ``Z`` may contain NaN outside the convex hull.
 
     ``method``: "auto" (pivot if regular, else linear), "linear", "cubic", "nearest".
+    ``nx`` / ``ny`` set the number of grid columns / rows for interpolated data (default
+    ``n`` each).
     """
     x, y, z = (np.asarray(a, dtype=float) for a in (x, y, z))
-    ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    if np.isfinite(z).sum() < 3:
+        raise ValueError("Need at least 3 complete (X, Y, Z) points.")
+    has_xy = np.isfinite(x) & np.isfinite(y)
+    if method == "auto" and not np.isfinite(z[has_xy]).all() and \
+            is_regular(x[has_xy], y[has_xy]):
+        # a regular grid with missing Z (e.g. a matrix with empty cells): keep the holes
+        x, y, z = x[has_xy], y[has_xy], z[has_xy]
+        ux, uy = np.unique(x), np.unique(y)
+        Z = np.full((len(uy), len(ux)), np.nan)
+        Z[np.searchsorted(uy, y), np.searchsorted(ux, x)] = z
+        X, Y = np.meshgrid(ux, uy)
+        return X, Y, Z, True
+    ok = has_xy & np.isfinite(z)
     x, y, z = x[ok], y[ok], z[ok]
     if len(x) < 3:
         raise ValueError("Need at least 3 complete (X, Y, Z) points.")
@@ -37,8 +52,8 @@ def xyz_grid(x, y, z, method: str = "auto", n: int = 80, fill_outside: bool = Fa
     if np.ptp(x) == 0 or np.ptp(y) == 0:
         raise ValueError("X and Y must both vary to build a surface.")
     kind = "linear" if method == "auto" else method
-    xi = np.linspace(x.min(), x.max(), n)
-    yi = np.linspace(y.min(), y.max(), n)
+    xi = np.linspace(x.min(), x.max(), max(2, int(nx or n)))
+    yi = np.linspace(y.min(), y.max(), max(2, int(ny or n)))
     X, Y = np.meshgrid(xi, yi)
     try:
         Z = griddata((x, y), z, (X, Y), method=kind)
