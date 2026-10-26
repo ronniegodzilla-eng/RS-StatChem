@@ -46,7 +46,7 @@ class _TextEditor(QLineEdit):
         super().focusOutEvent(event)
         # the Format toolbar takes the focus while it is used: commit only when the focus
         # went somewhere else
-        QTimer.singleShot(150, self.gwin.commit_if_unfocused)
+        QTimer.singleShot(150, self, self.gwin.commit_if_unfocused)   # dies with the editor
 
 
 class OriginGraphWindow(gw.GraphWindow):
@@ -87,6 +87,15 @@ class OriginGraphWindow(gw.GraphWindow):
             if ref:
                 return f"{text}  {ref}"
         return f"{text}  [{p.type.replace('_', ' + ')}]"
+
+    def rebuild_tree(self) -> None:
+        super().rebuild_tree()
+        for item in self._iter_items():   # the full data reference as a tooltip
+            ref = item.data(0, gw.REF_ROLE)
+            if ref and ref[0] == "plot":
+                p = self.resolve(ref)
+                if p is not None and p.options.get("data_range"):
+                    item.setToolTip(0, p.options["data_range"])
 
     # ------------------------------------------------------------------ in-place text
     def _artist_rect(self, ref: tuple):

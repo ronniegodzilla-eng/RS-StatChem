@@ -648,6 +648,16 @@ class OriginMainWindow(QMainWindow):
                 lambda: apply_theme(gwin.graph, ORIGIN_THEME), rebuild_tree=False))
             fm.addSeparator()
             fm.addAction("Save as &Template...", gwin.save_template)
+            if any(layer.kind == "3d" for layer in gwin.graph.layers):
+                fm.addSeparator()
+                rot = fm.addMenu("&Rotate 3D")
+                rot.addAction("Azimuth +15°", lambda: gwin.rotate_3d(15, 0))
+                rot.addAction("Azimuth −15°", lambda: gwin.rotate_3d(-15, 0))
+                rot.addAction("Elevation +10°", lambda: gwin.rotate_3d(0, 10))
+                rot.addAction("Elevation −10°", lambda: gwin.rotate_3d(0, -10))
+            return
+        if self.active_matrix_window() is not None:
+            fm.addActions([self.act_m_dims, self.act_image_mode, self.act_show_xy])
             return
         fm.addAction(self.act_column_props)
         fm.addAction("&Worksheet Rows...", self.set_rows_dialog)
@@ -854,8 +864,13 @@ class OriginMainWindow(QMainWindow):
         return sub
 
     def _register(self, obj, folder: Folder | None = None) -> None:
-        if obj.name not in self.project.windows:
-            self.project.add(obj, folder or self.explorer.current or self.project.root)
+        # a new object whose name is taken is renamed (Book1 → Book2) by Project.add; objects
+        # of the project itself (opening a project) are already registered
+        existing = self.project.windows.get(obj.name)
+        if existing is obj or (isinstance(existing, GraphDoc) and isinstance(obj, GraphDoc)
+                               and existing.graph is obj.graph):
+            return
+        self.project.add(obj, folder or self.explorer.current or self.project.root)
 
     def default_rows(self) -> int:
         try:
@@ -1249,6 +1264,10 @@ class OriginMainWindow(QMainWindow):
 
     def _book_tree_clicked(self, item, _col) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole)
+        mw = self.active_matrix_window()
+        if mw is not None and data:
+            mw.tabs.setCurrentIndex(data[0])
+            return
         bw = self.active_book_window()
         if not data or bw is None:
             return
@@ -2845,8 +2864,8 @@ class OriginMainWindow(QMainWindow):
         self.project = project
         view = view or {}
         self.explorer.set_project(project)
-        for folder in project.root.walk():
-            for name in folder.windows:
+        for folder in list(project.root.walk()):
+            for name in list(folder.windows):
                 obj = project.windows[name]
                 hidden = name in project.hidden
                 if isinstance(obj, Workbook):
@@ -2908,8 +2927,20 @@ class OriginMainWindow(QMainWindow):
             "bottom. Double-click an axis, plot or legend in the graph to edit it.\n"
             "5. Analysis > Fitting > Linear Fit (from the graph, the fitted line is added to "
             "it; the report sheet FitLinear1 and the curve data go into the workbook).\n"
-            "6. Statistics > Descriptive Statistics > Statistics on Columns.\n"
-            "7. File > Save Project (.rsop) keeps workbooks, graphs, notes and folders.\n\n"
+            "6. Statistics > Descriptive Statistics > Statistics on Columns… (dialogs for "
+            "normality, correlation, t-tests, ANOVA with Tukey/Bonferroni…, nonparametric "
+            "tests). Reports are collapsible; their lock button sets Recalculate Auto / "
+            "Manual, so a report follows its source data.\n"
+            "7. Select a block of cells (e.g. rows 3–10) before plotting or fitting to use "
+            "only those rows: the plot keeps the range, e.g. [Book1]Sheet1!B[3:10].\n"
+            "8. View > Sparklines shows a tiny plot of each column in the header.\n"
+            "9. File > New > Matrix, Matrix > Set Values (e.g. sin(x)*cos(y)), then Plot > "
+            "Contour / 3D; Worksheet > Convert to Matrix turns XYZ columns into a matrix. "
+            "Drag a 3D graph to rotate it.\n"
+            "10. Double-click a text or axis title in a graph to edit it; the Format toolbar "
+            "sets font, size, bold, italic, underline, super/subscript and Greek.\n"
+            "11. File > Save Project (.rsop) keeps workbooks, matrices, graphs, notes and "
+            "folders (drag windows between folders in the Project Explorer).\n\n"
             "Shortcuts: Ctrl+D add column, Ctrl+Q set column values, Ctrl+R rescale, "
             "Ctrl+G export graph, Ctrl+J copy page, Ctrl+K import ASCII, F2 rename, "
             "Alt+1 Project Explorer, Alt+2 Results Log, Alt+6 Messages Log, "

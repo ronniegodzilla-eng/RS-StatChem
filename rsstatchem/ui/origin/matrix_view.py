@@ -66,7 +66,9 @@ class MatrixModel(QAbstractTableModel):
         if not index.isValid():
             return None
         v = self.ms.data[index.row(), index.column()]
-        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+        if role == Qt.ItemDataRole.DisplayRole:   # 6 significant digits, like Origin's grid
+            return "" if not np.isfinite(v) else format_cell(float(f"{v:.6g}"))
+        if role == Qt.ItemDataRole.EditRole:
             return "" if not np.isfinite(v) else format_cell(float(v))
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -140,7 +142,7 @@ class MatrixSheetView(QStackedWidget):
         self.model_ = MatrixModel(window, ms)
         self.grid.setModel(self.model_)
         self.grid.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.grid.horizontalHeader().setDefaultSectionSize(72)
+        self.grid.horizontalHeader().setDefaultSectionSize(84)
         self.grid.verticalHeader().setDefaultSectionSize(21)
         self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.grid.customContextMenuRequested.connect(

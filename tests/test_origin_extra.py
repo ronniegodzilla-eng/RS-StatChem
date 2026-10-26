@@ -756,6 +756,46 @@ def test_3d_rotation_is_kept(qapp):
     win.close()
 
 
+def test_fit_change_parameters_and_matrix_dialogs(ctx, monkeypatch):
+    _no_prompts(monkeypatch)
+    from rsstatchem.ui.origin import open_workspace
+    from rsstatchem.ui.origin.dialogs import (FitDialog, MatrixDimensionsDialog,
+                                              MatrixValuesDialog)
+
+    win = open_workspace(ctx)
+    book = _book()
+    win.new_book(book)   # "Book1" is taken: the new workbook becomes Book2 in the project
+    assert book.name == "Book2" and win.project.windows["Book2"] is book
+    bw = win.book_window(book)
+    bw.select_columns([1])
+    choices, _, _ = win.analysis_inputs()
+    out = win.run_fit("poly", {"input": choices[0], "model": "Poly2", "mode": "manual"})
+    assert out is not None, win.messages.toPlainText()
+    assert out.report.op["settings"]["model"] == "Poly2"
+
+    def fake_exec(self):
+        assert self.order.value() == 2   # the dialog shows the report's settings
+        self.order.setValue(3)
+        return True
+    monkeypatch.setattr(FitDialog, "exec", fake_exec)
+    win.change_report_parameters(book, out.report)
+    assert out.report.op["settings"]["model"] == "Poly3"
+    assert any(r[1] == "B3" for r in out.report.table("Parameters")["rows"])
+    mw = win.new_matrix()
+    ms = mw.sheet()
+    applied = []
+    dlg = MatrixValuesDialog(ms, applied.append, win)
+    dlg.edit.setPlainText("i+j")
+    assert dlg.apply() and applied == ["i+j"]
+    dims = MatrixDimensionsDialog(ms, win).values()
+    assert (dims["rows"], dims["cols"], dims["x2"]) == (32, 32, 32.0)
+    bad = MatrixValuesDialog(ms, lambda f: win.set_matrix_values(mw, f), win)
+    bad.edit.setPlainText("sin(")
+    assert not bad.apply() and "Syntax" in bad.error.text()
+    win.modified = False
+    win.close()
+
+
 def test_matrix_sheet_helpers():
     ms = MatrixSheet.new("M", 3, 4)
     assert ms.xs().tolist() == [1, 2, 3, 4] and ms.ys().tolist() == [1, 2, 3]
