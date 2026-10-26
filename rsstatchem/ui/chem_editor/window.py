@@ -55,6 +55,8 @@ QUICK_ELEMENTS = ["C", "H", "N", "O", "S", "P", "F", "Cl", "Br", "I"]
 
 
 class ChemEditorWindow(QMainWindow):
+    canvas_class = ChemCanvas       # subclasses (the Chemical Drawing workspace) swap it
+
     def __init__(self, editor=None, doc: Document | None = None, path: str | None = None,
                  reaction: bool = False):
         super().__init__()
@@ -65,7 +67,7 @@ class ChemEditorWindow(QMainWindow):
         self.confirm_close = True
         self.reaction_mode = reaction
         self.undo_stack = QUndoStack(self)
-        self.canvas = ChemCanvas(self.doc, self.undo_stack, self)
+        self.canvas = self.canvas_class(self.doc, self.undo_stack, self)
         self.setCentralWidget(self.canvas)
         self._tool_buttons: dict[str, QToolButton] = {}
         self._build_actions()
