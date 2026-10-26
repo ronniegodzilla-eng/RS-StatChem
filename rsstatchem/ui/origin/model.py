@@ -211,6 +211,21 @@ class Worksheet:
     n_rows: int = DEFAULT_ROWS
     kind: str = "data"
     sparklines: bool = False        # Origin's Sparklines header row (tiny plot per column)
+    # operations whose output is in this sheet (Statistics on Rows columns, a Frequency
+    # Counts sheet): {"kind", "settings", "outputs": [column names] | None (whole sheet),
+    # "mode", "hash", "dirty"} — Origin's lock on the output columns
+    ops: list = field(default_factory=list)
+
+    def op_of(self, col: int) -> dict | None:
+        """The operation that produced column ``col`` (None for ordinary data)."""
+        if not 0 <= col < len(self.columns):
+            return None
+        name = self.columns[col].name
+        for op in self.ops:
+            outs = op.get("outputs")
+            if outs is None or name in outs:
+                return op
+        return None
 
     # ------------------------------------------------------------------ structure
     @classmethod
@@ -442,6 +457,21 @@ class ReportSheet:
             item["graph"] = graph   # how to rebuild the picture as a graph window
         self.items.append(item)
 
+    def add_graph(self, title: str, graph: Graph, width: int = 460, group: str = "",
+                  open_spec: dict | None = None) -> None:
+        """Embed a live graph (Origin's embedded graph object): the graph model is stored
+        and rendered by the report view, so a recalculation redraws it. ``open_spec``
+        tells how to open it as a graph window linked to worksheet data (e.g. a fit's
+        source data and fitted curve); without it the window is linked to this report."""
+        item = {"kind": "graph", "title": title, "width": width, "group": group,
+                "graph": graph_to_json_dict(graph)}
+        if open_spec:
+            item["open"] = open_spec
+        self.items.append(item)
+
+    def graphs(self) -> list[dict]:
+        return [i for i in self.items if i["kind"] == "graph"]
+
     @property
     def mode(self) -> str:
         return self.op.get("mode", "none") if self.op else "none"
@@ -486,6 +516,40 @@ class ReportSheet:
 
     def copy(self) -> "ReportSheet":
         return copy.deepcopy(self)
+
+
+class SheetOp:
+    """A recalculable operation whose output lives in a worksheet (Statistics on Rows adds
+    columns to its source sheet, Frequency Counts fills its own sheet). It offers the same
+    ``op`` / ``mode`` / ``dirty`` / ``name`` as a :class:`ReportSheet`, so the lock and
+    Recalculate code treat both alike."""
+
+    def __init__(self, sheet: Worksheet, op: dict):
+        self.sheet = sheet
+        self.op = op
+
+    @property
+    def name(self) -> str:
+        return self.sheet.name
+
+    @property
+    def mode(self) -> str:
+        return self.op.get("mode", "none")
+
+    @property
+    def dirty(self) -> bool:
+        return bool(self.op.get("dirty"))
+
+    def output_columns(self) -> list[int]:
+        outs = self.op.get("outputs")
+        return [i for i, c in enumerate(self.sheet.columns) if outs is None or c.name in outs]
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, SheetOp) and other.sheet is self.sheet and \
+            other.op is self.op
+
+    def __hash__(self) -> int:
+        return hash((id(self.sheet), id(self.op)))
 
 
 Sheet = Worksheet | ReportSheet
@@ -826,8 +890,11 @@ def sheet_to_dict(s) -> dict:
                       for row in np.asarray(s.data, float)]}
         d.update({k: getattr(s, k) for k in _MATRIX_ATTRS})
         return d
-    return {"kind": "data", "name": s.name, "n_rows": s.n_rows, "sparklines": s.sparklines,
-            "columns": [_column_to_dict(c) for c in s.columns]}
+    d = {"kind": "data", "name": s.name, "n_rows": s.n_rows, "sparklines": s.sparklines,
+         "columns": [_column_to_dict(c) for c in s.columns]}
+    if s.ops:
+        d["ops"] = jsonable(s.ops)
+    return d
 
 
 def sheet_from_dict(d: dict):
@@ -845,7 +912,8 @@ def sheet_from_dict(d: dict):
                 setattr(ms, k, type(getattr(ms, k))(d[k]))
         return ms
     ws = Worksheet(d["name"], [_column_from_dict(c) for c in d.get("columns", [])],
-                   int(d.get("n_rows", DEFAULT_ROWS)), sparklines=bool(d.get("sparklines")))
+                   int(d.get("n_rows", DEFAULT_ROWS)), sparklines=bool(d.get("sparklines")),
+                   ops=[dict(o) for o in d.get("ops") or []])
     ws.ensure_rows(ws.n_rows)
     return ws
 

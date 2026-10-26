@@ -4,8 +4,13 @@ A report is a tree of collapsible sections, like Origin's report sheets: Notes, 
 Parameters, Statistics, ANOVA, Fitted Curves Plot, Residual Plots (a parent section holding
 several plots)… Click the ⊟ / ⊞ box of a section header to collapse / expand it (the state is
 saved with the project). Right-click a table to copy it (HTML for Word plus tab-separated text
-for Excel, like the Statistics module's output), double-click an embedded plot to open it as
-a graph window.
+for Excel, like the Statistics module's output).
+
+Plots are live embedded graphs (Origin's graph objects in report sheets): each is rendered
+from its graph model by the Graph Studio renderer (:class:`LiveGraph`), so Recalculate —
+which rebuilds the report items from the new data — redraws it; double-click opens it as a
+graph window linked to the data (fits) or to the report. Older projects' static pictures are
+still shown.
 
 The lock button at the top left shows the recalculation mode (Origin's green lock): green =
 Auto, yellow = Manual, yellow with a red mark = the source data changed and the report is out
@@ -18,13 +23,14 @@ import base64
 import html
 import math
 
-from PySide6.QtCore import QMimeData, QSize, Qt
+from PySide6.QtCore import QMimeData, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFrame, QHBoxLayout,
                                QHeaderView, QLabel, QMenu, QScrollArea, QSizePolicy,
                                QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
                                QWidget)
 
+from rsstatchem.core.graph.model import Graph, graph_from_json_dict
 from rsstatchem.core.output import Table
 from rsstatchem.core.report import clipboard_html, table_tsv
 from rsstatchem.ui.origin.icons import icon
@@ -54,6 +60,35 @@ def item_table(item: dict) -> Table:
     cols = [tuple(c) if isinstance(c, list) else c for c in item["columns"]]
     return Table(item.get("title", ""), cols, [list(r) for r in item["rows"]],
                  footnotes=[n for n in item.get("notes", []) if n])
+
+
+def lock_icon_name(op: dict | None) -> str:
+    """Origin's lock colour for a recalculable result: green Auto, yellow Manual, yellow
+    with a red mark when out of date, grey None."""
+    if not op or op.get("mode", "none") == "none":
+        return "lock_none"
+    if op.get("dirty"):
+        return "lock_dirty"
+    return "lock_auto" if op.get("mode") == "auto" else "lock_manual"
+
+
+def item_graph(item: dict) -> Graph | None:
+    """The graph model of a live report graph item."""
+    if item.get("kind") != "graph":
+        return None
+    try:
+        return graph_from_json_dict(item["graph"])
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def item_png(item: dict, dpi: int = 110) -> bytes:
+    """PNG bytes of a picture or live graph item (for the clipboard / HTML)."""
+    if item["kind"] == "image":
+        return base64.b64decode(item["png"])
+    from rsstatchem.core.graph.export import png_bytes
+    g = item_graph(item)
+    return png_bytes(g, dpi=dpi) if g is not None else b""
 
 
 def report_html(report: ReportSheet, doc=None) -> str:
@@ -104,16 +139,17 @@ def report_html(report: ReportSheet, doc=None) -> str:
             cls = "warn" if item.get("style") == "warning" else "note"
             parts.append(f'<div class="sec">&#8863; {title}</div>'
                          f'<div class="{cls}">{html.escape(item.get("text", ""))}</div>')
-        elif item["kind"] == "image":
+        elif item["kind"] in ("image", "graph"):
             width = int(item.get("width", 520))
+            data = item_png(item)
             if doc is not None:
                 from PySide6.QtCore import QUrl
                 from PySide6.QtGui import QTextDocument
                 url = f"img://{k}"
-                image = QImage.fromData(base64.b64decode(item["png"]), "PNG")
+                image = QImage.fromData(data, "PNG")
                 doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(url), image)
             else:
-                url = "data:image/png;base64," + item["png"]
+                url = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
             parts.append(f'<div class="sec">&#8863; {title}</div>'
                          f'<p style="margin-left:14px"><img src="{url}" width="{width}"></p>')
     parts.append("</body></html>")
@@ -141,9 +177,9 @@ def copy_items(items: list[dict]) -> None:
         mime.setHtml(clipboard_html(tables))
     mime.setText("\n\n".join(table_tsv(t) for t in tables) if tables else
                  "\n".join(i.get("text", i.get("title", "")) for i in items))
-    images = [i for i in items if i["kind"] == "image"]
+    images = [i for i in items if i["kind"] in ("image", "graph")]
     if images and not tables:
-        mime.setImageData(QImage.fromData(base64.b64decode(images[0]["png"]), "PNG"))
+        mime.setImageData(QImage.fromData(item_png(images[0], 150), "PNG"))
     QApplication.clipboard().setMimeData(mime)
 
 
@@ -282,6 +318,11 @@ class ReportSection(QFrame):
     def _toggle(self, expanded: bool) -> None:
         self.wrap.setVisible(expanded)
         self._on_toggle(not expanded)
+        view = self.parentWidget()
+        while view is not None and not isinstance(view, ReportView):
+            view = view.parentWidget()
+        if view is not None:   # the page got shorter / taller
+            QTimer.singleShot(0, view, view._relayout)
 
 
 class _Image(QLabel):
@@ -308,6 +349,67 @@ class _Image(QLabel):
             self.view.open_graph(self.item_)
 
 
+class LiveGraph(QWidget):
+    """An embedded live graph: the report item's graph model drawn by the Graph Studio
+    renderer on a matplotlib canvas at the item's width. Double-click opens it as a graph
+    window; right-click copies it."""
+
+    def __init__(self, item: dict, view: "ReportView"):
+        super().__init__()
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+
+        self.item_ = item
+        self.view = view
+        self.setObjectName("reportGraph")
+        self.graph = item_graph(item) or Graph()
+        width = int(item.get("width", 460))
+        w_in = max(self.graph.page.width_cm, 1.0) / 2.54
+        self.figure = Figure(dpi=width / w_in)
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas.setParent(self)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(1, 1, 1, 1)
+        lay.addWidget(self.canvas)
+        self.setStyleSheet("QWidget#reportGraph { border: 1px solid #b8b8b8; "
+                           "background: #ffffff; }")
+        self.redraw()
+        height = int(width * self.graph.page.height_cm / max(self.graph.page.width_cm, 1.0))
+        self.canvas.setFixedSize(width, height)
+        self.setFixedSize(width + 4, height + 4)
+        self.setToolTip("Live graph — redrawn on Recalculate. Double-click to open it as a "
+                        "graph window; right-click to copy.")
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(
+            lambda pos: view.item_menu(item, self.mapToGlobal(pos)))
+        self.canvas.mpl_connect("button_press_event", self._pressed)
+
+    def redraw(self) -> None:
+        from rsstatchem.core.graph.render import render
+        self.rmap = render(self.graph, self.figure)
+        self.canvas.draw_idle()
+
+    def _pressed(self, event) -> None:
+        if getattr(event, "dblclick", False):
+            self.view.open_graph(self.item_)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.view.open_graph(self.item_)
+
+
+class _Page(QWidget):
+    """The scrolled report page. Its minimum height is its full height: word-wrapped notes
+    make the layout's own minimum too small, and the scroll area would then squeeze the
+    page so that graphs overlap the next sections."""
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), max(hint.height(), self.sizeHint().height()))
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return max(super().heightForWidth(width), self.sizeHint().height())
+
+
 class ReportView(QScrollArea):
     """Report sheet tab of a workbook window (``book_window`` may be None in tests)."""
 
@@ -316,6 +418,7 @@ class ReportView(QScrollArea):
         self.report = report
         self.book_window = book_window
         self.sections: list[ReportSection] = []
+        self.graphs: list[LiveGraph] = []
         self.setObjectName("originReport")
         self.setWidgetResizable(True)
         self._sig = None
@@ -338,13 +441,14 @@ class ReportView(QScrollArea):
     def rebuild(self) -> None:
         self._sig = self._signature()
         bar = self.verticalScrollBar().value() if self.widget() is not None else 0
-        page = QWidget()
+        page = _Page()
         page.setObjectName("reportPage")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(8, 6, 8, 12)
         lay.setSpacing(3)
         lay.addWidget(self._top_bar())
         self.sections = []
+        self.graphs: list[LiveGraph] = []
         for group, indices in self.report.sections():
             if group:
                 inner = QWidget()
@@ -365,6 +469,15 @@ class ReportView(QScrollArea):
         lay.addStretch(1)
         self.setWidget(page)
         self.verticalScrollBar().setValue(bar)
+        # once the page is polished (stylesheet fonts) its height is known: lay it out again
+        QTimer.singleShot(0, self, self._relayout)
+
+    def _relayout(self) -> None:
+        self.setWidgetResizable(True)   # re-reads the page's minimum size
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._relayout()
 
     def _top_bar(self) -> QWidget:
         w = QWidget()
@@ -396,11 +509,7 @@ class ReportView(QScrollArea):
         return w
 
     def lock_icon(self) -> str:
-        if not self.report.op or self.report.mode == "none":
-            return "lock_none"
-        if self.report.dirty:
-            return "lock_dirty"
-        return "lock_auto" if self.report.mode == "auto" else "lock_manual"
+        return lock_icon_name(self.report.op)
 
     def lock_tip(self) -> str:
         if not self.report.op:
@@ -444,6 +553,9 @@ class ReportView(QScrollArea):
                     bl.addWidget(lab)
         elif kind == "image":
             body = _Image(item, self)
+        elif kind == "graph":
+            body = LiveGraph(item, self)
+            self.graphs.append(body)
         else:
             body = QLabel(item.get("text", ""))
             body.setTextFormat(Qt.TextFormat.PlainText)
@@ -484,6 +596,9 @@ class ReportView(QScrollArea):
             menu.addAction("&Copy Picture", lambda: copy_items([item]))
             if item.get("graph"):
                 menu.addAction("&Open as Graph Window", lambda: self.open_graph(item))
+        elif item["kind"] == "graph":
+            menu.addAction("&Copy Graph (picture)", lambda: copy_items([item]))
+            menu.addAction("&Open as Graph Window", lambda: self.open_graph(item))
         else:
             menu.addAction("&Copy", lambda: copy_items([item]))
         menu.addAction("Copy &All (report)", self.copy_all)

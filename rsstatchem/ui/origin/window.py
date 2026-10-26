@@ -9,7 +9,10 @@ MDI workspace with Workbook, Matrix, Graph and Notes windows. A project
 
 Selecting a block of cells (e.g. rows 3–10 of B:C) makes plots and fits use only those rows
 (``[Book1]Sheet1!B[3:10]``). Analysis reports remember how they were made; when their source
-data change they are recalculated (Auto) or flagged with a yellow lock (Manual).
+data change they are recalculated (Auto) or flagged with a yellow lock (Manual); the same
+holds for the output columns of Statistics on Rows and Frequency Counts (a lock in their
+column headers, Recalculate in the column menu). Report graphs are live: double-clicking
+one opens a graph window that follows the report's recalculations.
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ from rsstatchem.ui.modules import add_module_menu
 from rsstatchem.ui.origin import analysis as an
 from rsstatchem.ui.origin import formula as fx
 from rsstatchem.ui.origin import recalc
+from rsstatchem.ui.origin import report_graphs as rg
 from rsstatchem.ui.origin import stat_dialogs as sd
 from rsstatchem.ui.origin import stat_tests as st
 from rsstatchem.ui.origin import style
@@ -48,7 +52,7 @@ from rsstatchem.ui.origin.icons import icon
 from rsstatchem.ui.origin.matrix_view import MatrixWindow
 from rsstatchem.ui.origin.model import (DEFAULT_ROWS, DESIGNATIONS, EXTENSION, Folder, GraphDoc,
                                         MatrixBook, MatrixSheet, Notes, Project, ReportSheet,
-                                        Workbook, Worksheet, load_project, range_text,
+                                        SheetOp, Workbook, Worksheet, load_project, range_text,
                                         rename_refs, rows_text, save_project)
 from rsstatchem.ui.origin.plotting import (MATRIX_PLOTS, ORIGIN_THEME, PLOT_TYPES, PlotError,
                                            add_xy_plot, column_key, plot_columns, plot_matrix,
@@ -1342,12 +1346,29 @@ class OriginMainWindow(QMainWindow):
             self._recalculating = False
         self.result(text)
         self.refresh_graphs()
+        self.update_report_graphs(book, report)
         bw = self.book_window(book)
         if bw is not None:
             bw.refresh()
         if not quiet:
             self.message(f"Recalculated [{book.name}]{report.name}")
         return True
+
+    def update_report_graphs(self, book: Workbook, report) -> None:
+        """Graph windows opened from a report's live graphs follow its recalculation."""
+        if not isinstance(report, ReportSheet):
+            return
+        for gwin in self.graph_windows():
+            link = gwin.graph.meta.get("report_link") or {}
+            if link.get("book") != book.name or link.get("report") != report.name:
+                continue
+            item = next((i for i in report.graphs() if i.get("title") == link.get("item")),
+                        None)
+            if item is None:
+                continue
+            from rsstatchem.core.graph.model import graph_from_json_dict
+            rg.update_linked(gwin.graph, graph_from_json_dict(item["graph"]))
+            gwin.redraw(rebuild_tree=True)
 
     def set_report_mode(self, book: Workbook, report: ReportSheet, mode: str) -> None:
         report.op["mode"] = mode
@@ -1362,12 +1383,14 @@ class OriginMainWindow(QMainWindow):
             bw.refresh()
 
     def change_report_parameters(self, book: Workbook, report: ReportSheet) -> None:
-        """Reopen the dialog of a report with its settings; OK recalculates it."""
+        """Reopen the dialog of a report (or of locked output columns) with its settings;
+        OK recalculates it."""
         op = report.op
-        if op.get("kind") == "stats":
+        if op.get("kind") in ("stats", "rows", "freq"):
             settings = dict(op.get("settings") or {})
             settings["mode"] = op.get("mode", "manual")
-            dlg = sd.make_dialog(op["test"], self, settings)
+            dlg = sd.make_dialog(op["test"] if op["kind"] == "stats" else op["kind"], self,
+                                 settings)
             if not dlg.exec():
                 return
             values = dlg.values()
@@ -1395,12 +1418,21 @@ class OriginMainWindow(QMainWindow):
                 s[k] = params.get(k, s.get(k))
             self.recalculate_report(book, report)
 
-    def open_report_graph(self, book: Workbook, report: ReportSheet, item: dict) -> None:
-        """Double-click on a report's fitted-curves plot: open it as a graph window (the
-        source data and the fitted curve, both linked to the workbook)."""
-        spec = item.get("graph") or {}
+    def open_report_graph(self, book: Workbook, report: ReportSheet, item: dict):
+        """Double-click on a report graph: a fit's Fitted Curves Plot opens as a graph of the
+        source data and the fitted curve (both linked to the workbook); any other live graph
+        opens as a copy linked to the report, updated when the report is recalculated."""
+        spec = item.get("open") or (item.get("graph") if item["kind"] == "image" else None) \
+            or {}
         if spec.get("kind") != "fit":
-            return
+            if item["kind"] != "graph":
+                return None
+            from rsstatchem.core.graph.model import graph_from_json_dict
+            graph = graph_from_json_dict(item["graph"])
+            graph.meta["report_link"] = {"book": book.name, "report": report.name,
+                                         "item": item.get("title", "")}
+            graph.title = self.project.unique_name("Graph")
+            return self.new_graph(graph, folder=self.project.root.find_window(book.name))
         src_book = self.project.windows.get(spec.get("book"))
         ws = src_book.sheet(spec.get("sheet", "")) if isinstance(src_book, Workbook) else None
         curve = book.sheet(spec.get("curve", ""))
@@ -1420,7 +1452,7 @@ class OriginMainWindow(QMainWindow):
                           "y": curve.columns[1].name},
                     source={"book": book.name, "sheet": curve.name,
                             "x": curve.columns[0].name, "y": curve.columns[1].name})
-        self.new_graph(graph, folder=self.project.root.find_window(book.name))
+        return self.new_graph(graph, folder=self.project.root.find_window(book.name))
 
     def refresh_all(self) -> None:
         for book in self.project.books():
@@ -1769,8 +1801,38 @@ class OriginMainWindow(QMainWindow):
         self.message(f"Col({ws.columns[col].name}) = {formula}")
 
     # ================================================================== context menus
+    def column_lock_menu(self, bw: BookWindow, col: int, parent: QMenu | None = None) \
+            -> QMenu | None:
+        """Origin's lock menu of an output column (Statistics on Rows, Frequency Counts):
+        Recalculate mode, Recalculate, Change Parameters."""
+        ws = bw.worksheet()
+        target = recalc.sheet_op(bw.book, ws, col) if ws is not None else None
+        if target is None:
+            return None
+        menu = QMenu("Recalculate", parent or self)
+        menu.setIcon(icon(bw.lock_icon(target)))
+        group = QActionGroup(menu)
+        from rsstatchem.ui.origin.model import RECALC_MODES
+        for key, text in RECALC_MODES.items():
+            act = QAction(f"Mode: {text}", menu, checkable=True)
+            act.setChecked(target.mode == key)
+            act.triggered.connect(lambda _=False, k=key: self.set_report_mode(bw.book, target,
+                                                                              k))
+            group.addAction(act)
+            menu.addAction(act)
+        menu.addSeparator()
+        menu.addAction("&Recalculate", lambda: self.recalculate_report(bw.book, target))
+        menu.addAction("&Change Parameters...",
+                       lambda: self.change_report_parameters(bw.book, target))
+        return menu
+
     def column_menu(self, bw: BookWindow, pos) -> None:
         menu = QMenu(self)
+        cols = bw.selected_columns()
+        lock = self.column_lock_menu(bw, cols[0], menu) if cols else None
+        if lock is not None:
+            menu.addMenu(lock)
+            menu.addSeparator()
         menu.addActions([self.act_cut, self.act_copy, self.act_paste])
         menu.addSeparator()
         menu.addActions([self.act_insert_column, self.act_delete_column])
@@ -2282,16 +2344,16 @@ class OriginMainWindow(QMainWindow):
                              "x": curve.columns[0].name, "y": curve.columns[1].name}))
 
     # ================================================================== statistics
-    def selection_ranges(self) -> list[str]:
+    def selection_ranges(self, fallback: bool = True) -> list[str]:
         """The selected columns of the active worksheet as ranges (with the selected row
         range), e.g. ``["[Book1]Sheet1!B[3:10]", "[Book1]Sheet1!C[3:10]"]``; the Y columns
-        when nothing is selected."""
+        when nothing is selected (unless ``fallback`` is False)."""
         bw = self.active_book_window()
         ws = bw.worksheet() if bw is not None else None
         if ws is None:
             return []
-        cols = bw.selected_columns() or [i for i, c in enumerate(ws.columns)
-                                         if c.designation == "Y"]
+        cols = bw.selected_columns() or ([i for i, c in enumerate(ws.columns)
+                                          if c.designation == "Y"] if fallback else [])
         rows = bw.selected_row_range()
         return [range_text(bw.book.name, ws.name, ws.columns[c].name,
                            *(rows or (None, None))) for c in cols]
@@ -2324,14 +2386,21 @@ class OriginMainWindow(QMainWindow):
         try:
             if key == "rows":
                 first = st.read_ranges(books, values.get("ranges", []))[0]
-                _, added, text = self._run_in_book(first.book, "Statistics on Rows",
-                                                   lambda: st.stats_on_rows(books, values))
+                ws, added, text = self._run_in_book(
+                    first.book, "Statistics on Rows",
+                    lambda: st.stats_on_rows(books, values, mode=mode))
+                recalc.stamp(self.project, SheetOp(ws, ws.ops[-1]))
                 self.result(text)
+                bw = self.book_window(first.book)
+                if bw is not None:
+                    bw.refresh()
                 return added
             if key == "freq":
                 first = st.read_range(books, values.get("range", ""))
-                out, text = self._run_in_book(first.book, "Frequency Counts",
-                                              lambda: st.frequency_counts(books, values))
+                out, text = self._run_in_book(
+                    first.book, "Frequency Counts",
+                    lambda: st.frequency_counts(books, values, mode=mode))
+                recalc.stamp(self.project, SheetOp(out, out.ops[0]))
                 self.result(text)
                 bw = self.book_window(first.book)
                 if bw is not None:

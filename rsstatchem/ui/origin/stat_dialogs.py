@@ -2,15 +2,16 @@
 
 Every dialog has Origin's parts: the **Recalculate** mode at the top (Manual / Auto / None),
 an **Input** group with range pickers — a range box takes Origin's notation
-(``[Book1]Sheet1!B`` or ``[Book1]Sheet1!B[3:10]``) and its ▸ button fills it from the
-current worksheet selection or from a list of all columns — the analysis options, and the
+(``[Book1]Sheet1!B`` or ``[Book1]Sheet1!B[3:10]``) and its ▸ button rolls the dialog up so
+the range can be drag-selected in a worksheet (its arrow fills it from the current selection
+or from a list of all columns) — the analysis options, and the
 output (a report sheet in the input's workbook). The dialog only collects ``settings``; the
 main window runs :mod:`rsstatchem.ui.origin.stat_tests`. ``settings`` can be passed back in
 (Change Parameters) to reopen the dialog as it was.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGridLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -22,10 +23,14 @@ from rsstatchem.ui.origin.model import RECALC_MODES
 
 
 # ====================================================================== range pickers
-def _fill_range_menu(menu: QMenu, main, pick) -> None:
-    """Menu of the ▸ button: the active selection, then every column by book / sheet."""
+def _fill_range_menu(menu: QMenu, main, pick, interactive=None) -> None:
+    """Menu of the ▸ button: interactive selection, the active selection, then every column
+    by book / sheet."""
     menu.clear()
-    sel = main.selection_ranges() if main is not None else []
+    if interactive is not None:
+        act = menu.addAction("Select Range from Worksheet (drag-select)...", interactive)
+        act.setEnabled(main is not None)
+    sel = main.selection_ranges(fallback=False) if main is not None else []
     act = menu.addAction("Select Columns in Active Sheet", lambda: pick(sel))
     act.setEnabled(bool(sel))
     menu.addSeparator()
@@ -33,6 +38,27 @@ def _fill_range_menu(menu: QMenu, main, pick) -> None:
         sub = menu.addMenu(title)
         for text, label in cols:
             sub.addAction(label, lambda t=text: pick([t]))
+
+
+def _owner_dialog(w: QWidget):
+    """The Statistics dialog holding a range picker (None outside one)."""
+    while w is not None and not isinstance(w, StatDialog):
+        w = w.parentWidget()
+    return w
+
+
+def _picker_button(owner: QWidget, main, pick, tip: str) -> QToolButton:
+    """Origin's ▸ button: a click rolls the dialog up to select the range interactively in
+    the worksheet; the arrow opens the menu (selection, list of columns)."""
+    button = QToolButton()
+    button.setText("▸")
+    button.setToolTip(tip)
+    button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+    menu = QMenu(button)
+    menu.aboutToShow.connect(lambda: _fill_range_menu(menu, main, pick, owner.start_pick))
+    button.setMenu(menu)
+    button.clicked.connect(owner.start_pick)
+    return button
 
 
 class RangeEdit(QWidget):
@@ -43,18 +69,19 @@ class RangeEdit(QWidget):
         self.main = main
         self.edit = QLineEdit(text)
         self.edit.setPlaceholderText("[Book1]Sheet1!B")
-        self.button = QToolButton()
-        self.button.setText("▸")
-        self.button.setToolTip("Select the range from the worksheet")
-        self.button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(self.button)
-        menu.aboutToShow.connect(lambda: _fill_range_menu(menu, main, self._pick))
-        self.button.setMenu(menu)
+        self.button = _picker_button(self, main, self._pick,
+                                     "Select the range from the worksheet (click, then drag "
+                                     "over the cells); the arrow lists the columns")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
         lay.addWidget(self.edit, 1)
         lay.addWidget(self.button)
+
+    def start_pick(self) -> None:
+        dlg = _owner_dialog(self)
+        if dlg is not None and self.main is not None:
+            dlg.start_pick(self)
 
     def _pick(self, ranges: list[str]) -> None:
         if ranges:
@@ -77,13 +104,9 @@ class RangeList(QWidget):
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list.setMaximumHeight(110)
         self.list.setMinimumHeight(70)
-        self.add = QToolButton()
-        self.add.setText("▸")
-        self.add.setToolTip("Add ranges from the worksheet")
-        self.add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(self.add)
-        menu.aboutToShow.connect(lambda: _fill_range_menu(menu, main, self._pick))
-        self.add.setMenu(menu)
+        self.add = _picker_button(self, main, self._pick,
+                                  "Add ranges from the worksheet (click, then drag over the "
+                                  "columns / cells); the arrow lists the columns")
         remove = QToolButton()
         remove.setText("−")
         remove.setToolTip("Remove the selected ranges")
@@ -103,6 +126,11 @@ class RangeList(QWidget):
         lay.addWidget(self.list, 1)
         lay.addLayout(side)
         self.set_texts(texts or [])
+
+    def start_pick(self) -> None:
+        dlg = _owner_dialog(self)
+        if dlg is not None and self.main is not None:
+            dlg.start_pick(self)
 
     def _append(self, text: str, edit: bool = False) -> None:
         item = QListWidgetItem(text)
@@ -131,6 +159,41 @@ class RangeList(QWidget):
             self._append(t)
 
 
+class _PickBar(QWidget):
+    """The rolled-up dialog while a range is selected in the worksheet (Origin's dialog
+    shrinks to its range box with a ▸ button to come back)."""
+
+    def __init__(self, dialog: "StatDialog"):
+        super().__init__()
+        self.setObjectName("rangePickBar")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(3)
+        self.hint = QLabel("Select the range in the worksheet — drag over the cells or "
+                           "click column headers — then click ▸ (or press Enter).")
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet("color:#444")
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        self.edit = QLineEdit()
+        self.edit.setReadOnly(True)
+        self.edit.setObjectName("rangePickText")
+        self.edit.setPlaceholderText("(nothing selected)")
+        self.back = QToolButton()
+        self.back.setText("▸")
+        self.back.setToolTip("Use this range and restore the dialog")
+        self.back.clicked.connect(lambda: dialog.finish_pick(True))
+        cancel = QToolButton()
+        cancel.setText("✕")
+        cancel.setToolTip("Restore the dialog without changing the range")
+        cancel.clicked.connect(lambda: dialog.finish_pick(False))
+        row.addWidget(self.edit, 1)
+        row.addWidget(self.back)
+        row.addWidget(cancel)
+        lay.addWidget(self.hint)
+        lay.addLayout(row)
+
+
 # ====================================================================== dialog
 class StatDialog(QDialog):
     """A Statistics dialog built from a field spec.
@@ -138,8 +201,12 @@ class StatDialog(QDialog):
     ``groups``: ``[(group title, [field, ...]), ...]`` with fields
     ``(kind, key, label, default, extra)``; kinds: ``ranges``, ``range``, ``choice``
     (extra = {value: text}), ``checks`` (extra = {value: text}, default = selected values),
-    ``float`` (extra = (lo, hi, decimals)), ``int`` (extra = (lo, hi)), ``bool``. A field
-    may end with ``{"when": (key, value)}`` to show it only for that choice."""
+    ``float`` (extra = (lo, hi, decimals)), ``int`` (extra = (lo, hi)), ``bool``, ``text``.
+    A field may end with ``{"when": (key, value)}`` to show it only for that choice.
+
+    A range picker's ▸ button rolls the dialog up (:meth:`start_pick`): the dialog shrinks
+    to a bar and stops being modal so the user can drag-select in a worksheet; ▸ (or Enter)
+    takes the selection and restores the dialog (:meth:`finish_pick`), as in Origin."""
 
     def __init__(self, title: str, groups: list, main=None, settings: dict | None = None,
                  description: str = "", recalc: bool = True, output: str = "report sheet"):
@@ -150,8 +217,22 @@ class StatDialog(QDialog):
         self.widgets: dict[str, QWidget] = {}
         self.kinds: dict[str, str] = {}
         self.rows: list[tuple[QWidget, QWidget | None, tuple | None]] = []
+        self.picking = None          # the range picker being filled from the worksheet
+        self._loop = None
+        self._geometry = None
         settings = dict(settings or {})
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        self.body = QWidget()
+        self.pick_bar = _PickBar(self)
+        self.pick_bar.hide()
+        outer.addWidget(self.pick_bar)
+        outer.addWidget(self.body)
+        self._pick_timer = QTimer(self)
+        self._pick_timer.setInterval(150)
+        self._pick_timer.timeout.connect(self._show_picked)
+        layout = QVBoxLayout(self.body)
+        layout.setContentsMargins(0, 0, 0, 0)
         top = QHBoxLayout()
         self.mode = QComboBox()
         for key, text in RECALC_MODES.items():
@@ -189,6 +270,85 @@ class StatDialog(QDialog):
                 w.currentIndexChanged.connect(self._update_visibility)
         self._update_visibility()
         self.resize(500, 0)
+
+    # ------------------------------------------------------------------ modality / pick
+    def exec(self) -> int:  # noqa: A003 - same API as QDialog.exec
+        """Modal like QDialog.exec, but in a local event loop so the dialog can turn
+        modeless while it is rolled up for a worksheet selection."""
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.show()
+        self.raise_()
+        loop = QEventLoop()
+        self._loop = loop
+        self.finished.connect(loop.quit)
+        loop.exec()
+        self._loop = None
+        return self.result()
+
+    def start_pick(self, picker) -> None:
+        """Roll the dialog up and let the user select ``picker``'s range in a worksheet."""
+        if self.picking is not None or self.main is None:
+            return
+        self.picking = picker
+        self._geometry = self.geometry()
+        was_visible = self.isVisible()
+        self.hide()
+        self.body.hide()
+        self.pick_bar.show()
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setMinimumSize(0, 0)
+        self._show_picked()
+        self._pick_timer.start()
+        if was_visible:
+            self.show()
+        self.adjustSize()
+        self.resize(max(self.width(), 420), self.pick_bar.sizeHint().height() + 12)
+        top = self.main.geometry().topLeft() if hasattr(self.main, "geometry") else None
+        if top is not None and was_visible:
+            self.move(top.x() + 80, top.y() + 60)
+
+    def picked_ranges(self) -> list[str]:
+        return self.main.selection_ranges(fallback=False) if self.main is not None else []
+
+    def _show_picked(self) -> None:
+        sel = self.picked_ranges()
+        text = ", ".join(sel)
+        if self.pick_bar.edit.text() != text:
+            self.pick_bar.edit.setText(text)
+
+    def finish_pick(self, apply: bool = True) -> None:
+        """Take the worksheet selection (when ``apply``) and restore the dialog."""
+        picker = self.picking
+        if picker is None:
+            return
+        self._pick_timer.stop()
+        ranges = self.picked_ranges()
+        if apply and ranges:
+            picker._pick(ranges)
+        self.picking = None
+        was_visible = self.isVisible()
+        self.hide()
+        self.pick_bar.hide()
+        self.body.show()
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        if was_visible:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        if self._geometry is not None:
+            self.setGeometry(self._geometry)
+
+    def accept(self) -> None:
+        if self.picking is not None:   # Enter while rolled up: take the selection
+            self.finish_pick(True)
+            return
+        super().accept()
+
+    def reject(self) -> None:
+        if self.picking is not None:   # Esc while rolled up: just come back
+            self.finish_pick(False)
+            return
+        super().reject()
 
     def _add_field(self, form: QFormLayout, field: tuple, settings: dict) -> None:
         cond = field[-1].get("when") if isinstance(field[-1], dict) else None
@@ -288,6 +448,10 @@ def _alpha(default: float = 0.05):
     return ("float", "alpha", "Significance Level", default, (0.0001, 0.5, 4))
 
 
+def _control():
+    return ("text", "control", "Dunnett Control Level (blank = first)", "")
+
+
 def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
     """(title, groups, description, output) of the dialog ``key``, with the current selection
     ``sel`` (range strings) as the default input."""
@@ -375,7 +539,8 @@ def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
                        ("range", "data", "Data Range", first, {"when": ("form", "indexed")}),
                        ("range", "factor", "Factor Range", second,
                         {"when": ("form", "indexed")})]),
-            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS)]),
+            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS),
+                                  _control()]),
             ("Options", [_alpha(),
                          ("choice", "homogeneity", "Test for Equal Variance", "levene",
                           {"levene": "Levene (absolute deviations)",
@@ -385,16 +550,30 @@ def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
             "report sheet")
     if key == "anova2":
         third = sel[2] if len(sel) > 2 else ""
+        raw = {"when": ("form", "raw")}
+        indexed = {"when": ("form", "indexed")}
         return ("Two-Way ANOVA", [
-            ("Input (indexed data)", [("range", "data", "Data Range", third or first),
-                                      ("range", "factor_a", "Factor A Range",
-                                       first if third else second),
-                                      ("range", "factor_b", "Factor B Range",
-                                       second if third else "")]),
-            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS)]),
+            ("Input", [("choice", "form", "Input Data Form", "indexed", FORMS),
+                       ("ranges", "ranges", "Data (one column per level combination: "
+                        "A1B1, A1B2, …, A2B1, …)", sel, raw),
+                       ("text", "name_a", "Factor A Name", "Factor A", raw),
+                       ("int", "levels_a", "Factor A Number of Levels", 2, (2, 25), raw),
+                       ("text", "names_a", "Factor A Level Names", "A1, A2", raw),
+                       ("text", "name_b", "Factor B Name", "Factor B", raw),
+                       ("int", "levels_b", "Factor B Number of Levels", 2, (2, 25), raw),
+                       ("text", "names_b", "Factor B Level Names", "B1, B2", raw),
+                       ("range", "data", "Data Range", third or first, indexed),
+                       ("range", "factor_a", "Factor A Range", first if third else second,
+                        indexed),
+                       ("range", "factor_b", "Factor B Range", second if third else "",
+                        indexed)]),
+            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS),
+                                  _control()]),
             ("Options", [_alpha(), ("bool", "interaction", "Interactions", True),
+                         ("choice", "ss", "Type of Sums of Squares", "3", st.SS_TYPES),
                          ("bool", "means_plot", "Interaction Plot", True)])],
-            "Main effects of two factors and their interaction (Type III sums of squares).",
+            "Main effects of two factors and their interaction; raw (one column per level "
+            "combination, Factor A outermost) or indexed data, balanced or unbalanced.",
             "report sheet")
     if key == "nonparam":
         return ("Nonparametric Tests", [
@@ -417,5 +596,4 @@ def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
 def make_dialog(key: str, main=None, settings: dict | None = None,
                 selection: list[str] | None = None) -> StatDialog:
     title, groups, description, output = spec(key, selection or [])
-    return StatDialog(title, groups, main, settings, description,
-                      recalc=key not in ("rows", "freq"), output=output)
+    return StatDialog(title, groups, main, settings, description, output=output)
