@@ -3,19 +3,24 @@ templates, angle snapping, double-bond placement and the line/polygon primitives
 and arrows, following ChemDraw's conventions (offset double bonds inside rings, wedges whose
 wide end has the bold width, hashed wedges with a fixed hash spacing, notched arrowheads).
 
+Also the Pen tool's cubic Bezier curves (ChemDraw's Curves menu styles: dashed, bold, doubled,
+closed, filled, shaded, full / half arrowheads at either end) and the orbital shapes (s, p,
+single lobe, hybrid, d(xy), d(z2); plain, shaded, filled or phased lobes).
+
 Angles are in radians in screen coordinates (y down), so -30 deg points up-right.
 """
 from __future__ import annotations
 
 import math
 
-from rsstatchem.core.chem_draw.model import Arrow, Bond, Document
+from rsstatchem.core.chem_draw.model import Arrow, Bond, Curve, Document, Orbital
 from rsstatchem.core.chem_draw.style import Style
 
 __all__ = ["snap_angle", "new_bond_angle", "chain_points", "free_ring", "ring_on_bond",
            "ring_on_atom", "double_bond_side", "bond_primitives", "arrow_primitives",
            "arrow_path_points", "head_size", "ray_box_exit", "bracket_primitives",
-           "bond_end_point"]
+           "bond_end_point", "curve_path_points", "curve_segments", "curve_primitives",
+           "smooth_curve_points", "orbital_outline", "orbital_primitives", "bezier_point"]
 
 D30 = math.radians(30)
 
@@ -310,6 +315,26 @@ def bond_primitives(doc: Document, bond: Bond, style: Style, trim_a: float = 0.0
         tip = lw / 2
         out.append(("poly", [off(p, tip), off(q, w), off(q, -w), off(p, -tip)]))
         return out
+    if st == "hollow":                      # Hollow Wedged Bond: outlined wedge
+        w = style.wedge_width / 2
+        out.append(("shape", [p, off(q, w), off(q, -w)], lw, False, "white", True))
+        return out
+    if st == "hashed":                      # Hashed Bond: parallel strokes of equal width
+        w = style.wedge_width * 0.4
+        length = math.hypot(q[0] - p[0], q[1] - p[1])
+        n = max(2, int(length / style.hash_spacing))
+        for k in range(n + 1):
+            t = (k + 0.5) / (n + 1)
+            c = (p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t)
+            line(off(c, w), off(c, -w))
+        return out
+    if st == "dative":                      # Dative Bond: arrow from a (donor) to b
+        hl, hw = head_size(style)
+        hl, hw = hl * 0.75, hw * 0.75
+        notch = (q[0] - ux * hl * 0.78, q[1] - uy * hl * 0.78)
+        line(p, notch)
+        out.append(("poly", _head(q, ux, uy, hl, hw)))
+        return out
     if st == "hash":
         w = style.wedge_width / 2
         length = math.hypot(q[0] - p[0], q[1] - p[1])
@@ -474,6 +499,194 @@ def arrow_primitives(ar: Arrow, style: Style) -> list[tuple]:
         return out
     out.append(("line", tail[0], tail[1], tip[0], tip[1], lw, False))
     return out
+
+
+# --- curves (Pen tool) -----------------------------------------------------------------------
+
+def bezier_point(p0, c0, c1, p1, t: float) -> tuple[float, float]:
+    u = 1 - t
+    return (u ** 3 * p0[0] + 3 * u * u * t * c0[0] + 3 * u * t * t * c1[0] + t ** 3 * p1[0],
+            u ** 3 * p0[1] + 3 * u * u * t * c0[1] + 3 * u * t * t * c1[1] + t ** 3 * p1[1])
+
+
+def curve_segments(c: Curve) -> list[tuple]:
+    """Cubic segments (p0, c0, c1, p1) of a curve (closing segment included)."""
+    pts = c.points
+    n = len(pts) // 3
+    segs = []
+    for i in range(n - 1):
+        segs.append((pts[3 * i + 1], pts[3 * i + 2], pts[3 * i + 3], pts[3 * i + 4]))
+    if c.closed and n > 1:
+        segs.append((pts[3 * n - 2], pts[3 * n - 1], pts[0], pts[1]))
+    return segs
+
+
+def curve_path_points(c: Curve, samples: int = 20) -> list[tuple[float, float]]:
+    """Polyline approximation of the curve."""
+    segs = curve_segments(c)
+    if not segs:
+        return [tuple(p) for p in c.anchors()]
+    out = [tuple(segs[0][0])]
+    for seg in segs:
+        for k in range(1, samples + 1):
+            out.append(bezier_point(*seg, k / samples))
+    return out
+
+
+def smooth_curve_points(anchors, closed: bool = False, tension: float = 1 / 6
+                        ) -> list[list[float]]:
+    """Curve points (3 per anchor) of a smooth curve through ``anchors`` (Catmull-Rom
+    handles), as the Pen tool makes when every point is dragged."""
+    n = len(anchors)
+    out = []
+    for i, (x, y) in enumerate(anchors):
+        if closed:
+            px, py = anchors[(i - 1) % n]
+            nx, ny = anchors[(i + 1) % n]
+        else:
+            px, py = anchors[max(0, i - 1)]
+            nx, ny = anchors[min(n - 1, i + 1)]
+        tx, ty = (nx - px) * tension, (ny - py) * tension
+        out += [[x - tx, y - ty], [float(x), float(y)], [x + tx, y + ty]]
+    return out
+
+
+def _offset_polyline(pts, d: float) -> list[tuple[float, float]]:
+    out = []
+    n = len(pts)
+    for i in range(n):
+        a = pts[max(0, i - 1)]
+        b = pts[min(n - 1, i + 1)]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy) or 1.0
+        out.append((pts[i][0] - dy / L * d, pts[i][1] + dx / L * d))
+    return out
+
+
+def _end_tangent(pts, at_end: bool) -> tuple[float, float]:
+    """Unit direction of travel at the end (or reversed, at the start) of a polyline."""
+    if at_end:
+        tip = pts[-1]
+        seq = reversed(pts[:-1])
+    else:
+        tip = pts[0]
+        seq = pts[1:]
+    for q in seq:
+        dx, dy = tip[0] - q[0], tip[1] - q[1]
+        L = math.hypot(dx, dy)
+        if L > 1e-6:
+            return dx / L, dy / L
+    return 1.0, 0.0
+
+
+def _trim(pts, cut: float, at_end: bool) -> list:
+    """Remove the part of a polyline within ``cut`` of its end (or start)."""
+    seq = list(pts) if at_end else list(reversed(pts))
+    tip = seq[-1]
+    kept = [q for q in seq[:-1] if math.hypot(q[0] - tip[0], q[1] - tip[1]) > cut]
+    if not kept:
+        kept = [seq[0]]
+    ux, uy = _end_tangent(seq, True)
+    kept.append((tip[0] - ux * cut, tip[1] - uy * cut))
+    return kept if at_end else list(reversed(kept))
+
+
+def curve_primitives(c: Curve, style: Style) -> list[tuple]:
+    """Drawing primitives of a Pen-tool curve with its Curves-menu style."""
+    pts = curve_path_points(c)
+    if len(pts) < 2:
+        return []
+    lw = style.bold_width if c.bold else style.line_width
+    out: list[tuple] = []
+    closed = c.closed and len(c.anchors()) > 2
+    arrows = not closed and (c.arrow_start or c.arrow_end)
+    fill = ""
+    if closed and not c.dashed:
+        fill = "shade" if c.shaded else ("solid" if c.filled else "")
+    hl, hw = head_size(style)
+    hl, hw = hl * (1.15 if c.bold else 0.95), hw * (1.25 if c.bold else 0.95)
+    heads = []
+    if arrows:
+        for kind, at_end in ((c.arrow_end, True), (c.arrow_start, False)):
+            if not kind:
+                continue
+            ux, uy = _end_tangent(pts, at_end)
+            tip = pts[-1] if at_end else pts[0]
+            # half arrowheads keep the barb on the outside (left of travel) as in ChemDraw
+            half = 0 if kind == "full" else (1 if at_end else -1)
+            heads.append(("poly", _head(tip, ux, uy, hl, hw * (1.15 if half else 1), half)))
+            pts = _trim(pts, hl * 0.7, at_end)
+    if c.doubled and not fill and not c.dashed and not arrows:
+        g = max(style.spacing / 2, lw * 1.5)
+        for d in (g, -g):
+            out.append(("shape", _offset_polyline(pts, d), lw, False, "", closed))
+    else:
+        out.append(("shape", pts, lw, c.dashed, fill, closed))
+    return out + heads
+
+
+# --- orbitals -------------------------------------------------------------------------------
+
+def _lobe(cx, cy, angle: float, length: float, fat: float = 1.0, n: int = 40
+          ) -> list[tuple[float, float]]:
+    """Teardrop lobe with its point at (cx, cy) along ``angle`` (r = L cos^2 phi)."""
+    pts = []
+    ca, sa = math.cos(angle), math.sin(angle)
+    for k in range(n + 1):
+        phi = -math.pi / 2 + math.pi * k / n
+        r = length * math.cos(phi) ** 2
+        u, v = r * math.cos(phi), r * math.sin(phi) * fat
+        pts.append((cx + u * ca - v * sa, cy + u * sa + v * ca))
+    return pts
+
+
+def _ellipse(cx, cy, a: float, b: float, angle: float, n: int = 48):
+    ca, sa = math.cos(angle), math.sin(angle)
+    return [(cx + a * math.cos(t) * ca - b * math.sin(t) * sa,
+             cy + a * math.cos(t) * sa + b * math.sin(t) * ca)
+            for t in (2 * math.pi * k / n for k in range(n))]
+
+
+def orbital_outline(o: Orbital, bond_length: float) -> list[tuple[list, str]]:
+    """[(polygon, fill)] of an orbital, back to front; fill is "white" (unshaded),
+    "shade" (gradient) or "solid"."""
+    L = o.size or bond_length
+    a, x, y = o.angle, o.x, o.y
+    if o.kind == "s":
+        lobes = [_ellipse(x, y, L * 0.55, L * 0.55, a)]
+    elif o.kind == "lobe":
+        lobes = [_lobe(x, y, a, L)]
+    elif o.kind == "hybrid":
+        lobes = [_lobe(x, y, a + math.pi, L * 0.38), _lobe(x, y, a, L, 1.15)]
+    elif o.kind == "dxy":
+        lobes = [_lobe(x, y, a + math.pi / 4 + k * math.pi / 2, L * 0.9, 0.95)
+                 for k in range(4)]
+    elif o.kind == "dz2":
+        lobes = [_ellipse(x, y, L * 0.2, L * 0.5, a), _lobe(x, y, a, L),
+                 _lobe(x, y, a + math.pi, L)]
+    else:                                                   # p
+        lobes = [_lobe(x, y, a, L), _lobe(x, y, a + math.pi, L)]
+    base = {"plain": "white", "shaded": "shade", "filled": "solid"}.get(o.fill, "shade")
+    out = []
+    for k, lobe in enumerate(lobes):
+        fill = base
+        if o.fill == "phase":
+            if o.kind == "dz2":
+                fill = "white" if k == 0 else "solid"
+            elif o.kind == "dxy":
+                fill = "solid" if k % 2 == 0 else "white"
+            elif o.kind == "hybrid":
+                fill = "white" if k == 0 else "solid"
+            else:
+                fill = "solid" if k == 0 else "white"
+        out.append((lobe, fill))
+    return out
+
+
+def orbital_primitives(o: Orbital, style: Style) -> list[tuple]:
+    lw = style.line_width
+    return [("shape", pts, lw, False, fill, True)
+            for pts, fill in orbital_outline(o, style.bond_length)]
 
 
 def bracket_primitives(x1, y1, x2, y2, kind: str, style: Style) -> list[tuple]:

@@ -1,5 +1,5 @@
 """Main window of the Chemical Drawing module, laid out like a ChemDraw Professional document
-window: menu bar (File, Edit, View, Object, Structure, Text, Colors, Window, Help), the
+window: menu bar (File, Edit, View, Object, Structure, Text, Curves, Colors, Window, Help), the
 General and Style toolbars on top, the vertical Main Toolbar on the left, the document page in
 the middle, the Analysis / Chemical Properties windows on the right and the zoom percentage in
 the status bar.
@@ -62,7 +62,8 @@ HOTKEYS_HTML = """
 <tr><td>1 / 2 / 3</td><td>single / double / triple</td></tr>
 <tr><td>4 ... 8</td><td>fuse a ring of that size</td></tr>
 <tr><td>a</td><td>aromatic (dashed double)</td></tr>
-<tr><td>w / h</td><td>wedged / hashed wedged</td></tr>
+<tr><td>w / h / o</td><td>wedged / hashed wedged / hollow wedged</td></tr>
+<tr><td>v</td><td>dative (arrow from the first atom)</td></tr>
 <tr><td>b / d / y</td><td>bold / dashed / wavy</td></tr>
 <tr><td>l / r / c</td><td>double bond left / right / centred</td></tr>
 <tr><td colspan='2'><b>Anywhere</b></td></tr>
@@ -70,6 +71,12 @@ HOTKEYS_HTML = """
 <tr><td>Arrow keys</td><td>nudge the selection (Shift: 10 pt)</td></tr>
 <tr><td>Shift while dragging</td><td>free angle</td></tr>
 <tr><td>Ctrl+wheel, Ctrl+] / Ctrl+[</td><td>magnify / reduce</td></tr>
+<tr><td colspan='2'><b>Pen tool</b></td></tr>
+<tr><td>click / drag</td><td>corner point / smooth point (drag sets the handles)</td></tr>
+<tr><td>click the first point</td><td>close the curve</td></tr>
+<tr><td>double-click, Enter, Esc</td><td>finish the curve</td></tr>
+<tr><td>drag a point or handle</td><td>edit the selected curve (Shift: break the
+smooth point)</td></tr>
 </table>
 """
 
@@ -102,6 +109,7 @@ class ChemDrawWindow(ChemEditorWindow):
         self.act_pubchem.setChecked(self.online_lookup)
         self.lookup = NameLookup(self)
         self.lookup.finished.connect(self._lookup_done)
+        self.use_opsin = True       # offline IUPAC name parsing when Java + OPSIN are there
         self._pending: dict = {}
         self.last_message = ""
         self.zoom_box = QComboBox()
@@ -309,6 +317,9 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addAction(self.act_check)
         m.addAction(self.act_clean)
         m.addSeparator()
+        m.addAction("Structure &Perspective (3D)...", self.structure_perspective)
+        m.addAction("&Mass Fragmentation Tool", lambda: self.set_tool("fragment"))
+        m.addSeparator()
         m.addAction(self.act_name2struct)
         m.addAction(self.act_struct2name)
         m.addAction(self.act_pubchem)
@@ -325,6 +336,10 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addAction(self.act_import)
         # Text
         self.text_menu = mb.addMenu("&Text")
+        # Curves (ChemDraw: style of the selected curves and of new Pen curves)
+        self.curves_menu = mb.addMenu("C&urves")
+        self.curves_menu.aboutToShow.connect(self._fill_curves_menu)
+        self._fill_curves_menu()
         # Colors
         m = mb.addMenu("&Colors")
         for name, value in COLORS:
@@ -492,6 +507,37 @@ class ChemDrawWindow(ChemEditorWindow):
     def _palette_command(self, name: str) -> None:
         if name == "periodic":
             self.periodic_table()
+        elif name == "perspective":
+            self.structure_perspective()
+
+    def _fill_curves_menu(self) -> None:
+        m = self.curves_menu
+        m.clear()
+        self.canvas.add_curve_menu(m)
+        m.addSeparator()
+        m.addAction("&Pen Tool", lambda: self.set_tool("pen"))
+
+    def structure_perspective(self):
+        """Structure Perspective: rotatable 3D view of the selected (or only) molecule."""
+        from rsstatchem.core.chem_draw import threed
+        from rsstatchem.ui.chemdraw.perspective import StructurePerspectiveDialog
+        frags = self._fragments_in_scope()
+        frags = [f for f in frags if len(f) >= 1]
+        if len(frags) != 1:
+            self._notify("Structure Perspective",
+                         "Select one molecule first." if frags else "Draw a molecule first.")
+            return None
+        comp = self.doc.fragment_of(frags[0][0])
+        try:
+            model = threed.embed_doc(self.doc, comp)
+        except mo.ChemError as exc:
+            self._notify("Structure Perspective", str(exc))
+            return None
+        dlg = StructurePerspectiveDialog(self.canvas, model, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
+        self.perspective = dlg
+        return dlg
 
     def _template_chosen(self, name: str, smiles: str) -> None:
         self.canvas.template_smiles = smiles
@@ -838,8 +884,12 @@ class ChemDrawWindow(ChemEditorWindow):
                 o.x, o.y = cx + (o.x - cx) * k, cy + (o.y - cy) * k
             for kind, i in keys:
                 o = self.doc.get((kind, i))
-                if kind in ("text", "plus"):
+                if kind in ("text", "plus", "orbital"):
                     o.x, o.y = cx + (o.x - cx) * k, cy + (o.y - cy) * k
+                    if kind == "orbital":
+                        o.size = (o.size or self.doc.style.bond_length) * k
+                elif kind == "curve":
+                    o.points = [[cx + (x - cx) * k, cy + (y - cy) * k] for x, y in o.points]
                 elif kind in ("arrow", "bracket"):
                     o.x1, o.y1 = cx + (o.x1 - cx) * k, cy + (o.y1 - cy) * k
                     o.x2, o.y2 = cx + (o.x2 - cx) * k, cy + (o.y2 - cy) * k
@@ -899,7 +949,8 @@ class ChemDrawWindow(ChemEditorWindow):
 
     def convert_structure_to_name(self) -> list[str]:
         """ChemDraw's Convert Structure to Name: a caption under each selected structure from
-        the offline list, else (when allowed) from PubChem in the background."""
+        the offline list, then the offline name database, else (when allowed) from PubChem
+        in the background."""
         frags = self._fragments_in_scope()
         if not frags:
             self.statusBar().showMessage("Draw or select a structure first", 4000)
@@ -911,10 +962,11 @@ class ChemDrawWindow(ChemEditorWindow):
             except mo.ChemError as exc:
                 self._notify("Convert Structure to Name", f"Invalid structure: {exc}")
                 continue
-            hit = names.offline_name(mol)
+            hit = names.offline_name(mol) or names.db_name(mol)
             if hit is not None:
                 self._caption_under(comp, hit.name)
                 found.append(hit.name)
+                self.statusBar().showMessage(f"Name from the {hit.source}", 6000)
                 continue
             if self.online_lookup:
                 try:
@@ -936,7 +988,9 @@ class ChemDrawWindow(ChemEditorWindow):
 
     def convert_name_to_structure(self, name: str | None = None) -> bool:
         """ChemDraw's Convert Name to Structure: a selected caption is replaced by the
-        structure; otherwise the name is asked for and the structure inserted."""
+        structure; otherwise the name is asked for and the structure inserted. Sources in
+        order: the offline list, SMILES / InChI typed directly, the offline name database,
+        OPSIN (offline, in the background) and finally PubChem (when allowed)."""
         replace = None
         if name is None:
             texts = [i for k, i in self.canvas.selection if k == "text"]
@@ -961,10 +1015,26 @@ class ChemDrawWindow(ChemEditorWindow):
                     return True
             except Exception:  # noqa: BLE001 - not a SMILES either
                 pass
+        hit = names.db_structure(name)
+        if hit is not None:
+            self._insert_named(hit.smiles, replace, f"{hit.name} ({hit.source})")
+            return True
+        if self.use_opsin and names.opsin_available():
+            self._pending[("opsin", name)] = replace
+            self.lookup.start("opsin", name)
+            self.statusBar().showMessage(f"Interpreting '{name}' with OPSIN...", 8000)
+            return True
+        return self._pubchem_structure(name, replace)
+
+    def _pubchem_structure(self, name: str, replace, why: str = "") -> bool:
         if not self.online_lookup:
             self._notify("Convert Name to Structure",
-                         f"'{name}' is not in the offline name list. Turn on Structure > Use "
-                         "PubChem for Names (online) to look it up at PubChem.")
+                         (why + " " if why else "") +
+                         f"'{name}' is not in the offline name list or name database"
+                         + ("" if self.use_opsin and names.opsin_available() else
+                            ", and OPSIN (offline name parser, needs Java) is not available")
+                         + ". Turn on Structure > Use PubChem for Names (online) to look it "
+                           "up at PubChem.")
             return False
         self._pending[("structure", name)] = replace
         self.lookup.start("structure", name)
@@ -993,6 +1063,15 @@ class ChemDrawWindow(ChemEditorWindow):
 
     def _lookup_done(self, kind: str, query: str, result, error) -> None:
         target = self._pending.pop((kind, query), None)
+        if kind == "opsin":
+            if error or result is None:
+                self._pubchem_structure(query, target, error or "")
+                return
+            try:
+                self._insert_named(result.smiles, target, result.source)
+            except (mo.ChemError, ValueError) as exc:
+                self._pubchem_structure(query, target, f"OPSIN's structure is invalid ({exc}).")
+            return
         if error:
             self._notify("PubChem", error)
             return

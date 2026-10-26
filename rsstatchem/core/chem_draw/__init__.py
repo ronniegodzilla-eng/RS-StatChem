@@ -10,4 +10,9 @@
 - :mod:`convert` - drawing <-> RDKit (via ``core.chem.molecule``), reactions, SMILES/MOL/RXN.
 - :mod:`analysis` - ChemDraw "Analysis" window values, balance check and stoichiometry grid.
 - :mod:`templates` - template library (amino acids, nucleobases, sugars, groups).
+- :mod:`properties` / :mod:`gc_tables` - estimated properties (Joback, Stein-Brown,
+  Marrero-Gani, Crippen, Ertl, ESOL), each labelled with its method.
+- :mod:`names` - structure <-> name (offline list, offline name database, OPSIN, PubChem).
+- :mod:`fragment` - the Mass Fragmentation tool (cleavage line, fragment formulas/masses).
+- :mod:`threed` - ETKDG 3D model and projection for Structure Perspective.
 """

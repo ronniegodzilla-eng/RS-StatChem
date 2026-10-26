@@ -3,8 +3,9 @@
 :func:`open_workspace` opens a ChemDraw-like document window
 (:class:`~rsstatchem.ui.chemdraw.window.ChemDrawWindow`): Main Toolbar palette, General and
 Style toolbars, a page view of the document, the Analysis and Chemical Properties windows,
-name <-> structure conversion (offline list + optional PubChem), and .rsc / CDXML / MOL / SDF
-/ RXN files. The drawing engine is :mod:`rsstatchem.ui.chem_editor` on top of
+the Pen tool and Curves menu, orbitals, the Mass Fragmentation tool, Structure Perspective (3D),
+name <-> structure conversion (offline list, offline name database, OPSIN, optional PubChem),
+and .rsc / CDXML / MOL / SDF / RXN files. The drawing engine is :mod:`rsstatchem.ui.chem_editor` on top of
 :mod:`rsstatchem.core.chem_draw`.
 """
 from __future__ import annotations

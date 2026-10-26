@@ -2,12 +2,15 @@
 
 Supported subset: fragments with nodes (element, charge, isotope, explicit H, radicals,
 labels / nicknames) and bonds (order 1 / 1.5 / 2 / 3, wedge, hashed wedge, bold, dashed,
-wavy, double-bond position), captions (``<t>``), reaction arrows (``<arrow>``, and legacy
-``<graphic>`` lines with an arrow type), "+" signs and bracket pairs. CDXML and our
-documents both use points with y pointing down, so coordinates are copied unchanged.
+wavy, hollow wedge, hashed, dative, double-bond position), captions (``<t>``), reaction
+arrows (``<arrow>``, and legacy ``<graphic>`` lines with an arrow type), "+" signs, bracket
+pairs, Pen-tool curves (``<curve>`` with ``CurvePoints`` / ``CurveType`` / arrowheads; curved
+electron-pushing arrows are written as two-point curves) and orbitals (``<graphic
+GraphicType="Orbital">``). CDXML and our documents both use points with y pointing down, so
+coordinates are copied unchanged.
 
 Nicknames are written as labelled generic nodes (their text survives, their expansion is
-recomputed by RS-StatChem on import); curved arrows are written straight.
+recomputed by RS-StatChem on import).
 """
 from __future__ import annotations
 
@@ -21,16 +24,25 @@ from rsstatchem.core.chem_draw.style import preset
 __all__ = ["to_cdxml", "from_cdxml", "save_cdxml", "load_cdxml"]
 
 _DISPLAY_OUT = {"wedge": "WedgeBegin", "hash": "WedgedHashBegin", "bold": "Bold",
-                "dashed": "Dash", "wavy": "Wavy"}
+                "dashed": "Dash", "wavy": "Wavy", "hollow": "HollowWedgeBegin",
+                "hashed": "Hash"}
 _DISPLAY_IN = {"WedgeBegin": ("wedge", False), "WedgeEnd": ("wedge", True),
                "WedgedHashBegin": ("hash", False), "WedgedHashEnd": ("hash", True),
-               "Hash": ("dashed", False), "Dash": ("dashed", False), "Bold": ("bold", False),
-               "Wavy": ("wavy", False)}
+               "Hash": ("hashed", False), "Dash": ("dashed", False), "Bold": ("bold", False),
+               "Wavy": ("wavy", False), "HollowWedgeBegin": ("hollow", False),
+               "HollowWedgeEnd": ("hollow", True)}
 _DOUBLE_OUT = {"center": "Center", "left": "Left", "right": "Right"}
 _RADICAL_OUT = {1: "Doublet", 2: "Singlet"}
 _RADICAL_IN = {"Doublet": 1, "Singlet": 2, "Triplet": 2}
 _BRACKET_OUT = {"square": "SquarePair", "round": "RoundPair", "curly": "CurlyPair"}
 _FACE_FORMULA = 96
+# CDX Curve_Type bits
+_CT = {"closed": 1, "dashed": 2, "bold": 4, "arrow_end": 8, "arrow_start": 16,
+       "half_end": 32, "half_start": 64, "filled": 128, "shaded": 256, "doubled": 512}
+_ORB_OUT = {"s": "s", "p": "p", "lobe": "lobe", "hybrid": "hybridPlus", "dxy": "dxy",
+            "dz2": "dz2Plus"}
+_ORB_IN = {"s": "s", "oval": "s", "p": "p", "lobe": "lobe", "hybridPlus": "hybrid",
+           "hybridMinus": "hybrid", "dxy": "dxy", "dz2Plus": "dz2", "dz2Minus": "dz2"}
 _FONT_ID = "3"
 
 
@@ -119,6 +131,8 @@ def to_cdxml(doc: Document) -> str:
             attrs = {"id": str(b.id), "B": str(b.a), "E": str(b.b)}
             if b.order != 1:
                 attrs["Order"] = {1.5: "1.5", 2: "2", 3: "3"}.get(b.order, "1")
+            if b.style == "dative":
+                attrs["Order"] = "dative"
             if b.style in _DISPLAY_OUT:
                 attrs["Display"] = _DISPLAY_OUT[b.style]
             if b.order == 2 and b.double_pos in _DOUBLE_OUT:
@@ -148,6 +162,8 @@ def to_cdxml(doc: Document) -> str:
         size = st.caption_size * 1.2
         caption(p.x - size * 0.3, p.y + size * 0.35, "+", size, color=p.color)
     for ar in doc.arrows.values():
+        if ar.kind in ("curved", "fishhook"):       # written as <curve> below
+            continue
         attrs = {"id": str(next(ids)),
                  "BoundingBox": " ".join(_f(v) for v in (min(ar.x1, ar.x2), min(ar.y1, ar.y2),
                                                          max(ar.x1, ar.x2), max(ar.y1, ar.y2))),
@@ -173,6 +189,39 @@ def to_cdxml(doc: Document) -> str:
             if text:
                 w = len(text) * st.caption_size * 0.25
                 caption(mx - w, my + dy, text, st.caption_size, _FACE_FORMULA)
+    for c in doc.curves.values():
+        _curve_out(page, next(ids), c.points, c, color_index(c.color))
+    for ar in doc.arrows.values():
+        if ar.kind not in ("curved", "fishhook"):
+            continue
+        from rsstatchem.core.chem_draw.geometry import arrow_path_points
+        pts = arrow_path_points(ar, 2)
+        (x0, y0), (qx, qy), (x1, y1) = pts[0], _quad_control(ar), pts[-1]
+        c0 = (x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0))
+        c1 = (x1 + 2 / 3 * (qx - x1), y1 + 2 / 3 * (qy - y1))
+        flat = [(x0, y0), (x0, y0), c0, c1, (x1, y1), (x1, y1)]
+        _curve_out(page, next(ids), flat, None, color_index(ar.color),
+                   head="half" if ar.kind == "fishhook" else "full")
+    for o in doc.orbitals.values():
+        L = o.size or st.bond_length
+        cx, cy = o.x, o.y
+        mx, my = cx + L * math.cos(o.angle), cy + L * math.sin(o.angle)
+        w = L * 0.45
+        nx, ny = cx - w * math.sin(o.angle), cy + w * math.cos(o.angle)
+        kind = _ORB_OUT.get(o.kind, "p")
+        if o.fill == "shaded":
+            kind += "Shaded"
+        elif o.fill in ("filled", "phase"):
+            kind += "Filled"
+        attrs = {"id": str(next(ids)), "GraphicType": "Orbital", "OrbitalType": kind,
+                 "BoundingBox": f"{_f(cx - L)} {_f(cy - L)} {_f(cx + L)} {_f(cy + L)}",
+                 "Center3D": f"{_f(cx)} {_f(cy)} 0",
+                 "MajorAxisEnd3D": f"{_f(mx)} {_f(my)} 0",
+                 "MinorAxisEnd3D": f"{_f(nx)} {_f(ny)} 0"}
+        ci = color_index(o.color)
+        if ci:
+            attrs["color"] = ci
+        ET.SubElement(page, "graphic", attrs)
     for br in doc.brackets.values():
         ET.SubElement(page, "graphic", {
             "id": str(next(ids)), "GraphicType": "Bracket",
@@ -186,6 +235,41 @@ def to_cdxml(doc: Document) -> str:
     return ('<?xml version="1.0" encoding="UTF-8" ?>\n'
             '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd" >\n'
             + body + "\n")
+
+
+def _quad_control(ar) -> tuple[float, float]:
+    dx, dy = ar.x2 - ar.x1, ar.y2 - ar.y1
+    L = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / L, dx / L
+    return (ar.x1 + ar.x2) / 2 + nx * 2 * ar.bend, (ar.y1 + ar.y2) / 2 + ny * 2 * ar.bend
+
+
+def _curve_out(page, cid: int, points, c, color: str | None, head: str = "") -> None:
+    """A ``<curve>``: ``c`` is a Curve (its style flags) or None for a curved arrow."""
+    bits = 0
+    attrs = {"id": str(cid),
+             "CurvePoints": " ".join(f"{_f(x)} {_f(y)}" for x, y in points)}
+    end, start = (c.arrow_end, c.arrow_start) if c is not None else (head, "")
+    if c is not None:
+        for flag in ("closed", "dashed", "bold", "filled", "shaded", "doubled"):
+            if getattr(c, flag):
+                bits |= _CT[flag]
+    if end:
+        bits |= _CT["arrow_end" if end == "full" else "half_end"]
+        attrs["ArrowheadHead"] = "Full" if end == "full" else "HalfLeft"
+        attrs["ArrowheadType"] = "Solid"
+    if start:
+        bits |= _CT["arrow_start" if start == "full" else "half_start"]
+        attrs["ArrowheadTail"] = "Full" if start == "full" else "HalfLeft"
+        attrs["ArrowheadType"] = "Solid"
+    if bits:
+        attrs["CurveType"] = str(bits)
+    if color:
+        attrs["color"] = color
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    attrs["BoundingBox"] = f"{_f(min(xs))} {_f(min(ys))} {_f(max(xs))} {_f(max(ys))}"
+    ET.SubElement(page, "curve", attrs)
 
 
 def save_cdxml(doc: Document, path: str) -> None:
@@ -294,12 +378,15 @@ def from_cdxml(text: str) -> Document:
             ia, ib = node_map.get(b.get("B", "")), node_map.get(b.get("E", ""))
             if ia is None or ib is None or ia == ib:
                 continue
+            dative = b.get("Order", "") == "dative"
             try:
                 order = float(b.get("Order", "1"))
             except ValueError:
                 order = 1.0
             order = {1.0: 1, 2.0: 2, 3.0: 3}.get(order, 1.5 if order == 1.5 else 1)
             style, rev = _DISPLAY_IN.get(b.get("Display", ""), ("", False))
+            if dative:
+                style = "dative"
             if rev:
                 ia, ib = ib, ia
             bond = doc.add_bond(ia, ib, order, style)
@@ -309,6 +396,58 @@ def from_cdxml(text: str) -> Document:
                 bond.double_pos = pos.lower()
             pa, pb = doc.atoms[ia], doc.atoms[ib]
             lengths.append(math.hypot(pa.x - pb.x, pa.y - pb.y))
+
+    def read_curve(el) -> None:
+        try:
+            vals = [float(v) for v in el.get("CurvePoints", "").split()]
+        except ValueError:
+            return
+        pts = [[vals[i], vals[i + 1]] for i in range(0, len(vals) - 1, 2)]
+        if len(pts) < 4:
+            return
+        while len(pts) % 3:                         # tolerate a short or long point list
+            pts.append(list(pts[-1]))
+        try:
+            bits = int(el.get("CurveType", "0"))
+        except ValueError:
+            bits = 0
+        kw = {flag: bool(bits & _CT[flag]) for flag in
+              ("closed", "dashed", "bold", "filled", "shaded", "doubled")}
+        head, tail = el.get("ArrowheadHead", ""), el.get("ArrowheadTail", "")
+        end = "full" if head == "Full" or bits & _CT["arrow_end"] else (
+            "half" if head.startswith("Half") or bits & _CT["half_end"] else "")
+        start = "full" if tail == "Full" or bits & _CT["arrow_start"] else (
+            "half" if tail.startswith("Half") or bits & _CT["half_start"] else "")
+        c = doc.add_curve(pts, arrow_end=end, arrow_start=start, **kw)
+        c.color = color_of(el)
+
+    def read_orbital(el) -> None:
+        c, m = _xy(el.get("Center3D")), _xy(el.get("MajorAxisEnd3D"))
+        if c is None:
+            box = el.get("BoundingBox", "").split()
+            if len(box) != 4:
+                return
+            try:
+                x1, y1, x2, y2 = (float(v) for v in box)
+            except ValueError:
+                return
+            c = ((x1 + x2) / 2, (y1 + y2) / 2)
+            m = (c[0], min(y1, y2))
+        if m is None:
+            m = (c[0], c[1] - doc.style.bond_length)
+        otype = el.get("OrbitalType", "p")
+        fill = "plain"
+        base = otype
+        for suffix, f in (("Shaded", "shaded"), ("Filled", "filled")):
+            if otype.endswith(suffix):
+                base, fill = otype[:-len(suffix)], f
+        kind = _ORB_IN.get(base, "p")
+        if fill == "filled" and kind not in ("s", "lobe"):
+            fill = "phase"                          # ChemDraw's filled p / d / hybrid
+        o = doc.add_orbital(c[0], c[1], kind, fill=fill,
+                            size=math.hypot(m[0] - c[0], m[1] - c[1]),
+                            angle=math.atan2(m[1] - c[1], m[0] - c[0]))
+        o.color = color_of(el)
 
     def walk(el) -> None:
         for child in el:
@@ -350,8 +489,13 @@ def from_cdxml(text: str) -> Document:
                     kind = "line"
                 ar = doc.add_arrow(tail[0], tail[1], head[0], head[1], kind)
                 ar.color = color_of(child)
+            elif tag == "curve":
+                read_curve(child)
             elif tag == "graphic":
                 if child.get("SupersededBy"):
+                    continue
+                if child.get("GraphicType") == "Orbital":
+                    read_orbital(child)
                     continue
                 box = child.get("BoundingBox", "").split()
                 if len(box) != 4:

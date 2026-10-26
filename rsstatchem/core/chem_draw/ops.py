@@ -25,7 +25,8 @@ __all__ = ["BOND_TOOLS", "RING_TEMPLATES", "add_bond_at_atom", "add_bond_free",
 BOND_TOOLS = {
     "single": (1, ""), "double": (2, ""), "triple": (3, ""), "wedge": (1, "wedge"),
     "hash": (1, "hash"), "wavy": (1, "wavy"), "bold": (1, "bold"), "dashed": (1, "dashed"),
-    "aromatic": (1.5, ""),
+    "aromatic": (1.5, ""), "hollow": (1, "hollow"), "hashed": (1, "hashed"),
+    "dative": (1, "dative"),
 }
 # name -> (ring size, edge-order pattern or None)
 RING_TEMPLATES = {
@@ -99,7 +100,7 @@ def apply_bond_tool(doc: Document, bid: int, tool: str, near: int | None = None)
         else:
             b.order, b.style, b.double_pos = 2, "", "auto"
         return
-    if tool in ("wedge", "hash"):
+    if tool in ("wedge", "hash", "hollow", "dative"):
         narrow = near if near in (b.a, b.b) else b.a
         if b.style == style and b.order == 1:
             b.a, b.b = b.b, b.a                     # second click reverses the wedge

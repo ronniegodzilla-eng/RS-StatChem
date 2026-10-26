@@ -103,7 +103,60 @@ def _bond_icon(kind: str) -> str:
     if kind == "wavy":
         return ('<path d="M4 20 q2.6 -0.4 2.2 -3 t2.2 -3 t2.2 -3 t2.2 -3 t2.2 -3 t2.6 -3" '
                 f'fill="none" stroke="{K}" stroke-width="1.5" stroke-linecap="round"/>')
+    if kind == "hollow":
+        return _poly([(4.5, 19.5), (20.8, 5.8), (18.2, 3.2)], fill="#FFFFFF", stroke=K, w=1.2)
+    if kind == "hashed":
+        out = []
+        for k in range(1, 8):
+            t = k / 7.5
+            cx, cy = 4.5 + 15 * t, 19.5 - 15 * t
+            out.append(_line(cx - 1.6, cy - 1.6, cx + 1.6, cy + 1.6, 1.1))
+        return "".join(out)
+    if kind == "dative":
+        return _line(4.5, 19.5, 15.5, 8.5, 1.6) + _arrow_head(19.5, 4.5, 0.707, -0.707,
+                                                             hl=6, hw=3)
     return ""
+
+
+def _lobe_path(cx, cy, ang, L, fat=1.0) -> list[tuple[float, float]]:
+    pts = []
+    for k in range(25):
+        phi = -math.pi / 2 + math.pi * k / 24
+        r = L * math.cos(phi) ** 2
+        u, v = r * math.cos(phi), r * math.sin(phi) * fat
+        pts.append((cx + u * math.cos(ang) - v * math.sin(ang),
+                    cy + u * math.sin(ang) + v * math.cos(ang)))
+    return pts
+
+
+def _orbital_icon(kind: str, fill: str) -> str:
+    up = -math.pi / 2
+    if kind == "s":
+        lobes = [None]
+    elif kind == "lobe":
+        lobes = [(up, 10.5, 1.0)]
+    elif kind == "hybrid":
+        lobes = [(math.pi / 2, 4.2, 1.0), (up, 10.5, 1.15)]
+    elif kind == "dxy":
+        lobes = [(math.pi / 4 + k * math.pi / 2, 9.5, 0.95) for k in range(4)]
+    elif kind == "dz2":
+        lobes = ["ring", (up, 9.5, 1.0), (math.pi / 2, 9.5, 1.0)]
+    else:
+        lobes = [(up, 10.5, 1.0), (math.pi / 2, 10.5, 1.0)]
+    out = []
+    for k, lobe in enumerate(lobes):
+        f = {"plain": "#FFFFFF", "shaded": "#A8A8A8", "filled": K}.get(fill, "#A8A8A8")
+        if fill == "phase":
+            f = K if (k % 2 == 0) != (kind in ("dz2", "hybrid")) else "#FFFFFF"
+        if lobe is None:
+            out.append(f'<circle cx="12" cy="12" r="7.5" fill="{f}" stroke="{K}" '
+                       'stroke-width="1"/>')
+        elif lobe == "ring":
+            out.append(f'<ellipse cx="12" cy="12" rx="5.5" ry="2.2" fill="{f}" stroke="{K}" '
+                       'stroke-width="1"/>')
+        else:
+            out.append(_poly(_lobe_path(12, 12, *lobe), fill=f, stroke=K, w=1.0))
+    return "".join(out)
 
 
 def _arrow_icon(kind: str) -> str:
@@ -147,6 +200,29 @@ def _tool_svg(tool: str) -> str:
                 _line(7.4, 10.6, 15.4, 18.6, 1.1) + _line(9, 20, 20, 20, 1.2))
     if kind == "bond":
         return _bond_icon(arg)
+    if kind == "orbital":
+        k, _, f = arg.partition(":")
+        return _orbital_icon(k, f or "shaded")
+    if tool == "pen":
+        # a fountain-pen nib drawing a Bezier curve (handle line + points in blue)
+        return (f'<path d="M2.5 9 C 5 2.5, 9 2.5, 11 6" fill="none" stroke="{B}" '
+                'stroke-width="1.3"/>' + _line(2.5, 9, 6.5, 3, 0.8, B) +
+                f'<rect x="1.4" y="7.9" width="2.2" height="2.2" fill="{B}"/>' +
+                _poly([(4.5, 21), (8, 12.5), (13.5, 7.5), (18.5, 12.5), (13, 17)], fill=K) +
+                _line(5.2, 20.3, 10.8, 14.7, 0.9, "#FFFFFF") +
+                '<circle cx="11.3" cy="14.2" r="1.25" fill="#FFFFFF"/>' +
+                _line(15, 6, 20, 11, 2.6))
+    if tool == "fragment":
+        return (_ring(6, r=5.2, cx=8, cy=13) + _line(13, 10.5, 18, 8, 1.3) +
+                _line(15.5, 3, 15.5, 21, 1.2, "#C62828", "2 1.6") +
+                _text(20, 21.5, "m/z", 5.5, "bold", B))
+    if tool == "perspective":
+        return (_poly([(5, 8), (12, 4.5), (19, 8), (12, 11.5)], fill="#DCE6F5", stroke=K,
+                      w=1.0) +
+                _poly([(5, 8), (12, 11.5), (12, 20), (5, 16.5)], fill="#B9CBEA", stroke=K,
+                      w=1.0) +
+                _poly([(19, 8), (12, 11.5), (12, 20), (19, 16.5)], fill="#93AEDD", stroke=K,
+                      w=1.0))
     if tool == "chain":
         return (f'<polyline points="2.5,16 7.5,8 12,16 16.5,8 21.5,16" fill="none" '
                 f'stroke="{K}" stroke-width="1.5" stroke-linejoin="round"/>')

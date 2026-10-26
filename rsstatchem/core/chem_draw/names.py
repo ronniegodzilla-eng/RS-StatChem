@@ -1,18 +1,30 @@
 """Structure <-> name for ChemDraw's *Convert Structure to Name* / *Convert Name to Structure*.
 
-RDKit has no IUPAC naming, so names come from two honest sources and are never generated:
+RDKit has no IUPAC naming, so names come from honest sources and are never generated:
 
 1. an offline dictionary of common compounds (name, systematic name, SMILES) plus the
    template library; structures are matched by their full InChIKey (so stereo matters);
-2. optionally PubChem PUG-REST (https://pubchem.ncbi.nlm.nih.gov/rest/pug): the IUPAC name
+2. the offline name database ``resources/names/name_db.tsv.xz`` (InChIKey -> PubChem IUPAC
+   name, title and SMILES for ~150 000 established compounds, built from public-domain PubChem
+   data by ``scripts/build_name_db.py``) - both directions, exact matches only;
+3. name -> structure: OPSIN (Lowe et al., J. Chem. Inf. Model. 51 (2011) 739; MIT licence),
+   which parses IUPAC and many traditional names offline. It runs as a Java process: the
+   runtime bundled in ``resources/opsin/jre`` (packaged app) or a system ``java``, with
+   ``resources/opsin/opsin-cli.jar`` (``scripts/fetch_opsin.py``);
+4. optionally PubChem PUG-REST (https://pubchem.ncbi.nlm.nih.gov/rest/pug): the IUPAC name
    and title of a compound by InChIKey, or a 2D structure (SDF) for a name.
 
-The network functions block, so callers run them off the UI thread. No Qt here.
+OPSIN and the network functions block, so callers run them off the UI thread. No Qt here.
 """
 from __future__ import annotations
 
 import json
+import lzma
+import os
+import shutil
 import ssl
+import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,7 +32,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 __all__ = ["COMMON_COMPOUNDS", "NameResult", "NameLookupError", "offline_name",
-           "offline_structure", "pubchem_name", "pubchem_structure", "PUBCHEM"]
+           "offline_structure", "pubchem_name", "pubchem_structure", "PUBCHEM", "db_name",
+           "db_structure", "name_db_path", "name_db_size", "find_java", "opsin_jar",
+           "opsin_available", "opsin_structure", "opsin_structures", "OPSIN_LOGGING"]
 
 PUBCHEM = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 TIMEOUT = 12.0
@@ -128,11 +142,19 @@ _SYNONYMS = {"acetylsalicylic acid": "aspirin", "acetaminophen": "paracetamol",
              "methyl alcohol": "methanol", "ethene": "ethylene", "ethyne": "acetylene"}
 
 
+DB_SOURCE = "offline database (PubChem data)"
+OPSIN_SOURCE = "OPSIN (offline)"
+# log4j's simple logger: OPSIN then needs only the java.base and java.xml modules (jlink)
+OPSIN_LOGGING = ("-Dlog4j2.loggerContextFactory="
+                 "org.apache.logging.log4j.simple.SimpleLoggerContextFactory")
+
+
 @dataclass
 class NameResult:
     name: str                    # what to show (systematic name when known)
     common: str = ""
-    source: str = ""             # "offline list", "template library" or "PubChem"
+    source: str = ""             # "offline list", "template library", DB_SOURCE,
+    #                              OPSIN_SOURCE or "PubChem"
     molblock: str = ""           # structure for name -> structure
     smiles: str = ""
 
@@ -196,6 +218,177 @@ def offline_structure(name: str) -> NameResult | None:
         if q in (common.lower(), systematic.lower()):
             return NameResult(systematic or common, common, source, smiles=smi)
     return None
+
+
+# --- offline name database ------------------------------------------------------------------
+
+def name_db_path():
+    from rsstatchem.paths import resource
+    return resource("names/name_db.tsv.xz")
+
+
+@lru_cache(maxsize=1)
+def _db() -> dict[str, tuple[str, str, str]]:
+    """InChIKey -> (IUPAC name, common name, SMILES); empty when the file is missing."""
+    path = name_db_path()
+    table: dict[str, tuple[str, str, str]] = {}
+    try:
+        with lzma.open(path, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) == 4:
+                    table[parts[0]] = (parts[1], parts[2], parts[3])
+    except (OSError, lzma.LZMAError, EOFError):
+        return {}
+    return table
+
+
+@lru_cache(maxsize=1)
+def _db_names() -> dict[str, str]:
+    """lower-case IUPAC / common name -> InChIKey (first entry wins)."""
+    import re
+
+    out: dict[str, str] = {}
+    for key, (iupac, common, _smi) in _db().items():
+        for n in (common, iupac):
+            if n:
+                out.setdefault(n.lower(), key)
+    # PubChem titles such as "Ibuprofen, (+-)-" also answer to the plain name
+    # (the racemate / unspecified stereo wins over single stereoisomers)
+    qualifier = re.compile(r",\s*\((?:[+\-]{1,3}|[RSEZDL+\-,0-9 ]+)\)-?$", re.I)
+    stripped = []
+    for key, (_iupac, common, _smi) in _db().items():
+        plain = qualifier.sub("", common) if common else ""
+        if plain and plain != common:
+            unspecified = "UHFFFAOYSA" in key or "+-" in common
+            stripped.append((0 if unspecified else 1, plain.lower(), key))
+    for _rank, plain, key in sorted(stripped):
+        out.setdefault(plain, key)
+    return out
+
+
+def name_db_size() -> int:
+    return len(_db())
+
+
+def db_name(mol) -> NameResult | None:
+    """IUPAC name (and common name) of a molecule from the offline database, or None."""
+    from rsstatchem.core.chem import molecule as mo
+
+    try:
+        key = mo.to_inchikey(mol)
+    except Exception:  # noqa: BLE001
+        return None
+    hit = _db().get(key)
+    if hit is None:
+        return None
+    iupac, common, smi = hit
+    return NameResult(iupac or common, common or iupac, DB_SOURCE, smiles=smi)
+
+
+def db_structure(name: str) -> NameResult | None:
+    """SMILES for a name found exactly (case-insensitive) in the offline database."""
+    q = " ".join(name.strip().split()).lower()
+    key = _db_names().get(q) if q else None
+    if key is None:
+        return None
+    iupac, common, smi = _db()[key]
+    if not smi:
+        return None
+    return NameResult(iupac or common, common or iupac, DB_SOURCE, smiles=smi)
+
+
+# --- OPSIN (offline name -> structure) -------------------------------------------------------
+
+def opsin_jar():
+    """The OPSIN jar in the app resources, or None."""
+    from rsstatchem.paths import resource
+    jar = resource("opsin/opsin-cli.jar")
+    return jar if jar.is_file() else None
+
+
+def _exe(name: str) -> str:
+    return name + (".exe" if sys.platform == "win32" else "")
+
+
+def find_java(allow_system: bool = True) -> str | None:
+    """Java to run OPSIN: the bundled runtime first, then JAVA_HOME, then ``java`` on PATH.
+    On macOS the /usr/bin/java stub is only used when a JDK is actually installed (otherwise
+    it would ask the user to install Java)."""
+    from rsstatchem.paths import resource
+    bundled = resource("opsin/jre") / "bin" / _exe("java")
+    if bundled.is_file() and os.access(bundled, os.X_OK):
+        return str(bundled)
+    if not allow_system:
+        return None
+    home = os.environ.get("JAVA_HOME", "")
+    if home:
+        cand = os.path.join(home, "bin", _exe("java"))
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    found = shutil.which("java")
+    if not found:
+        return None
+    if sys.platform == "darwin" and os.path.realpath(found).startswith("/usr/bin"):
+        try:
+            r = subprocess.run(["/usr/libexec/java_home"], capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r.returncode != 0:
+            return None
+    return found
+
+
+def opsin_available(allow_system: bool = True) -> bool:
+    return opsin_jar() is not None and find_java(allow_system) is not None
+
+
+def _opsin_command(java: str, jar) -> list[str]:
+    return [java, OPSIN_LOGGING, "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8",
+            "-Dsun.stdout.encoding=UTF-8", "-Xshare:auto", "-jar", str(jar), "-osmi"]
+
+
+def opsin_structures(names_: list[str], timeout: float = 60.0, java: str | None = None
+                     ) -> list[str | None]:
+    """SMILES for each name (None when OPSIN cannot parse it). Raises NameLookupError when
+    OPSIN cannot run at all."""
+    jar = opsin_jar()
+    java = java or find_java()
+    if jar is None or java is None:
+        raise NameLookupError("OPSIN is not available (it needs the OPSIN jar and a Java "
+                              "runtime).", offline=True)
+    clean = [" ".join(n.split()) for n in names_]
+    kw = {}
+    if sys.platform == "win32":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        r = subprocess.run(_opsin_command(java, jar), input="\n".join(clean) + "\n",
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        raise NameLookupError("OPSIN did not answer in time.") from None
+    except OSError as exc:
+        raise NameLookupError(f"OPSIN could not be started ({exc}).", offline=True) from None
+    lines = r.stdout.splitlines()
+    if r.returncode != 0 and not any(line.strip() for line in lines):
+        tail = (r.stderr or "").strip().splitlines()[-1:] or [f"exit code {r.returncode}"]
+        raise NameLookupError(f"OPSIN failed: {tail[0][:200]}")
+    out: list[str | None] = []
+    for k in range(len(clean)):
+        smi = lines[k].strip() if k < len(lines) else ""
+        out.append(smi or None)
+    return out
+
+
+def opsin_structure(name: str, timeout: float = 60.0) -> NameResult:
+    """Structure (SMILES) of a systematic / traditional name parsed offline by OPSIN."""
+    name = " ".join(name.split())
+    smi = opsin_structures([name], timeout)[0]
+    if not smi:
+        raise NameLookupError(f"OPSIN could not interpret '{name}'.")
+    return NameResult(name, name, OPSIN_SOURCE, smiles=smi)
 
 
 def _ssl_context() -> ssl.SSLContext:

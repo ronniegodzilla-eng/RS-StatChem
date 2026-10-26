@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDockWidget, QFileDialog
 
 from rsstatchem.core.chem import molecule as mo
 from rsstatchem.core.chem_draw import abbrev, convert
-from rsstatchem.core.chem_draw.model import Document, load_rsc, save_rsc
+from rsstatchem.core.chem_draw.model import OBJECT_KINDS, Document, load_rsc, save_rsc
 from rsstatchem.core.chem_draw.style import PRESETS, Style, preset
 from rsstatchem.ui.chem_editor import export
 from rsstatchem.ui.chem_editor.canvas import ChemCanvas
@@ -647,7 +647,7 @@ class ChemEditorWindow(QMainWindow):
                 keys = self.doc.with_bonds({("atom", a) for a in part})
                 units.append(keys)
         for k in sel:
-            if k[0] in ("arrow", "plus", "text", "bracket"):
+            if k[0] in OBJECT_KINDS:
                 units.append({k})
         out = []
         for keys in units:
@@ -733,14 +733,12 @@ class ChemEditorWindow(QMainWindow):
                                              for k in sel])
 
     def z_order(self, front: bool) -> None:
-        sel = [k for k in self.canvas.selection if k[0] in ("arrow", "plus", "text",
-                                                            "bracket")]
+        sel = [k for k in self.canvas.selection if k[0] in OBJECT_KINDS]
         if not sel:
             return
 
         def fn():
-            objs = [o for kind in ("arrow", "plus", "text", "bracket")
-                    for o in self.doc.store(kind).values()]
+            objs = [o for kind in OBJECT_KINDS for o in self.doc.store(kind).values()]
             z = max(o.z for o in objs) + 1 if front else min(o.z for o in objs) - 1
             for k in sel:
                 self.doc.get(k).z = z

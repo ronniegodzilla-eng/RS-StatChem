@@ -1,11 +1,16 @@
 """Estimated physico-chemical properties for ChemDraw's *Chemical Properties* window.
 
-Every value here is an *estimate* and is labelled with its method:
+Every value here is an *estimate* and is labelled with the method that produced it:
 
 - Joback group contribution (K. G. Joback, R. C. Reid, Chem. Eng. Commun. 57 (1987) 233):
   normal boiling point, melting point, critical temperature / pressure / volume, ideal-gas
   heat and Gibbs energy of formation at 298 K. Only molecules made entirely of Joback groups
-  get values; otherwise the property says which atom has no group (no guessing).
+  get Joback values.
+- When Joback lacks a group (e.g. caffeine's ring N-CH3), other published group-contribution
+  methods are tried in turn (tables in :mod:`gc_tables`): the boiling point by Stein & Brown
+  (J. Chem. Inf. Comput. Sci. 34 (1994) 581), then Marrero & Gani first-order groups (Fluid
+  Phase Equilib. 183-184 (2001) 183) for every Joback property. Each value says which method
+  gave it; a value stays n/a when no method covers every atom (no guessing).
 - Crippen LogP and molar refractivity (Wildman & Crippen 1999, as implemented by RDKit).
 - Topological polar surface area (Ertl 2000, RDKit).
 - ESOL aqueous solubility LogS (Delaney 2004): 0.16 - 0.63 cLogP - 0.0062 MW + 0.066 RB
@@ -21,7 +26,14 @@ from dataclasses import dataclass, field
 from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors, rdMolDescriptors
 
-__all__ = ["JOBACK", "JobackResult", "joback", "PropertyValue", "chemical_properties"]
+__all__ = ["JOBACK", "JobackResult", "joback", "PropertyValue", "chemical_properties",
+           "stein_brown", "marrero_gani", "GCResult", "METHODS"]
+
+METHODS = {
+    "joback": ("Joback", "Joback group contribution estimate (Joback & Reid 1987)"),
+    "sb": ("Stein-Brown", "Stein & Brown group contribution estimate (1994), boiling point"),
+    "mg": ("Marrero-Gani", "Marrero & Gani first-order group contribution estimate (2001)"),
+}
 
 # group -> (Tc, Pc, Vc, Tb, Tm, Hform, Gform); None = not given by Joback
 JOBACK: dict[str, tuple] = {
@@ -245,6 +257,181 @@ def joback(mol: Chem.Mol) -> JobackResult:
     return res
 
 
+# --- other group-contribution methods (fallbacks) ---------------------------------------------
+
+@dataclass
+class GCResult:
+    method: str                                     # key of METHODS
+    groups: dict = field(default_factory=dict)
+    missing: str = ""
+    values: dict = field(default_factory=dict)      # tb, tm, tc, pc, vc, hf, gf (None = n/a)
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing
+
+
+def _split_smarts(smarts: str) -> list[str]:
+    """Alternatives separated by top-level commas (commas inside [] or () belong to SMARTS)."""
+    parts, depth, cur = [], 0, ""
+    for ch in smarts:
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return [x for x in parts if x]
+
+
+_QUERIES: dict = {}
+
+
+def _queries(key: str, items):
+    """[(group, [query mols])] compiled once; ``items`` = [(group, SMARTS)]."""
+    if key not in _QUERIES:
+        out = []
+        for name, smarts in items:
+            qs = [q for q in (Chem.MolFromSmarts(x) for x in _split_smarts(smarts))
+                  if q is not None]
+            if qs:
+                out.append((name, qs))
+        _QUERIES[key] = out
+    return _QUERIES[key]
+
+
+def _forms(mol: Chem.Mol) -> list[Chem.Mol]:
+    """The molecule with RDKit aromaticity, with MDL aromaticity and fully Kekule: group
+    tables differ in what they call aromatic (e.g. caffeine's pyrimidinedione ring)."""
+    out = [mol]
+    try:
+        kek = Chem.Mol(mol)
+        Chem.Kekulize(kek, clearAromaticFlags=True)
+        mdl = Chem.Mol(kek)
+        Chem.SetAromaticity(mdl, Chem.AromaticityModel.AROMATICITY_MDL)
+        out += [mdl, kek]
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _fragment(mol: Chem.Mol, queries) -> tuple[dict, list[int]]:
+    """Greedy exclusive matching (larger groups first, then table order): group counts and
+    the heavy atoms no group covers."""
+    used: set[int] = set()
+    counts: dict[str, int] = {}
+    for name, qs in queries:
+        for q in qs:
+            for match in mol.GetSubstructMatches(q, uniquify=True):
+                if used.intersection(match):
+                    continue
+                used.update(match)
+                counts[name] = counts.get(name, 0) + 1
+    left = [a.GetIdx() for a in mol.GetAtoms() if a.GetIdx() not in used]
+    return counts, left
+
+
+def _best_fragmentation(mol: Chem.Mol, key: str, items) -> tuple[dict, str]:
+    queries = _queries(key, items)
+    first_left = None
+    for form in _forms(mol):
+        counts, left = _fragment(form, queries)
+        if not left:
+            return counts, ""
+        if first_left is None:
+            first_left = left
+    a = mol.GetAtomWithIdx(first_left[0])
+    where = "ring " if a.IsInRing() else ""
+    return {}, f"no group for a {where}{a.GetSymbol()} atom with {a.GetTotalNumHs()} H"
+
+
+def _gc_precheck(mol: Chem.Mol) -> str:
+    if mol is None or mol.GetNumAtoms() == 0:
+        return "nothing drawn"
+    if len(Chem.GetMolFrags(mol)) > 1:
+        return "select a single molecule"
+    if any(a.GetFormalCharge() for a in mol.GetAtoms()) and not _is_nitro_only(mol):
+        return "charged atoms have no group"
+    return ""
+
+
+def _is_nitro_only(mol: Chem.Mol) -> bool:
+    for a in mol.GetAtoms():
+        q = a.GetFormalCharge()
+        if not q:
+            continue
+        if a.GetSymbol() == "N" and q == 1 and sum(
+                1 for n in a.GetNeighbors() if n.GetSymbol() == "O") >= 2:
+            continue
+        if a.GetSymbol() == "O" and q == -1 and a.GetNeighbors() and \
+                a.GetNeighbors()[0].GetSymbol() == "N":
+            continue
+        return False
+    return True
+
+
+def stein_brown(mol: Chem.Mol) -> GCResult:
+    """Normal boiling point by Stein & Brown (1994), with their correction."""
+    from rsstatchem.core.chem_draw.gc_tables import STEIN_BROWN, STEIN_BROWN_SMARTS
+
+    res = GCResult("sb")
+    res.missing = _gc_precheck(mol)
+    if res.missing:
+        return res
+    counts, why = _best_fragmentation(mol, "sb", STEIN_BROWN_SMARTS)
+    if why:
+        res.missing = why
+        return res
+    res.groups = counts
+    tb = 198.2 + sum(n * STEIN_BROWN[g] for g, n in counts.items())
+    tb = tb - 94.84 + 0.5577 * tb - 0.0007705 * tb * tb if tb <= 700 else \
+        tb + 282.7 - 0.5209 * tb
+    res.values = {"tb": tb}
+    return res
+
+
+def marrero_gani(mol: Chem.Mol) -> GCResult:
+    """Marrero & Gani (2001) first-order estimates of Tb, Tm, Tc, Pc, Vc, Hf, Gf."""
+    from rsstatchem.core.chem_draw.gc_tables import MARRERO_GANI, MG_FIELDS
+
+    res = GCResult("mg")
+    res.missing = _gc_precheck(mol)
+    if res.missing:
+        return res
+    items = sorted(((g, row[0]) for g, row in MARRERO_GANI.items()),
+                   key=lambda it: -max(Chem.MolFromSmarts(x).GetNumAtoms()
+                                       for x in _split_smarts(it[1])
+                                       if Chem.MolFromSmarts(x) is not None))
+    counts, why = _best_fragmentation(mol, "mg", items)
+    if why:
+        res.missing = why
+        return res
+    res.groups = counts
+    for prop in ("tb", "tm", "tc", "pc", "vc", "hf", "gf"):
+        k = MG_FIELDS.index(prop)
+        vals = [(n, MARRERO_GANI[g][k]) for g, n in counts.items()]
+        if any(v is None for _, v in vals):
+            res.values[prop] = None
+            continue
+        t = sum(n * v for n, v in vals)
+        if prop in ("tb", "tm", "tc"):
+            c = {"tb": 222.543, "tm": 147.45, "tc": 231.239}[prop]
+            res.values[prop] = c * math.log(t) if t > 0 else None
+        elif prop == "pc":
+            res.values[prop] = (t + 0.108998) ** -2 + 5.9827
+        elif prop == "vc":
+            res.values[prop] = 7.95 + t
+        elif prop == "hf":
+            res.values[prop] = 5.549 + t
+        else:
+            res.values[prop] = -34.967 + t
+    return res
+
+
 @dataclass
 class PropertyValue:
     name: str
@@ -253,6 +440,7 @@ class PropertyValue:
     method: str
     decimals: int = 2
     note: str = ""          # why the value is missing
+    short: str = ""         # short method name shown next to the value (Joback, ...)
 
     def text(self) -> str:
         if self.value is None or (isinstance(self.value, float) and math.isnan(self.value)):
@@ -266,21 +454,49 @@ def chemical_properties(mol: Chem.Mol | None) -> list[PropertyValue]:
     if mol is None or mol.GetNumAtoms() == 0:
         return []
     jb = joback(mol)
-    jm = "Joback group contribution estimate"
-    note = "" if jb.ok else jb.missing
+    jv = {"tb": jb.tb, "tm": jb.tm, "tc": jb.tc, "pc": jb.pc, "vc": jb.vc, "hf": jb.hf,
+          "gf": jb.gf}
+    lazy: dict = {}
 
-    def k_to_c(v):
-        return None if v is None else v - 273.15
+    def fallback(key: str) -> GCResult:
+        if key not in lazy:
+            try:
+                lazy[key] = stein_brown(mol) if key == "sb" else marrero_gani(mol)
+            except Exception as exc:  # noqa: BLE001 - an estimate must never break drawing
+                lazy[key] = GCResult(key, missing=str(exc))
+        return lazy[key]
+
+    def pick(prop: str):
+        """(value, method key, why missing) from the first method that covers the
+        molecule: Joback, then Stein-Brown (boiling point), then Marrero-Gani."""
+        if jb.ok and jv[prop] is not None:
+            return jv[prop], "joback", ""
+        reasons = [f"Joback: {jb.missing or 'no parameter'}"]
+        for key in (("sb", "mg") if prop == "tb" else ("mg",)):
+            r = fallback(key)
+            v = r.values.get(prop) if r.ok else None
+            if v is not None and math.isfinite(v):
+                return v, key, ""
+            reasons.append(f"{METHODS[key][0]}: {r.missing or 'no parameter'}")
+        return None, "joback", "; ".join(reasons)
+
+    def row(name, prop, unit, decimals=2, extra="", convert=None):
+        v, key, why = pick(prop)
+        short, long = METHODS[key]
+        if convert is not None and v is not None:
+            v = convert(v)
+        return PropertyValue(name, v, unit, long + extra, decimals, why,
+                             short if v is not None else "")
 
     rows = [
-        PropertyValue("Boiling Point", jb.tb, "K", jm, 2, note),
-        PropertyValue("Boiling Point (°C)", k_to_c(jb.tb), "°C", jm, 2, note),
-        PropertyValue("Melting Point", jb.tm, "K", jm, 2, note),
-        PropertyValue("Critical Temp.", jb.tc, "K", jm, 2, note),
-        PropertyValue("Critical Pres.", jb.pc, "bar", jm, 2, note),
-        PropertyValue("Critical Vol.", jb.vc, "cm³/mol", jm, 1, note),
-        PropertyValue("Gibbs Energy", jb.gf, "kJ/mol", jm + " (ideal gas, 298 K)", 2, note),
-        PropertyValue("Heat of Form.", jb.hf, "kJ/mol", jm + " (ideal gas, 298 K)", 2, note),
+        row("Boiling Point", "tb", "K"),
+        row("Boiling Point (°C)", "tb", "°C", convert=lambda v: v - 273.15),
+        row("Melting Point", "tm", "K"),
+        row("Critical Temp.", "tc", "K"),
+        row("Critical Pres.", "pc", "bar"),
+        row("Critical Vol.", "vc", "cm³/mol", 1),
+        row("Gibbs Energy", "gf", "kJ/mol", extra=" (ideal gas, 298 K)"),
+        row("Heat of Form.", "hf", "kJ/mol", extra=" (ideal gas, 298 K)"),
     ]
     try:
         logp = Crippen.MolLogP(mol)
@@ -294,9 +510,13 @@ def chemical_properties(mol: Chem.Mol | None) -> list[PropertyValue]:
     except Exception:  # noqa: BLE001
         logp = mr = tpsa = logs = None
     rows += [
-        PropertyValue("LogP", logp, "", "Crippen estimate (RDKit); not BioByte CLogP", 2),
-        PropertyValue("MR", mr, "cm³/mol", "Crippen molar refractivity (RDKit); not CMR", 2),
-        PropertyValue("tPSA", tpsa, "Å²", "Topological polar surface area, Ertl (RDKit)", 2),
-        PropertyValue("LogS", logs, "", "ESOL estimate, Delaney 2004 (log mol/L)", 2),
+        PropertyValue("LogP", logp, "", "Crippen estimate (RDKit); not BioByte CLogP", 2,
+                      short="Crippen"),
+        PropertyValue("MR", mr, "cm³/mol", "Crippen molar refractivity (RDKit); not CMR", 2,
+                      short="Crippen"),
+        PropertyValue("tPSA", tpsa, "Å²", "Topological polar surface area, Ertl (RDKit)", 2,
+                      short="Ertl"),
+        PropertyValue("LogS", logs, "", "ESOL estimate, Delaney 2004 (log mol/L)", 2,
+                      short="ESOL"),
     ]
     return rows
