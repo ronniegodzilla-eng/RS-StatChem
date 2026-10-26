@@ -933,6 +933,14 @@ def _draw_3d(ctx: _Ctx, li, layer: Layer, ax) -> list:
                     art = ax.plot_wireframe(X, Y, Z, color=ctx.line_color(p, i),
                                             linewidth=p.line.width * 0.6)
                     mappable = None
+                elif p.options.get("solid"):   # Origin's 3D Surface with a single fill colour
+                    edge = ctx.line_color(p, i) if p.line.visible else "none"
+                    art = ax.plot_surface(X, Y, np.ma.masked_invalid(Z),
+                                          color=ctx.fill_color(p, i), shade=True,
+                                          edgecolor=edge, linewidth=p.line.width * 0.3,
+                                          alpha=p.fill.alpha, antialiased=True,
+                                          rstride=1, cstride=1)
+                    mappable = None
                 else:
                     edge = ctx.line_color(p, i) if p.line.visible else "none"
                     art = ax.plot_surface(X, Y, np.ma.masked_invalid(Z), cmap=cmap,

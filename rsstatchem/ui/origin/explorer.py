@@ -1,24 +1,32 @@
 """Project Explorer (Origin's PE): the folder tree on top, the windows of the active folder
 below in a details list (Name, View, Type, Size, Comments). Hidden windows are listed in grey;
-double-click shows and activates a window. Folder and window commands are on the context
-menus and call back into the main window.
+double-click shows and activates a window. Drag windows from the list onto a folder to move
+them, or a folder onto another folder to nest it. Folder and window commands are on the
+context menus and call back into the main window.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QMimeData, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QHeaderView, QMenu, QSplitter, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from rsstatchem.ui.origin.icons import icon
-from rsstatchem.ui.origin.model import Folder, GraphDoc, Notes, Project, Workbook, Worksheet
+from rsstatchem.ui.origin.model import (Folder, GraphDoc, MatrixBook, Notes, Project, Workbook,
+                                        Worksheet)
 
 ROLE = Qt.ItemDataRole.UserRole
-TYPES = {"book": "Workbook", "graph": "Graph", "notes": "Notes"}
-ICONS = {"book": "e_book", "graph": "e_graph", "notes": "e_notes"}
+TYPES = {"book": "Workbook", "graph": "Graph", "notes": "Notes", "matrix": "Matrix"}
+ICONS = {"book": "e_book", "graph": "e_graph", "notes": "e_notes", "matrix": "e_matrix"}
+MIME_WINDOWS = "application/x-rsstatchem-origin-windows"
+MIME_FOLDER = "application/x-rsstatchem-origin-folder"
 
 
 def window_size(obj) -> str:
+    if isinstance(obj, MatrixBook):
+        ms = obj.active_sheet()
+        return (f"{ms.n_rows}×{ms.n_cols}" if ms is not None else "") + \
+            (f", {len(obj.sheets)} sheets" if len(obj.sheets) > 1 else "")
     if isinstance(obj, Workbook):
         ws = next((s for s in obj.sheets if isinstance(s, Worksheet)), None)
         sheets = len(obj.sheets)
@@ -34,6 +42,94 @@ def window_size(obj) -> str:
     return ""
 
 
+class _WindowList(QTreeWidget):
+    """The window list; its items can be dragged onto a folder of the folder tree."""
+
+    def __init__(self):
+        super().__init__()
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def mimeTypes(self) -> list[str]:  # noqa: N802
+        return [MIME_WINDOWS]
+
+    def mimeData(self, items) -> QMimeData:  # noqa: N802
+        mime = QMimeData()
+        names = [i.data(0, ROLE) for i in items]
+        mime.setData(MIME_WINDOWS, "\n".join(names).encode("utf-8"))
+        mime.setText("\n".join(names))
+        return mime
+
+
+class _FolderTree(QTreeWidget):
+    """The folder tree: accepts windows (moved into the folder under the mouse) and folders
+    (moved, with their contents, below the target folder) — Origin's PE drag and drop."""
+
+    def __init__(self, explorer: "ProjectExplorer"):
+        super().__init__()
+        self.explorer = explorer
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDropIndicatorShown(True)
+
+    def mimeTypes(self) -> list[str]:  # noqa: N802
+        return [MIME_FOLDER, MIME_WINDOWS]
+
+    def mimeData(self, items) -> QMimeData:  # noqa: N802
+        mime = QMimeData()
+        if items:
+            mime.setData(MIME_FOLDER, str(items[0].data(0, ROLE)).encode("ascii"))
+        return mime
+
+    def _target(self, event) -> Folder | None:
+        item = self.itemAt(event.position().toPoint())
+        return self.explorer.folder_by_id(item.data(0, ROLE)) if item is not None else None
+
+    def _accepts(self, event) -> bool:
+        target = self._target(event)
+        mime = event.mimeData()
+        if target is None:
+            return False
+        if mime.hasFormat(MIME_WINDOWS):
+            return True
+        if mime.hasFormat(MIME_FOLDER):
+            folder = self.explorer.folder_by_id(int(bytes(mime.data(MIME_FOLDER)).decode()))
+            return folder is not None and folder is not self.explorer.project.root and \
+                target not in list(folder.walk())
+        return False
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        mime = event.mimeData()
+        if mime.hasFormat(MIME_WINDOWS) or mime.hasFormat(MIME_FOLDER):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self._accepts(event):
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        if not self._accepts(event):
+            event.ignore()
+            return
+        target = self._target(event)
+        mime = event.mimeData()
+        if mime.hasFormat(MIME_WINDOWS):
+            names = [n for n in bytes(mime.data(MIME_WINDOWS)).decode("utf-8").split("\n") if n]
+            self.explorer.drop_windows(names, target)
+        else:
+            folder = self.explorer.folder_by_id(int(bytes(mime.data(MIME_FOLDER)).decode()))
+            self.explorer.drop_folder(folder, target)
+        event.setDropAction(Qt.DropAction.MoveAction)
+        event.accept()
+
+
 class ProjectExplorer(QWidget):
     folder_changed = Signal(object)     # Folder
     window_activated = Signal(str)      # window name (double-click)
@@ -43,14 +139,14 @@ class ProjectExplorer(QWidget):
         self.main = main
         self.project: Project | None = None
         self.current: Folder | None = None
-        self.folders = QTreeWidget()
+        self.folders = _FolderTree(self)
         self.folders.setHeaderHidden(True)
         self.folders.setObjectName("peFolders")
         self.folders.itemSelectionChanged.connect(self._folder_selected)
         self.folders.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.folders.customContextMenuRequested.connect(self._folder_menu)
         self.folders.itemChanged.connect(self._folder_renamed)
-        self.windows = QTreeWidget()
+        self.windows = _WindowList()
         self.windows.setObjectName("peWindows")
         self.windows.setHeaderLabels(["Name", "View", "Type", "Size", "Comments"])
         self.windows.setRootIsDecorated(False)
@@ -131,6 +227,27 @@ class ProjectExplorer(QWidget):
         return next((f for f in self.project.root.walk() if id(f) == fid), None) \
             if self.project else None
 
+    # ------------------------------------------------------------------ drag and drop
+    def drop_windows(self, names: list[str], folder: Folder) -> None:
+        """Windows dragged from the list onto a folder."""
+        names = [n for n in names if self.project is not None and n in self.project.windows]
+        if names and self.main is not None:
+            self.main.move_windows(names, folder)
+
+    def drop_folder(self, folder: Folder, target: Folder) -> None:
+        """A folder dragged onto another folder becomes its subfolder."""
+        if self.project is None or folder is self.project.root or \
+                target in list(folder.walk()):
+            return
+        parent = self.project.root.parent_of(folder)
+        if parent is None or parent is target:
+            return
+        parent.folders.remove(folder)
+        target.folders.append(folder)
+        self.rebuild()
+        if self.main is not None:
+            self.main.set_modified(True)
+
     # ------------------------------------------------------------------ events
     def _folder_selected(self) -> None:
         item = self.folders.currentItem()
@@ -167,6 +284,7 @@ class ProjectExplorer(QWidget):
         menu.addSeparator()
         new = menu.addMenu("New Window")
         new.addAction(icon("o_new_book"), "Workbook", self.main.new_book)
+        new.addAction(icon("o_new_matrix"), "Matrix", self.main.new_matrix)
         new.addAction(icon("o_new_graph"), "Graph", self.main.new_graph)
         new.addAction(icon("o_new_notes"), "Notes", self.main.new_notes)
         menu.exec(self.folders.viewport().mapToGlobal(pos))
@@ -191,6 +309,7 @@ class ProjectExplorer(QWidget):
             menu.addAction("Delete", lambda: self.main.delete_windows(names, ask=True))
         else:
             menu.addAction(icon("o_new_book"), "New Workbook", self.main.new_book)
+            menu.addAction(icon("o_new_matrix"), "New Matrix", self.main.new_matrix)
             menu.addAction(icon("o_new_graph"), "New Graph", self.main.new_graph)
             menu.addAction(icon("o_new_notes"), "New Notes", self.main.new_notes)
             menu.addAction(icon("o_new_folder"), "New Folder", self.main.new_folder)

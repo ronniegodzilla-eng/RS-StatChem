@@ -2,7 +2,11 @@
 
 Mirrors Origin's hierarchy: a :class:`Project` holds a folder tree and named windows —
 :class:`Workbook` (sheets: :class:`Worksheet` data sheets and :class:`ReportSheet` analysis
-reports), :class:`GraphDoc` (a :class:`~rsstatchem.core.graph.model.Graph`) and :class:`Notes`.
+reports), :class:`MatrixBook` (sheets: :class:`MatrixSheet` — a Z grid with X/Y coordinate
+mapping), :class:`GraphDoc` (a :class:`~rsstatchem.core.graph.model.Graph`) and :class:`Notes`.
+
+Data are referenced with Origin's range notation ``[Book1]Sheet1!B[3:10]`` (book, sheet,
+column, optional 1-based row range): :class:`RangeRef` / :func:`parse_range`.
 
 A worksheet column (:class:`WColumn`) has Origin's header rows — short name, Long Name,
 Units, Comments, F(x)= formula — and a designation (X, Y, Z, X Error, Y Error, Label,
@@ -38,6 +42,11 @@ DESIGNATIONS: dict[str, tuple[str, str]] = {
 LABEL_ROWS: tuple[tuple[str, str], ...] = (("long_name", "Long Name"), ("units", "Units"),
                                            ("comments", "Comments"), ("formula", "F(x)="))
 _SHORT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_RANGE_RE = re.compile(r"""^\s*(?:\[(?P<book>[^\]]+)\])?(?:(?P<sheet>[^!\[\]"]+)!)?
+                           (?:col\(\s*)?(?P<col>"[^"]*"|[A-Za-z][A-Za-z0-9_]*)(?:\s*\))?
+                           (?:"[^"]*")?
+                           (?:\[\s*(?P<r1>\d+)\s*(?::\s*(?P<r2>\d+|\*)\s*)?\])?\s*$""",
+                       re.VERBOSE)
 
 
 # ====================================================================== values
@@ -91,6 +100,68 @@ def to_float(value) -> float:
     return math.nan
 
 
+# ====================================================================== ranges
+@dataclass
+class RangeRef:
+    """A worksheet column range in Origin's notation, e.g. ``[Book1]Sheet1!B[3:10]``.
+    ``r1`` / ``r2`` are 1-based and inclusive (None = from the first / to the last row)."""
+    book: str
+    sheet: str
+    col: str
+    r1: int | None = None
+    r2: int | None = None
+
+    @property
+    def text(self) -> str:
+        return range_text(self.book, self.sheet, self.col, self.r1, self.r2)
+
+    @property
+    def rows(self) -> tuple[int, int] | None:
+        """``(r1, r2)`` or None for the whole column."""
+        if self.r1 is None and self.r2 is None:
+            return None
+        return (self.r1 or 1, self.r2 or 0)
+
+
+def rows_text(r1: int | None, r2: int | None) -> str:
+    """``[3:10]`` (1-based, inclusive); ``""`` for a whole column."""
+    if not r1 and not r2:
+        return ""
+    return f"[{r1 or 1}:{r2 if r2 else '*'}]"
+
+
+def range_text(book: str, sheet: str, col: str, r1: int | None = None,
+               r2: int | None = None) -> str:
+    """Origin's range notation: ``[Book1]Sheet1!B`` or ``[Book1]Sheet1!B[3:10]``."""
+    return f"[{book}]{sheet}!{col}{rows_text(r1, r2)}"
+
+
+def parse_range(text: str, book: str = "", sheet: str = "") -> RangeRef:
+    """Parse ``[Book1]Sheet1!B[3:10]``, ``Sheet1!B``, ``B[3:10]``, ``col(B)`` or
+    ``"Long Name"`` (book / sheet default to the given ones). Raises ValueError."""
+    m = _RANGE_RE.match(text or "")
+    if not m:
+        raise ValueError(f"“{text}” is not a range such as [Book1]Sheet1!B or "
+                         "[Book1]Sheet1!B[3:10].")
+    r1 = int(m.group("r1")) if m.group("r1") else None
+    r2 = m.group("r2")
+    r2 = int(r2) if r2 and r2 != "*" else (r1 if r1 and r2 is None else None)
+    if r1 is not None and r2 is not None and r2 < r1:
+        r1, r2 = r2, r1
+    return RangeRef(m.group("book") or book, (m.group("sheet") or sheet).strip(),
+                    m.group("col"), r1, r2)
+
+
+def row_window(n: int, rows: tuple[int, int] | None) -> tuple[int, int]:
+    """0-based ``(start, stop)`` of a 1-based inclusive row range within ``n`` rows
+    (``rows[1] == 0`` means "to the last row")."""
+    if not rows:
+        return 0, n
+    lo = max(int(rows[0]) - 1, 0)
+    hi = int(rows[1]) if rows[1] else n
+    return min(lo, n), max(min(hi, n), min(lo, n))
+
+
 # ====================================================================== columns & sheets
 @dataclass
 class WColumn:
@@ -139,6 +210,7 @@ class Worksheet:
     columns: list[WColumn] = field(default_factory=list)
     n_rows: int = DEFAULT_ROWS
     kind: str = "data"
+    sparklines: bool = False        # Origin's Sparklines header row (tiny plot per column)
 
     # ------------------------------------------------------------------ structure
     @classmethod
@@ -164,6 +236,15 @@ class Worksheet:
 
     def find_long_name(self, long_name: str) -> WColumn | None:
         return next((c for c in self.columns if c.long_name == long_name), None)
+
+    def find(self, ref: str) -> int:
+        """Column index from a short name or a quoted ``"Long Name"`` (KeyError if absent)."""
+        if len(ref) > 1 and ref.startswith('"') and ref.endswith('"'):
+            col = self.find_long_name(ref[1:-1])
+            if col is None:
+                raise KeyError(ref)
+            return self.columns.index(col)
+        return self.index_of(ref)
 
     def next_short_name(self) -> str:
         used = {c.name.upper() for c in self.columns}
@@ -323,26 +404,79 @@ def _letters(k: int) -> str:
     return out
 
 
+RECALC_MODES = {"auto": "Auto", "manual": "Manual", "none": "None"}
+
+
 @dataclass
 class ReportSheet:
-    """An analysis report (Origin's report sheet): titled tables, notes and plot images."""
+    """An analysis report (Origin's report sheet): titled tables, notes and plot images,
+    shown as collapsible sections. Consecutive items with the same ``group`` are nested under
+    one parent section (e.g. "Residual Plots"); an item's ``collapsed`` flag (and
+    ``group_collapsed`` on the first item of a group) remembers the state of a section.
+
+    ``op`` describes the operation that produced the report so it can be re-run when its
+    source data change (Origin's lock icon / Recalculate): ``{"kind": ..., "settings": ...,
+    "mode": "auto" | "manual" | "none", "hash": <source data hash>, "dirty": bool}``."""
     name: str = "Report1"
     title: str = ""
     items: list[dict] = field(default_factory=list)
     kind: str = "report"
+    op: dict = field(default_factory=dict)
 
-    def add_table(self, title: str, columns: list, rows: list[list], notes=()) -> None:
+    def add_table(self, title: str, columns: list, rows: list[list], notes=(),
+                  group: str = "") -> None:
         self.items.append({"kind": "table", "title": title,
                            "columns": [list(c) if isinstance(c, tuple) else c for c in columns],
                            "rows": [[("" if v is None else str(v)) for v in r] for r in rows],
-                           "notes": list(notes)})
+                           "notes": list(notes), "group": group})
 
-    def add_text(self, title: str, text: str, style: str = "note") -> None:
-        self.items.append({"kind": "text", "title": title, "text": text, "style": style})
+    def add_text(self, title: str, text: str, style: str = "note", group: str = "") -> None:
+        self.items.append({"kind": "text", "title": title, "text": text, "style": style,
+                           "group": group})
 
-    def add_image(self, title: str, png: bytes, width: int = 520) -> None:
-        self.items.append({"kind": "image", "title": title, "width": width,
-                           "png": base64.b64encode(png).decode("ascii")})
+    def add_image(self, title: str, png: bytes, width: int = 520, group: str = "",
+                  graph: dict | None = None) -> None:
+        item = {"kind": "image", "title": title, "width": width, "group": group,
+                "png": base64.b64encode(png).decode("ascii")}
+        if graph:
+            item["graph"] = graph   # how to rebuild the picture as a graph window
+        self.items.append(item)
+
+    @property
+    def mode(self) -> str:
+        return self.op.get("mode", "none") if self.op else "none"
+
+    @property
+    def dirty(self) -> bool:
+        return bool(self.op.get("dirty")) if self.op else False
+
+    def sections(self) -> list[tuple[str, list[int]]]:
+        """Top-level sections: ``(group title or "", [item indices])`` in report order."""
+        out: list[tuple[str, list[int]]] = []
+        for k, item in enumerate(self.items):
+            group = item.get("group", "")
+            if group and out and out[-1][0] == group:
+                out[-1][1].append(k)
+            else:
+                out.append((group, [k]))
+        return out
+
+    def replace_items(self, other: "ReportSheet") -> None:
+        """Take the content of a re-run, keeping which sections were collapsed."""
+        collapsed = {(i.get("group", ""), i.get("title")) for i in self.items
+                     if i.get("collapsed")}
+        groups = {i.get("group") for i in self.items if i.get("group_collapsed")}
+        self.title = other.title
+        self.items = other.items
+        seen = set()
+        for i in self.items:
+            if (i.get("group", ""), i.get("title")) in collapsed:
+                i["collapsed"] = True
+            g = i.get("group")
+            if g and g not in seen:
+                seen.add(g)
+                if g in groups:
+                    i["group_collapsed"] = True
 
     def tables(self) -> list[dict]:
         return [i for i in self.items if i["kind"] == "table"]
@@ -355,6 +489,114 @@ class ReportSheet:
 
 
 Sheet = Worksheet | ReportSheet
+
+
+# ====================================================================== matrices
+def _empty_grid(rows: int, cols: int) -> np.ndarray:
+    return np.full((max(1, int(rows)), max(1, int(cols))), np.nan)
+
+
+@dataclass
+class MatrixSheet:
+    """Origin's matrix sheet: a grid of Z values; columns map linearly to X from ``x1`` to
+    ``x2`` and rows to Y from ``y1`` to ``y2`` (row 1 = ``y1``)."""
+    name: str = "MSheet1"
+    data: np.ndarray = field(default_factory=lambda: _empty_grid(32, 32))
+    x1: float = 1.0
+    x2: float = 32.0
+    y1: float = 1.0
+    y2: float = 32.0
+    long_name: str = ""             # Z long name / units / comments
+    units: str = ""
+    comments: str = ""
+    x_name: str = ""
+    x_units: str = ""
+    y_name: str = ""
+    y_units: str = ""
+    formula: str = ""               # last Set Matrix Values formula
+    kind: str = "matrix"
+
+    @classmethod
+    def new(cls, name: str = "MSheet1", rows: int = 32, cols: int = 32) -> "MatrixSheet":
+        return cls(name, _empty_grid(rows, cols), 1.0, float(cols), 1.0, float(rows))
+
+    @property
+    def n_rows(self) -> int:
+        return int(self.data.shape[0])
+
+    @property
+    def n_cols(self) -> int:
+        return int(self.data.shape[1])
+
+    def xs(self) -> np.ndarray:
+        return np.linspace(self.x1, self.x2, self.n_cols) if self.n_cols > 1 else \
+            np.array([self.x1], float)
+
+    def ys(self) -> np.ndarray:
+        return np.linspace(self.y1, self.y2, self.n_rows) if self.n_rows > 1 else \
+            np.array([self.y1], float)
+
+    def set_dimensions(self, rows: int, cols: int) -> None:
+        """Origin's Set Dimensions: keep the top-left values, pad with empty cells."""
+        new = _empty_grid(rows, cols)
+        r, c = min(rows, self.n_rows), min(cols, self.n_cols)
+        new[:r, :c] = self.data[:r, :c]
+        self.data = new
+
+    def is_empty(self) -> bool:
+        return not np.isfinite(self.data).any()
+
+    @staticmethod
+    def _title(name: str, units: str, default: str) -> str:
+        base = name or default
+        return f"{base} ({units})" if units else base
+
+    @property
+    def z_title(self) -> str:
+        return self._title(self.long_name, self.units, "Z")
+
+    @property
+    def x_title(self) -> str:
+        return self._title(self.x_name, self.x_units, "X")
+
+    @property
+    def y_title(self) -> str:
+        return self._title(self.y_name, self.y_units, "Y")
+
+    def copy(self) -> "MatrixSheet":
+        return copy.deepcopy(self)
+
+
+@dataclass
+class MatrixBook:
+    """Origin's matrix book (MBook) window."""
+    name: str = "MBook1"
+    long_name: str = ""
+    sheets: list = field(default_factory=list)
+    active: int = 0
+    kind: str = "matrix"
+
+    @classmethod
+    def new(cls, name: str = "MBook1", rows: int = 32, cols: int = 32) -> "MatrixBook":
+        return cls(name=name, sheets=[MatrixSheet.new("MSheet1", rows, cols)])
+
+    @property
+    def title(self) -> str:
+        return f"{self.name} - {self.long_name}" if self.long_name else self.name
+
+    def sheet(self, name: str):
+        return next((s for s in self.sheets if s.name.lower() == name.lower()), None)
+
+    def active_sheet(self) -> MatrixSheet | None:
+        if not self.sheets:
+            return None
+        return self.sheets[max(0, min(self.active, len(self.sheets) - 1))]
+
+    def unique_sheet_name(self, base: str = "MSheet") -> str:
+        k = 1
+        while self.sheet(f"{base}{k}") is not None:
+            k += 1
+        return f"{base}{k}"
 
 
 @dataclass
@@ -496,9 +738,21 @@ class Project:
             for link in links.values():
                 if link.get("book") == old:
                     link["book"] = new
+        for book in self.books():   # so do the inputs of recalculable reports
+            for s in book.sheets:
+                if isinstance(s, ReportSheet) and s.op:
+                    s.op = rename_refs(s.op, old, new)
 
     def books(self) -> list[Workbook]:
         return [w for w in self.windows.values() if isinstance(w, Workbook)]
+
+    def matrices(self) -> list[MatrixBook]:
+        return [w for w in self.windows.values() if isinstance(w, MatrixBook)]
+
+    def data_windows(self) -> dict:
+        """Workbooks and matrix books by name (the sources of graph links)."""
+        return {w.name: w for w in self.windows.values()
+                if isinstance(w, (Workbook, MatrixBook))}
 
     def graphs(self) -> list[GraphDoc]:
         return [w for w in self.windows.values() if isinstance(w, GraphDoc)]
@@ -506,10 +760,26 @@ class Project:
     def is_blank(self) -> bool:
         """An untouched new project (one empty Book1): closing it needs no save prompt."""
         books = self.books()
-        return (not self.graphs() and not any(isinstance(w, Notes) and w.text
+        return (not self.graphs() and not self.matrices()
+                and not any(isinstance(w, Notes) and w.text
                                               for w in self.windows.values())
                 and len(books) <= 1 and all(b.is_empty() for b in books)
                 and len(list(self.root.walk())) == 1)
+
+
+def rename_refs(value, old: str, new: str, key: str = "book"):
+    """Copy of a settings structure pointing at a renamed window: with ``key="book"``,
+    ``[old]`` in range strings and ``{"book": old}`` entries become ``new``; with any other
+    ``key``, strings have the substring ``old`` replaced (e.g. ``"[Book1]Sheet1!"``)."""
+    if isinstance(value, dict):
+        return {k: (new if k == key and v == old else rename_refs(v, old, new, key))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [rename_refs(v, old, new, key) for v in value]
+    if isinstance(value, str):
+        return value.replace(f"[{old}]", f"[{new}]") if key == "book" else \
+            value.replace(old, new)
+    return value
 
 
 # ====================================================================== serialisation
@@ -526,26 +796,63 @@ def _column_from_dict(d: dict) -> WColumn:
                    list(d.get("values", [])), int(d.get("width", 0) or 0))
 
 
+_MATRIX_ATTRS = ("x1", "x2", "y1", "y2", "long_name", "units", "comments", "x_name",
+                 "x_units", "y_name", "y_units", "formula")
+
+
+def jsonable(value):
+    """Copy of a settings / op dict with JSON-safe values (no numpy scalars, no NaN)."""
+    if isinstance(value, dict):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        v = float(value)
+        return v if math.isfinite(v) else None
+    return value
+
+
 def sheet_to_dict(s) -> dict:
     if isinstance(s, ReportSheet):
         return {"kind": "report", "name": s.name, "title": s.title,
-                "items": copy.deepcopy(s.items)}
-    return {"kind": "data", "name": s.name, "n_rows": s.n_rows,
+                "items": copy.deepcopy(s.items), "op": jsonable(s.op)}
+    if isinstance(s, MatrixSheet):
+        d = {"kind": "matrix", "name": s.name,
+             "data": [[float(v) if math.isfinite(v) else None for v in row]
+                      for row in np.asarray(s.data, float)]}
+        d.update({k: getattr(s, k) for k in _MATRIX_ATTRS})
+        return d
+    return {"kind": "data", "name": s.name, "n_rows": s.n_rows, "sparklines": s.sparklines,
             "columns": [_column_to_dict(c) for c in s.columns]}
 
 
 def sheet_from_dict(d: dict):
     if d.get("kind") == "report":
-        return ReportSheet(d["name"], d.get("title", ""), list(d.get("items", [])))
+        return ReportSheet(d["name"], d.get("title", ""), list(d.get("items", [])),
+                           op=dict(d.get("op") or {}))
+    if d.get("kind") == "matrix":
+        data = np.array([[np.nan if v is None else float(v) for v in row]
+                         for row in (d.get("data") or [[None]])], dtype=float)
+        if data.ndim != 2 or data.size == 0:
+            data = _empty_grid(1, 1)
+        ms = MatrixSheet(d["name"], data)
+        for k in _MATRIX_ATTRS:
+            if d.get(k) is not None:
+                setattr(ms, k, type(getattr(ms, k))(d[k]))
+        return ms
     ws = Worksheet(d["name"], [_column_from_dict(c) for c in d.get("columns", [])],
-                   int(d.get("n_rows", DEFAULT_ROWS)))
+                   int(d.get("n_rows", DEFAULT_ROWS)), sparklines=bool(d.get("sparklines")))
     ws.ensure_rows(ws.n_rows)
     return ws
 
 
 def window_to_dict(w) -> dict:
-    if isinstance(w, Workbook):
-        return {"kind": "book", "name": w.name, "long_name": w.long_name, "active": w.active,
+    if isinstance(w, (Workbook, MatrixBook)):
+        return {"kind": w.kind, "name": w.name, "long_name": w.long_name, "active": w.active,
                 "sheets": [sheet_to_dict(s) for s in w.sheets]}
     if isinstance(w, GraphDoc):
         return {"kind": "graph", "name": w.name, "graph": graph_to_json_dict(w.graph)}
@@ -558,6 +865,10 @@ def window_from_dict(d: dict):
         return Workbook(d["name"], d.get("long_name", ""),
                         [sheet_from_dict(s) for s in d.get("sheets", [])],
                         int(d.get("active", 0)))
+    if kind == "matrix":
+        return MatrixBook(d["name"], d.get("long_name", ""),
+                          [sheet_from_dict(s) for s in d.get("sheets", [])] or
+                          [MatrixSheet.new()], int(d.get("active", 0)))
     if kind == "graph":
         return GraphDoc(d["name"], graph_from_json_dict(d["graph"]))
     return Notes(d["name"], d.get("text", ""))

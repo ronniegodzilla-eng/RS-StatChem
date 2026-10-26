@@ -1,42 +1,54 @@
 """Workbook window: Origin-style worksheet grid and report sheets in sheet tabs.
 
 The grid shows the column header ``A(X)``, ``B(Y)``…, Origin's label rows (Long Name, Units,
-Comments, F(x)=) above the numbered data rows, and the sheet tabs at the bottom. Every change
-goes through :meth:`BookWindow.change`, which records an undo step (a snapshot of the
-workbook's sheets), recalculates F(x)= formulas and tells the main window so linked graphs
-refresh.
+Comments, F(x)=, and the optional Sparklines row with a tiny line plot of each column) above
+the numbered data rows, and the sheet tabs at the bottom. Every change goes through
+:meth:`BookWindow.change`, which records an undo step (a snapshot of the workbook's sheets),
+recalculates F(x)= formulas and tells the main window so linked graphs refresh.
+
+Report sheets are shown by :class:`ReportView` (see :mod:`rsstatchem.ui.origin.report_view`):
+collapsible sections with copyable tables and embedded graphs, and the lock button for
+recalculation.
 """
 from __future__ import annotations
 
-import base64
-import html
 import math
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPoint, Qt, QUrl, Signal
-from PySide6.QtGui import (QBrush, QColor, QImage, QKeySequence, QTextDocument, QUndoCommand,
-                           QUndoStack)
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHeaderView, QMenu, QTabBar,
-                               QTableView, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+import numpy as np
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPoint, QPointF, Qt, Signal
+from PySide6.QtGui import (QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF,
+                           QUndoCommand, QUndoStack)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHeaderView, QMenu,
+                               QStyledItemDelegate, QTabBar, QTableView, QTabWidget,
+                               QVBoxLayout, QWidget)
 
 from rsstatchem.ui.origin import formula as fx
 from rsstatchem.ui.origin.model import (DESIGNATIONS, LABEL_ROWS, ReportSheet, Workbook,
                                         Worksheet, format_cell, parse_cell, to_float)
+from rsstatchem.ui.origin.report_view import ReportView, report_html  # noqa: F401
 
-HEADER_ROWS = len(LABEL_ROWS)
+SPARK_ROW = len(LABEL_ROWS)            # the Sparklines row, below F(x)=
+HEADER_ROWS = len(LABEL_ROWS) + 1
+SPARK_HEIGHT = 34
 LABEL_BG = QColor("#f2f2f2")
 FORMULA_BG = QColor("#eef3fb")
 EXTRA_ROWS = 10   # rows added when typing into the last row
 
 
+def label_attr(row: int) -> str | None:
+    """Column attribute shown in header row ``row`` (None for the Sparklines row)."""
+    return LABEL_ROWS[row][0] if row < len(LABEL_ROWS) else None
+
+
 # ====================================================================== undo
 def snapshot(book: Workbook) -> dict:
-    """Cheap copy of a workbook's state (report sheets never change, so they are shared)."""
-    return {"sheets": [s.copy() if isinstance(s, Worksheet) else s for s in book.sheets],
-            "active": book.active, "long_name": book.long_name}
+    """Copy of a workbook's state (reports too: recalculation changes them in place)."""
+    return {"sheets": [s.copy() for s in book.sheets], "active": book.active,
+            "long_name": book.long_name}
 
 
 def restore(book: Workbook, snap: dict) -> None:
-    book.sheets = [s.copy() if isinstance(s, Worksheet) else s for s in snap["sheets"]]
+    book.sheets = [s.copy() for s in snap["sheets"]]
     book.active = snap["active"]
     book.long_name = snap["long_name"]
 
@@ -77,6 +89,13 @@ class SheetModel(QAbstractTableModel):
             return None
         r, c = index.row(), index.column()
         col = self.ws.columns[c]
+        if r == SPARK_ROW:
+            if role == Qt.ItemDataRole.BackgroundRole:
+                return QBrush(QColor("#ffffff"))
+            if role == Qt.ItemDataRole.ToolTipRole:
+                return f"Sparkline of {col.name}" + (f" ({col.long_name})" if col.long_name
+                                                     else "")
+            return None
         if r < HEADER_ROWS:
             attr = LABEL_ROWS[r][0]
             if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
@@ -108,6 +127,8 @@ class SheetModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if orientation == Qt.Orientation.Horizontal:
                 return self.ws.label(section) if section < len(self.ws.columns) else ""
+            if section == SPARK_ROW:
+                return "Sparklines"
             return LABEL_ROWS[section][1] if section < HEADER_ROWS else \
                 str(section - HEADER_ROWS + 1)
         if role == Qt.ItemDataRole.TextAlignmentRole and orientation == Qt.Orientation.Vertical:
@@ -123,6 +144,8 @@ class SheetModel(QAbstractTableModel):
     def flags(self, index):
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
+        if index.row() == SPARK_ROW:
+            return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | \
             Qt.ItemFlag.ItemIsEditable
 
@@ -142,6 +165,61 @@ class SheetModel(QAbstractTableModel):
         self.beginResetModel()
         self.endResetModel()
         return True
+
+
+# ====================================================================== sparklines
+def sparkline_points(ws: Worksheet, col: int, max_points: int = 240) \
+        -> tuple[np.ndarray, np.ndarray]:
+    """(x, y) of a column's sparkline: a Y column against its X column (sorted by X), other
+    columns against the row number; at most ``max_points`` points (evenly decimated)."""
+    n = ws.data_rows()
+    c = ws.columns[col]
+    if n == 0 or c.is_text():
+        return np.zeros(0), np.zeros(0)
+    y = c.numeric(n)
+    xi = ws.x_of(col) if c.designation not in ("X",) else None
+    x = ws.columns[xi].numeric(n) if xi is not None and not ws.columns[xi].is_text() else \
+        np.arange(1, n + 1, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if xi is not None and len(x):
+        order = np.argsort(x, kind="stable")
+        x, y = x[order], y[order]
+    if len(x) > max_points:
+        keep = np.linspace(0, len(x) - 1, max_points).astype(int)
+        x, y = x[keep], y[keep]
+    return x, y
+
+
+class SparklineDelegate(QStyledItemDelegate):
+    """Paints Origin's sparkline (a tiny line plot of the column) in the Sparklines row."""
+
+    def __init__(self, view: "SheetView"):
+        super().__init__(view)
+        self.view = view
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        if index.row() != SPARK_ROW:
+            super().paint(painter, option, index)
+            return
+        painter.save()
+        painter.fillRect(option.rect, QColor("#ffffff"))
+        x, y = sparkline_points(self.view.ws, index.column())
+        r = option.rect.adjusted(5, 4, -5, -4)
+        if len(x) >= 2 and r.width() > 4 and r.height() > 4:
+            x0, x1 = float(x.min()), float(x.max())
+            y0, y1 = float(y.min()), float(y.max())
+            sx = (r.width()) / (x1 - x0) if x1 > x0 else 0.0
+            sy = (r.height()) / (y1 - y0) if y1 > y0 else 0.0
+            pts = QPolygonF([QPointF(r.left() + (xv - x0) * sx if sx else r.center().x(),
+                                     r.bottom() - (yv - y0) * sy if sy else r.center().y())
+                             for xv, yv in zip(x, y)])
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QPen(QColor("#1f4fa0"), 1.1))
+            painter.drawPolyline(pts)
+        painter.setPen(QPen(QColor("#d4d4d4"), 1))
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+        painter.restore()
 
 
 # ====================================================================== grid view
@@ -177,11 +255,19 @@ class SheetView(QTableView):
         vh.customContextMenuRequested.connect(self._row_menu)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._cell_menu)
+        self.setItemDelegateForRow(SPARK_ROW, SparklineDelegate(self))
         self.apply_widths()
+        self.apply_sparklines()
 
     @property
     def ws(self) -> Worksheet:
         return self.model_.ws
+
+    def apply_sparklines(self) -> None:
+        """Show / hide the Sparklines header row as the sheet says."""
+        self.setRowHidden(SPARK_ROW, not self.ws.sparklines)
+        if self.ws.sparklines:
+            self.setRowHeight(SPARK_ROW, SPARK_HEIGHT)
 
     def refresh_view(self) -> None:
         """Refresh the grid, keeping the current cell after a reset (rows/columns added)."""
@@ -193,6 +279,7 @@ class SheetView(QTableView):
                 self.setCurrentIndex(m.index(min(row, m.rowCount() - 1),
                                              min(col, m.columnCount() - 1)))
         self.apply_widths()
+        self.apply_sparklines()
 
     def closeEditor(self, editor, hint) -> None:  # noqa: N802
         super().closeEditor(editor, hint)
@@ -229,6 +316,25 @@ class SheetView(QTableView):
         sm = self.selectionModel()
         rows = {i.row() - HEADER_ROWS for i in sm.selectedIndexes()} if sm else set()
         return sorted(r for r in rows if r >= 0)
+
+    def selected_row_range(self) -> tuple[int, int] | None:
+        """1-based inclusive data-row range of a selected block of cells (e.g. B3:C10), or
+        None when whole columns (or a single row / all data rows) are selected — then plots
+        and analyses use the whole columns, as in Origin."""
+        sm = self.selectionModel()
+        if sm is None or sm.selectedColumns():
+            return None
+        rows = self.selected_rows()
+        if len(rows) < 2:
+            return None
+        lo, hi = rows[0] + 1, rows[-1] + 1
+        n = self.ws.data_rows()
+        if lo > n:
+            return None
+        hi = min(hi, max(n, lo))
+        if lo == 1 and hi >= n:
+            return None
+        return lo, hi
 
     def select_columns(self, cols: list[int]) -> None:
         self.clearSelection()
@@ -291,89 +397,6 @@ class SheetView(QTableView):
         self.window.row_menu(self.verticalHeader().mapToGlobal(pos))
 
 
-# ====================================================================== report sheet
-_REPORT_CSS = """
-body { font-family: Arial, Helvetica, sans-serif; font-size: 9pt; color: #000; }
-.title { font-size: 11pt; font-weight: bold; color: #1f3d7a; margin: 4px 0 8px 0; }
-.sec { background: #d9e1f0; color: #000; font-weight: bold; padding: 3px 6px;
-       border: 1px solid #a6b4cf; margin-top: 10px; }
-table.t { border-collapse: collapse; margin: 2px 0 2px 14px; }
-table.t td, table.t th { border: 1px solid #b8b8b8; padding: 2px 8px; }
-table.t th { background: #ececec; font-weight: normal; }
-td.rh { background: #f5f5f5; }
-td.num { text-align: right; }
-.note { color: #505050; margin-left: 14px; font-size: 8pt; }
-.warn { color: #a05a00; margin-left: 14px; }
-"""
-
-
-def report_html(report: ReportSheet, doc: QTextDocument | None = None) -> str:
-    """Origin-like HTML of a report sheet (images registered on ``doc`` when given)."""
-    parts = [f"<html><head><style>{_REPORT_CSS}</style></head><body>"]
-    if report.title:
-        parts.append(f'<div class="title">{html.escape(report.title)}</div>')
-    for k, item in enumerate(report.items):
-        title = html.escape(item.get("title", ""))
-        if item["kind"] == "table":
-            parts.append(f'<div class="sec">&#8863; {title}</div>')
-            parts.append('<table class="t" cellspacing="0">')
-            cols = item["columns"]
-            if any(isinstance(c, list) for c in cols):
-                top, k = [], 0
-                while k < len(cols):   # merge equal group titles: "95% Confidence Interval"
-                    c = cols[k]
-                    group = c[0] if isinstance(c, list) else ""
-                    span = 1
-                    while k + span < len(cols) and isinstance(cols[k + span], list) and \
-                            cols[k + span][0] == group and group:
-                        span += 1
-                    top.append(f'<th nowrap colspan="{span}">{html.escape(group)}</th>')
-                    k += span
-                parts.append("<tr>" + "".join(top) + "</tr>")
-                cols = [c[1] if isinstance(c, list) else c for c in cols]
-            parts.append("<tr>" + "".join(f"<th nowrap>{html.escape(str(c))}</th>"
-                                          for c in cols) + "</tr>")
-            two_col = len(cols) == 2
-            for row in item["rows"]:
-                cells = []
-                for j, v in enumerate(row):
-                    numeric = not math.isnan(to_float(v)) or v in ("--",)
-                    cls = "rh" if j == 0 or (j == 1 and not numeric and len(cols) > 2) else \
-                        ("num" if numeric and not two_col else "")
-                    cells.append(f'<td nowrap class="{cls}">{html.escape(str(v))}</td>')
-                parts.append("<tr>" + "".join(cells) + "</tr>")
-            parts.append("</table>")
-            for note in item.get("notes", []):
-                parts.append(f'<div class="note">{html.escape(note)}</div>')
-        elif item["kind"] == "text":
-            cls = "warn" if item.get("style") == "warning" else "note"
-            parts.append(f'<div class="sec">&#8863; {title}</div>'
-                         f'<div class="{cls}">{html.escape(item.get("text", ""))}</div>')
-        elif item["kind"] == "image":
-            url = f"img://{k}"
-            if doc is not None:
-                image = QImage.fromData(base64.b64decode(item["png"]), "PNG")
-                doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(url), image)
-            width = int(item.get("width", 520))
-            parts.append(f'<div class="sec">&#8863; {title}</div>'
-                         f'<p style="margin-left:14px"><img src="{url}" width="{width}"></p>')
-    parts.append("</body></html>")
-    return "".join(parts)
-
-
-class ReportView(QTextBrowser):
-    def __init__(self, report: ReportSheet):
-        super().__init__()
-        self.report = report
-        self.setObjectName("originReport")
-        self.setOpenLinks(False)
-        self.setLineWrapMode(QTextBrowser.LineWrapMode.NoWrap)   # tables at natural width
-        self.setHtml(report_html(report, self.document()))
-
-    def copy_all(self) -> None:
-        QApplication.clipboard().setText(self.toPlainText())
-
-
 # ====================================================================== workbook window
 class BookWindow(QWidget):
     """MDI child for a workbook. ``main`` is the Origin main window (may be None in tests)."""
@@ -409,7 +432,8 @@ class BookWindow(QWidget):
             self.tabs.removeTab(0)
             w.deleteLater()
         for sheet in self.book.sheets:
-            view = SheetView(self, sheet) if isinstance(sheet, Worksheet) else ReportView(sheet)
+            view = SheetView(self, sheet) if isinstance(sheet, Worksheet) else \
+                ReportView(sheet, self)
             self.tabs.addTab(view, sheet.name)
         self.tabs.setCurrentIndex(max(0, min(current, self.tabs.count() - 1)))
         self.tabs.blockSignals(False)
@@ -425,6 +449,8 @@ class BookWindow(QWidget):
                     self.reload()
                     return
                 w.refresh_view()
+            elif isinstance(w, ReportView):
+                w.refresh()
 
     def _tab_changed(self, index: int) -> None:
         self.book.active = index
@@ -451,6 +477,23 @@ class BookWindow(QWidget):
     def selected_columns(self) -> list[int]:
         v = self.sheet_view()
         return v.selected_columns() if v is not None else []
+
+    def selected_row_range(self) -> tuple[int, int] | None:
+        v = self.sheet_view()
+        return v.selected_row_range() if v is not None else None
+
+    def select_block(self, top: int, left: int, bottom: int, right: int) -> None:
+        """Select data cells rows ``top..bottom`` (1-based) × columns ``left..right``."""
+        v = self.sheet_view()
+        if v is None:
+            return
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+        m = v.model_
+        sel = QItemSelection(m.index(HEADER_ROWS + top - 1, left),
+                             m.index(HEADER_ROWS + bottom - 1, right))
+        v.selectionModel().select(sel, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        v.setCurrentIndex(m.index(HEADER_ROWS + top - 1, left))
+        v.selectionModel().select(sel, QItemSelectionModel.SelectionFlag.ClearAndSelect)
 
     def select_columns(self, cols: list[int]) -> None:
         v = self.sheet_view()
@@ -487,6 +530,8 @@ class BookWindow(QWidget):
         if ws is None:
             return False
         text = "" if value is None else str(value)
+        if row == SPARK_ROW:
+            return False
         if row < HEADER_ROWS:
             attr = LABEL_ROWS[row][0]
             if getattr(ws.columns[col], attr) == text.strip():
@@ -551,6 +596,8 @@ class BookWindow(QWidget):
             bottom = HEADER_ROWS + max(ws.data_rows(), 1) - 1
         lines = []
         for r in range(top, bottom + 1):
+            if r == SPARK_ROW:
+                continue
             cells = []
             for c in range(left, right + 1):
                 if r < HEADER_ROWS:
@@ -601,6 +648,8 @@ class BookWindow(QWidget):
             for i, r in enumerate(rows):
                 for j, value in enumerate(r):
                     row = top + i
+                    if row == SPARK_ROW:
+                        continue
                     if row < HEADER_ROWS:
                         setattr(ws.columns[left + j], LABEL_ROWS[row][0], value.strip())
                     else:
@@ -625,6 +674,8 @@ class BookWindow(QWidget):
         def fn():
             for i in idx:
                 r, c = i.row(), i.column()
+                if r == SPARK_ROW:
+                    continue
                 if r < HEADER_ROWS:
                     setattr(ws.columns[c], LABEL_ROWS[r][0], "")
                 else:
@@ -728,6 +779,16 @@ class BookWindow(QWidget):
         if self.main is not None:
             self.main.sheet_renamed(self.book, old, name)
         return True
+
+    def set_sparklines(self, on: bool) -> None:
+        """View > Sparklines for the active worksheet (undoable, saved with the project)."""
+        ws = self.worksheet()
+        if ws is None or ws.sparklines == on:
+            return
+        self.change("Sparklines", lambda: setattr(ws, "sparklines", on), recalc=False)
+        v = self.sheet_view()
+        if v is not None:
+            v.apply_sparklines()
 
     def is_untouched(self) -> bool:
         return self.undo_stack.count() == 0 and self.book.is_empty()

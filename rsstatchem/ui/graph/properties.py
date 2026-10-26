@@ -147,6 +147,8 @@ def plot_schema(p: Plot, layer_kind: str = "cartesian") -> list:
         general.append(("type", "Plot type", "choice", _SWITCH))
     if layer_kind == "cartesian":
         general.append(("y_axis", "Y axis", "choice", [("left", "Left"), ("right", "Right")]))
+    if p.options.get("data_range"):   # Origin's data reference, e.g. [Book1]Sheet1!B[3:10]
+        general.insert(0, ("options.data_range", "Data", "label"))
     out = [("Plot", general)]
     t = p.type
     if t in _LINE_TYPES or layer_kind in ("polar", "ternary") or t in (

@@ -11,19 +11,26 @@ out, Origin's colour/symbol increment, legend from the Long Names and axis title
 Each plot remembers its source columns (``plot.options["source"]``) and the graph remembers
 which snapshot columns come from which worksheet column (``graph.meta["links"]``), so the
 graph is refreshed when the worksheet changes (:func:`refresh_links`) and analyses started
-from a graph find their data.
+from a graph find their data. When only some rows are selected (a block of cells such as
+B3:C10), the plot keeps that row range: its data reference reads ``[Book1]Sheet1!B[3:10]``
+and refreshing, fitting and saving use only those rows, as in Origin.
+
+Matrix sheets are plotted with :func:`plot_matrix` (contour, heatmap, image, 3D surfaces);
+their X/Y/Z snapshot columns are linked to the matrix the same way.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
+from rsstatchem.core.analysis import matrix as mx
 from rsstatchem.core.dataset import NOMINAL, NUMERIC, SCALE, Dataset, Variable
 from rsstatchem.core.graph import edit
 from rsstatchem.core.graph.build import TEMPLATES, PlotSpec, build_graph
-from rsstatchem.core.graph.model import Column, Graph, Plot
+from rsstatchem.core.graph.model import Column, Graph, Layer, Plot
 from rsstatchem.core.graph.themes import apply_theme
-from rsstatchem.ui.origin.model import Workbook, Worksheet
+from rsstatchem.ui.origin.model import (MatrixBook, MatrixSheet, Workbook, Worksheet,
+                                        range_text, row_window, rows_text)
 
 # Origin's default 2D graph: framed layer, ticks pointing out, no legend border.
 ORIGIN_THEME = {
@@ -61,16 +68,18 @@ class PlotError(ValueError):
 
 
 # ====================================================================== dataset
-def plot_dataset(ws: Worksheet) -> Dataset:
-    """The sheet as a Dataset for the graph builder. Text columns become category codes in
-    worksheet order (so a column chart keeps the row order, as in Origin)."""
-    n = max(ws.data_rows(), 1)
+def plot_dataset(ws: Worksheet, rows: tuple[int, int] | None = None) -> Dataset:
+    """The sheet (or the 1-based inclusive row range ``rows``) as a Dataset for the graph
+    builder. Text columns become category codes in worksheet order (so a column chart keeps
+    the row order, as in Origin)."""
+    lo, hi = row_window(max(ws.data_rows(), 1), rows)
+    n = max(hi - lo, 1)
     data, variables = {}, []
     for c in ws.columns:
         if c.is_text():
             order: dict[str, float] = {}
             codes = []
-            for t in c.texts(n):
+            for t in c.texts(lo + n)[lo:lo + n]:
                 if t == "":
                     codes.append(np.nan)
                     continue
@@ -81,9 +90,18 @@ def plot_dataset(ws: Worksheet) -> Dataset:
             variables.append(Variable(c.name, NUMERIC, label=c.title, measure=NOMINAL,
                                       value_labels={v: k for k, v in order.items()}))
         else:
-            data[c.name] = pd.Series(c.numeric(n))
+            data[c.name] = pd.Series(c.numeric(lo + n)[lo:lo + n])
             variables.append(Variable(c.name, NUMERIC, label=c.title, measure=SCALE))
     return Dataset(pd.DataFrame(data, index=pd.RangeIndex(n)), variables, name=ws.name)
+
+
+def column_values(ws: Worksheet, col, rows: tuple[int, int] | None = None,
+                  text: bool = False) -> list | np.ndarray:
+    """Values of a column over the sheet's data rows or the row range ``rows``."""
+    src = col if not isinstance(col, (int, np.integer)) else ws.columns[col]
+    lo, hi = row_window(max(ws.data_rows(), 1), rows)
+    hi = max(hi, lo + 1)
+    return src.texts(hi)[lo:hi] if text else src.numeric(hi)[lo:hi]
 
 
 # ====================================================================== selection -> roles
@@ -109,8 +127,9 @@ def _group_key(ws: Worksheet, y: int, kind: str) -> tuple:
 
 
 def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
-                 title: str = "Graph1") -> Graph:
-    """Build a graph of the selected columns ``cols`` of sheet ``ws`` (Origin's Plot menu)."""
+                 title: str = "Graph1", rows: tuple[int, int] | None = None) -> Graph:
+    """Build a graph of the selected columns ``cols`` of sheet ``ws`` (Origin's Plot menu).
+    ``rows`` = (first, last), 1-based inclusive, plots only that row range."""
     if kind not in PLOT_TYPES:
         raise PlotError(f"Unknown plot type {kind!r}.")
     template = PLOT_TYPES[kind][1]
@@ -118,7 +137,12 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
         raise PlotError("Select one or more columns (click the column headers) to plot.")
     if ws.data_rows() == 0:
         raise PlotError("The selected columns contain no data.")
-    ds = plot_dataset(ws)
+    if rows is not None:
+        lo, hi = row_window(ws.data_rows(), rows)
+        if hi <= lo:
+            raise PlotError("The selected rows contain no data.")
+        rows = (lo + 1, hi)
+    ds = plot_dataset(ws, rows)
     name = ws.columns.__getitem__
     if kind in XYZ:
         specs = [_xyz_spec(ws, cols, template)]
@@ -171,7 +195,8 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
     graph.title = title
     graph.meta.pop("spec", None)
     graph.meta["origin_kind"] = kind
-    _origin_look(graph, book, ws, kind)
+    _origin_look(graph, book, ws, kind, rows)
+    update_data_ranges(graph)
     return graph
 
 
@@ -208,9 +233,38 @@ def _source_col(ws: Worksheet, key: str | None, graph: Graph):
         return None
 
 
-def column_key(book: str, sheet: str, col: str, text: bool = False) -> str:
-    """Snapshot key of a worksheet column in a graph, e.g. ``[Book1]Sheet1!B``."""
-    return f"[{book}]{sheet}!{col}" + (" (labels)" if text else "")
+def column_key(book: str, sheet: str, col: str, text: bool = False,
+               rows: tuple[int, int] | None = None) -> str:
+    """Snapshot key of a worksheet column in a graph, e.g. ``[Book1]Sheet1!B`` or, for a
+    row range, ``[Book1]Sheet1!B[3:10]``."""
+    key = range_text(book, sheet, col, *(rows or (None, None)))
+    return key + (" (labels)" if text else "")
+
+
+def plot_range(plot: Plot, which: str = "y") -> str:
+    """The data reference of a plot's column, e.g. ``[Book1]Sheet1!B[3:10]`` ("" when the
+    plot does not come from a worksheet; ``[MBook1]MSheet1`` for a matrix)."""
+    src = plot.options.get("source") or {}
+    if src.get("matrix"):
+        return f"[{src.get('book', '')}]{src.get('sheet', '')}"
+    if not src.get(which):
+        return ""
+    rows = src.get("rows")
+    return range_text(src.get("book", ""), src.get("sheet", ""), src[which],
+                      *(rows if rows else (None, None)))
+
+
+def update_data_ranges(graph: Graph) -> None:
+    """Store each plot's data reference (shown in the Object Manager and plot details):
+    ``X = [Book1]Sheet1!A[3:10], Y = [Book1]Sheet1!B[3:10]``-style text."""
+    for layer in graph.layers:
+        for p in layer.plots:
+            y = plot_range(p, "y")
+            if not y:
+                p.options.pop("data_range", None)
+                continue
+            x = plot_range(p, "x") if not (p.options.get("source") or {}).get("matrix") else ""
+            p.options["data_range"] = y if not x else f"{y}  (X = {x})"
 
 
 def rekey(graph: Graph, mapping: dict[str, str]) -> None:
@@ -231,25 +285,27 @@ def rekey(graph: Graph, mapping: dict[str, str]) -> None:
     graph.meta["links"] = {mapping.get(k, k): v for k, v in links.items()}
 
 
-def _origin_look(graph: Graph, book: Workbook, ws: Worksheet, kind: str) -> None:
+def _origin_look(graph: Graph, book: Workbook, ws: Worksheet, kind: str,
+                 rows: tuple[int, int] | None = None) -> None:
     apply_theme(graph, ORIGIN_THEME, resize_page=graph.rows == 1 and graph.cols == 1)
     if kind in ("box", "histogram", "pie", "doughnut"):   # black solid boxes read badly
         graph.fill_palette = "Bright"
     links = graph.meta.setdefault("links", {})
     mapping = {}
+    extra = {"rows": list(rows)} if rows else {}
     for key, col in graph.data.items():
         try:
             src = ws.column(col.name)
         except KeyError:
             continue
         if key == src.name:
-            mapping[key] = column_key(book.name, ws.name, src.name)
+            mapping[key] = column_key(book.name, ws.name, src.name, rows=rows)
             links[mapping[key]] = {"book": book.name, "sheet": ws.name, "col": src.name,
-                                   "role": "num"}
+                                   "role": "num", **extra}
         elif key == f"{src.name} (labels)":
-            mapping[key] = column_key(book.name, ws.name, src.name, True)
+            mapping[key] = column_key(book.name, ws.name, src.name, True, rows=rows)
             links[mapping[key]] = {"book": book.name, "sheet": ws.name, "col": src.name,
-                                   "role": "text"}
+                                   "role": "text", **extra}
     rekey(graph, mapping)
     for layer in graph.layers:
         if layer.kind == "cartesian" and kind not in ("pie", "doughnut"):
@@ -267,7 +323,7 @@ def _origin_look(graph: Graph, book: Workbook, ws: Worksheet, kind: str) -> None
                 "x": xcol.name if xcol is not None else None,
                 "y": ycol.name if ycol is not None else None,
                 "yerr": (_source_col(ws, p.yerr, graph).name
-                         if _source_col(ws, p.yerr, graph) is not None else None)}
+                         if _source_col(ws, p.yerr, graph) is not None else None), **extra}
             if p.type in ("line", "line_symbol"):
                 p.options["sort_x"] = False
         if layer.kind == "cartesian" and kind not in NO_X and kind not in ("bar",
@@ -302,27 +358,39 @@ def _origin_look(graph: Graph, book: Workbook, ws: Worksheet, kind: str) -> None
                     layer.y2.color = layer.y2.title_font.color = "#FF0000"
 
 
-def refresh_links(graph: Graph, books: dict[str, Workbook]) -> bool:
-    """Re-read linked snapshot columns from their worksheets; True when anything changed."""
+def refresh_links(graph: Graph, books: dict) -> bool:
+    """Re-read linked snapshot columns from their worksheets / matrix sheets (``books``:
+    window name -> Workbook or MatrixBook); True when anything changed."""
     changed = False
     for key, link in graph.meta.get("links", {}).items():
         book = books.get(link.get("book"))
         ws = book.sheet(link.get("sheet", "")) if book is not None else None
         col = graph.data.get(key)
-        if not isinstance(ws, Worksheet) or col is None:
+        if col is None:
+            continue
+        if isinstance(ws, MatrixSheet) and link.get("role") in ("mx", "my", "mz"):
+            x, y, z = mx.to_xyz(ws.data, (ws.x1, ws.x2, ws.y1, ws.y2))
+            values = {"mx": x, "my": y, "mz": z}[link["role"]]
+            title = {"mx": ws.x_title, "my": ws.y_title, "mz": ws.z_title}[link["role"]]
+            new = Column.from_array(col.name, values, title, kind="num")
+            if new.values != col.values or new.label != col.label:
+                graph.data[key] = new
+                changed = True
+            continue
+        if not isinstance(ws, Worksheet):
             continue
         try:
             src = ws.column(link["col"])
         except KeyError:
             continue
-        n = max(ws.data_rows(), 1)
+        rows = tuple(link["rows"]) if link.get("rows") else None
         if link.get("role") == "text":
-            new = Column(col.name, col.label, "text", src.texts(n))
+            new = Column(col.name, col.label, "text", column_values(ws, src, rows, text=True))
         elif src.is_text():
             continue   # category codes are only rebuilt by re-plotting
         else:
-            new = Column.from_array(col.name, src.numeric(n), src.title, col.value_labels,
-                                    kind="num")
+            new = Column.from_array(col.name, column_values(ws, src, rows), src.title,
+                                    col.value_labels, kind="num")
         if new.values != col.values or new.label != col.label:
             graph.data[key] = new
             changed = True
@@ -351,6 +419,7 @@ def add_xy_plot(graph: Graph, layer_index: int, x, y, name: str, kind: str = "li
     if source:
         p.options["source"] = source
     layer.plots.append(p)
+    update_data_ranges(graph)
     layer.legend.visible = True
     if link:
         links = graph.meta.setdefault("links", {})
@@ -376,3 +445,91 @@ def plot_data(graph: Graph, plot: Plot) -> tuple[np.ndarray, np.ndarray]:
 
 def template_label(kind: str) -> str:
     return PLOT_TYPES[kind][0] if kind in PLOT_TYPES else TEMPLATES[kind].label
+
+
+# ====================================================================== matrix plots
+# Plot menu of a matrix window: key -> (menu text, plot type, layer kind)
+MATRIX_PLOTS: dict[str, tuple[str, str, str]] = {
+    "contour": ("Contour - Color Fill", "contour", "cartesian"),
+    "contour_lines": ("Contour - Black Line", "contour", "cartesian"),
+    "heatmap": ("Heatmap", "heatmap", "cartesian"),
+    "image": ("Image Plot", "heatmap", "cartesian"),
+    "surface3d_colormap": ("3D Colormap Surface", "surface3d", "3d"),
+    "surface3d": ("3D Surface (color fill)", "surface3d", "3d"),
+    "wireframe": ("3D Wire Frame", "surface3d", "3d"),
+}
+MATRIX_CMAP = "rainbow"
+
+
+def plot_matrix(mbook: MatrixBook, ms: MatrixSheet, kind: str, title: str = "Graph1") \
+        -> Graph:
+    """Contour / heatmap / image / 3D surface of a matrix sheet (Origin's matrix Plot menu).
+    The X, Y, Z snapshot columns stay linked to the matrix (:func:`refresh_links`)."""
+    if kind not in MATRIX_PLOTS:
+        raise PlotError(f"Unknown matrix plot {kind!r}.")
+    if np.isfinite(ms.data).sum() < 3:
+        raise PlotError("The matrix needs at least 3 values to plot (Matrix > Set Values).")
+    if min(ms.n_rows, ms.n_cols) < 2:
+        raise PlotError("A matrix plot needs at least 2 rows and 2 columns.")
+    label, ptype, lkind = MATRIX_PLOTS[kind]
+    graph = Graph(title=title, layers=[Layer(kind=lkind)])
+    layer = graph.layers[0]
+    x, y, z = mx.to_xyz(ms.data, (ms.x1, ms.x2, ms.y1, ms.y2))
+    base = f"[{mbook.name}]{ms.name}!"
+    keys = {}
+    links = graph.meta.setdefault("links", {})
+    for role, values, name, ttl in (("mx", x, "X", ms.x_title), ("my", y, "Y", ms.y_title),
+                                    ("mz", z, "Z", ms.z_title)):
+        key = graph.add_column(Column.from_array(name, values, ttl, kind="num"), base + name)
+        keys[role] = key
+        links[key] = {"book": mbook.name, "sheet": ms.name, "col": name, "role": role,
+                      "matrix": True}
+    p = Plot(type=ptype, name=ms.long_name or f"{mbook.name}:{ms.name}", x=keys["mx"],
+             y=keys["my"], z=keys["mz"])
+    p.options.update({"cmap": MATRIX_CMAP, "grid": "auto",
+                      "source": {"book": mbook.name, "sheet": ms.name, "matrix": True}})
+    if kind == "contour":
+        p.line.visible, p.line.color, p.line.width = True, "#000000", 0.8
+        p.options["levels"] = 12
+    elif kind == "contour_lines":
+        p.fill.visible = False
+        p.line.visible, p.line.color, p.line.width = True, "#000000", 1.2
+        p.options.update(levels=12, labels=True)
+    elif ptype == "surface3d":
+        if kind == "surface3d":
+            p.options["solid"] = True
+        elif kind == "wireframe":
+            p.options["wireframe"] = True
+        p.options["extrapolate"] = False
+    layer.plots.append(p)
+    layer.cmap = MATRIX_CMAP
+    layer.legend.visible = False
+    apply_theme(graph, ORIGIN_THEME, resize_page=True)
+    layer.legend.visible = False
+    if ptype == "surface3d":   # after the theme, which resets plot colours to "auto"
+        p.line.visible, p.line.width = True, 0.4
+        p.line.color = {"surface3d": "#5a1a10", "wireframe": "#1f4fa0"}.get(kind, "#333333")
+        p.fill.color = "#e8603c"
+        if kind == "wireframe":
+            p.line.width = 1.0
+    layer.colorbar = kind not in ("contour_lines", "surface3d", "wireframe")
+    layer.x.title, layer.y.title = ms.x_title, ms.y_title
+    if lkind == "3d":
+        layer.z.title = ms.z_title
+        layer.elev, layer.azim = 30.0, -55.0
+    else:
+        p.options["colorbar_title"] = ms.z_title
+        if ptype == "contour":   # contours fill the X/Y range exactly (heatmap cells overhang)
+            for axis, lo, hi in ((layer.x, ms.x1, ms.x2), (layer.y, ms.y1, ms.y2)):
+                axis.min, axis.max = float(min(lo, hi)), float(max(lo, hi))
+    graph.meta["origin_kind"] = "matrix_" + kind
+    update_data_ranges(graph)
+    return graph
+
+
+def matrix_plot_label(kind: str) -> str:
+    return MATRIX_PLOTS[kind][0]
+
+
+def rows_label(rows) -> str:
+    return rows_text(*(rows or (None, None)))

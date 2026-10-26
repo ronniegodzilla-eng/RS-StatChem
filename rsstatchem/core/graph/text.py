@@ -1,7 +1,8 @@
 """Rich text for graph labels and font resolution.
 
 Labels accept matplotlib mathtext (``H$_2$O``, ``cm$^{-1}$``, ``$\\alpha$``) and Origin's
-escape codes ``\\+(sup)``, ``\\-(sub)``, ``\\g(a)`` (Greek), ``\\b(bold)``, ``\\i(italic)``.
+escape codes ``\\+(sup)``, ``\\-(sub)``, ``\\g(a)`` (Greek), ``\\b(bold)``, ``\\i(italic)``,
+``\\u(underline)``.
 Invalid mathtext is shown literally instead of breaking the drawing.
 """
 from __future__ import annotations
@@ -18,7 +19,7 @@ _GREEK = {"a": "alpha", "b": "beta", "g": "gamma", "d": "delta", "e": "epsilon",
           "u": "upsilon", "f": "phi", "c": "chi", "y": "psi", "w": "omega",
           "D": "Delta", "G": "Gamma", "L": "Lambda", "P": "Pi", "S": "Sigma", "F": "Phi",
           "W": "Omega", "Q": "Theta", "X": "Xi", "Y": "Psi"}
-_ESC = re.compile(r"\\([+\-gbi])\(([^()]*)\)")
+_ESC = re.compile(r"\\([+\-gbiu])\(([^()]*)\)")
 _parser = MathTextParser("path")
 
 
@@ -33,6 +34,8 @@ def _origin_escapes(text: str) -> str:
             return "".join(f"$\\{_GREEK[ch]}$" if ch in _GREEK else ch for ch in body)
         if code == "b":
             return f"$\\mathbf{{{_math_body(body)}}}$"
+        if code == "u":
+            return f"$\\underline{{\\mathrm{{{_math_body(body)}}}}}$"
         return f"$\\mathit{{{_math_body(body)}}}$"
     return _ESC.sub(repl, text)
 
