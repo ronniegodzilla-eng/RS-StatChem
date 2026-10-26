@@ -8,7 +8,10 @@ error, fit statistics (Std. Dev., Mean, C.V. %, R², Adjusted R², Predicted R²
 Precision), coefficient estimates in coded terms with SE, CI and VIF, final equations in coded
 and actual factors, response transformations including Box-Cox, backward reduction respecting
 hierarchy, 2-level factorial effects (half-normal / Pareto with Lenth's PSE) and case
-diagnostics (externally studentized residuals, leverage, Cook's distance, DFFITS).
+diagnostics (externally studentized residuals, leverage, Cook's distance, DFFITS, DFBETAS).
+Auto Select chooses terms forward, backward or stepwise by p-value (alpha in / out), AICc or
+BIC. Split-plot designs (hard-to-change factors, whole plots in a Group column) are analysed
+by REML with Kenward-Roger F tests (:class:`SplitPlotFit`).
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ class FactorDef:
     levels: list = field(default_factory=list)
     labels: list = field(default_factory=list)
     index: int = 0
+    hard: bool = False  # hard-to-change (whole-plot) factor of a split-plot design
 
     @property
     def letter(self) -> str:
@@ -71,6 +75,8 @@ class FactorDef:
 
     def to_meta(self) -> dict:
         d = {"name": self.name, "column": self.column, "units": self.units, "type": self.type}
+        if self.hard:
+            d["changes"] = "hard"
         if self.categoric:
             d.update(levels=list(self.levels), labels=list(self.labels))
         else:
@@ -87,6 +93,11 @@ class Space:
     block_col: str | None = None
     run_col: str | None = None
     std_col: str | None = None
+    group_col: str | None = None  # whole plots of a split-plot design
+
+    @property
+    def split_plot(self) -> bool:
+        return self.group_col is not None and any(f.hard for f in self.factors)
 
     @property
     def k(self) -> int:
@@ -172,14 +183,14 @@ def space_from_dataset(ds, factor_cols: list[str] | None = None,
             labels = m.get("labels") or [var.value_labels.get(float(v), _num(v)) for v in levels]
             f = FactorDef(m.get("name") or var.title, var.name, m.get("units", ""), "categoric",
                           levels=[float(v) for v in levels], labels=[str(s) for s in labels],
-                          index=j)
+                          index=j, hard=m.get("changes") == "hard")
         else:
             low = m.get("low", float(x.min()) if len(x) else -1.0)
             high = m.get("high", float(x.max()) if len(x) else 1.0)
             if ftype == "mixture" and "low" not in m:
                 low = 0.0
             f = FactorDef(m.get("name") or var.name, var.name, m.get("units", ""), ftype,
-                          float(low), float(high), index=j)
+                          float(low), float(high), index=j, hard=m.get("changes") == "hard")
         factors.append(f)
     total = 1.0
     if kind == "mixture":
@@ -197,7 +208,10 @@ def space_from_dataset(ds, factor_cols: list[str] | None = None,
         block = None
     run = cols.get("run") if ds.has_name(cols.get("run", "") or "") else None
     std = cols.get("std") if ds.has_name(cols.get("std", "") or "") else None
-    return Space(factors, kind, total, block, run, std)
+    group = cols.get("group") if ds.has_name(cols.get("group", "") or "") else None
+    if group is not None and not any(f.hard for f in factors):
+        group = None
+    return Space(factors, kind, total, block, run, std, group)
 
 
 def _num(v) -> str:
@@ -214,6 +228,7 @@ class Observations:
     std: np.ndarray
     rows: np.ndarray
     z: np.ndarray | None = None  # response on the transformed scale (set by the fit)
+    groups: np.ndarray | None = None  # whole-plot ids (split-plot designs)
 
 
 def observations(ds, space: Space, response: str) -> Observations:
@@ -223,6 +238,8 @@ def observations(ds, space: Space, response: str) -> Observations:
     frame["y"] = numeric(ds, response)
     if space.block_col:
         frame["block"] = numeric(ds, space.block_col)
+    if space.group_col:
+        frame["group"] = numeric(ds, space.group_col)
     frame["run"] = numeric(ds, space.run_col) if space.run_col else np.arange(1, ds.n_cases + 1)
     frame["std"] = numeric(ds, space.std_col) if space.std_col else np.arange(1, ds.n_cases + 1)
     frame = frame.dropna(subset=[c for c in frame.columns if c not in ("run", "std")])
@@ -236,9 +253,10 @@ def observations(ds, space: Space, response: str) -> Observations:
         blocks = frame["block"].to_numpy(float)
         if len(np.unique(blocks)) < 2:
             blocks = None
+    groups = frame["group"].to_numpy(float) if space.group_col else None
     return Observations(actual, coded, frame["y"].to_numpy(float), blocks,
                         frame["run"].to_numpy(float), frame["std"].to_numpy(float),
-                        frame.index.to_numpy())
+                        frame.index.to_numpy(), groups=groups)
 
 
 # ---------------------------------------------------------------------------- terms
@@ -366,8 +384,14 @@ def candidate_terms(space: Space) -> list[Term]:
 
 
 # ---------------------------------------------------------------------------- matrices
-def _effect_codes(idx: np.ndarray, nlev: int) -> np.ndarray:
+def _effect_codes(idx: np.ndarray, nlev: int, two_level_sign: bool = True) -> np.ndarray:
+    """Effect (nominal) coding: level j -> +1 in column j, the last level -> -1 in every
+    column (Design-Expert's "B[1], B[2]" terms). A two-level categoric factor gets one column
+    coded -1 / +1 for its first / second level, like a numeric factor in a two-level
+    factorial."""
     idx = idx.astype(int)
+    if nlev == 2 and two_level_sign:
+        return np.where(idx == 1, 1.0, -1.0)[:, None]
     E = np.zeros((len(idx), nlev - 1))
     for j in range(nlev - 1):
         E[:, j] = (idx == j).astype(float) - (idx == nlev - 1).astype(float)
@@ -388,7 +412,8 @@ def term_columns(coded: np.ndarray, t: Term, categoric=None, nlevels=None):
         if categoric is not None and categoric[i]:
             E = _effect_codes(coded[:, i], nlevels[i])
             cols = (cols[:, :, None] * E[:, None, :]).reshape(n, -1)
-            suffixes = [s + f"[{j + 1}]" for s in suffixes for j in range(E.shape[1])]
+            suffixes = [s + (f"[{j + 1}]" if E.shape[1] > 1 else "") for s in suffixes
+                        for j in range(E.shape[1])]
         else:
             cols = cols * (coded[:, i] ** c)[:, None]
     return cols, suffixes
@@ -407,7 +432,7 @@ def block_matrix(blocks: np.ndarray | None) -> tuple[np.ndarray, list]:
         return np.zeros((0, 0)), []
     levels = sorted(set(blocks.tolist()))
     idx = np.array([levels.index(b) for b in blocks])
-    return _effect_codes(idx, len(levels)), levels
+    return _effect_codes(idx, len(levels), two_level_sign=False), levels
 
 
 @dataclass
@@ -743,17 +768,22 @@ class Fit:
 
     # ------------------------------------------------------------------ diagnostics
     def diagnostics(self) -> dict:
-        s = math.sqrt(self.ms_res)
-        h = np.clip(self.h, 0, 1 - 1e-12)
-        r = self.resid / (s * np.sqrt(1 - h))
-        df = self.df_res
-        with np.errstate(invalid="ignore", divide="ignore"):
-            t = r * np.sqrt((df - 1) / np.clip(df - r ** 2, 1e-12, None)) if df > 1 else r * 0
-        cook = r ** 2 * h / (self.p * (1 - h))
-        dffits = t * np.sqrt(h / (1 - h))
-        return {"run": self.obs.run, "std": self.obs.std, "actual": self.z,
-                "predicted": self.fitted, "residual": self.resid, "leverage": self.h,
-                "int_stud": r, "ext_stud": t, "cooks": cook, "dffits": dffits}
+        out = case_statistics(self.mat.X, self.resid, self.XtX_inv, self.ms_res, self.df_res)
+        out.update({"run": self.obs.run, "std": self.obs.std, "actual": self.z,
+                    "predicted": self.fitted, "residual": self.resid,
+                    "labels": list(self.mat.labels)})
+        return out
+
+    def information(self) -> dict:
+        """Likelihood statistics of the (normal, maximum-likelihood) fit for model selection:
+        -2 log L = n ln(2 pi SSE / n) + n, AICc = -2 log L + 2k + 2k(k+1)/(n-k-1) and
+        BIC = -2 log L + k ln n with k = coefficients + 1 (the residual variance)."""
+        n = self.n
+        k = self.p + 1
+        m2ll = n * math.log(2 * math.pi * max(self.ss_res, 1e-300) / n) + n
+        aicc = m2ll + 2 * k + (2 * k * (k + 1) / (n - k - 1) if n - k - 1 > 0 else math.inf)
+        return {"m2ll": m2ll, "aic": m2ll + 2 * k, "aicc": aicc, "bic": m2ll + k * math.log(n),
+                "k": k}
 
     # ------------------------------------------------------------------ prediction
     def row(self, coded: np.ndarray) -> np.ndarray:
@@ -859,6 +889,282 @@ class Fit:
         return out
 
 
+class SplitPlotFit(Fit):
+    """REML fit of a split-plot design: y = X b + Z u + e with u ~ N(0, s2_wp I), one random
+    effect per whole plot (Group), and e ~ N(0, s2 I) (Design-Expert's "ANOVA (REML)").
+
+    The variance ratio eta = s2_wp / s2 maximises the restricted log-likelihood (s2 profiled
+    out), b is the GLS estimate, and every fixed-effect test uses the Kenward-Roger (1997)
+    small-sample adjusted covariance and denominator degrees of freedom, the method Stat-Ease
+    documents for split-plot designs. For balanced designs this reproduces the classical
+    split-plot ANOVA F tests exactly.
+    """
+
+    def __init__(self, space: Space, obs: Observations, terms: list[Term],
+                 transform: Transform | None = None, response: str = "R1",
+                 response_name: str | None = None):
+        super().__init__(space, obs, terms, transform, response, response_name)
+        if obs.groups is None:
+            raise ValueError("A split-plot analysis needs the Group (whole-plot) column.")
+        levels, gidx = np.unique(obs.groups, return_inverse=True)
+        self.n_groups = len(levels)
+        self.gidx = gidx
+        Z = np.zeros((self.n, self.n_groups))
+        Z[np.arange(self.n), gidx] = 1.0
+        self.Z = Z
+        self.m = Z.sum(axis=0)
+        self.ols_ms_res = self.ms_res
+        self._kr_cache: dict = {}
+        self._reml()
+
+    # ------------------------------------------------------------------ likelihood
+    def _hinv(self, eta: float) -> np.ndarray:
+        c = eta / (1 + eta * self.m)
+        return np.eye(self.n) - (self.Z * c) @ self.Z.T
+
+    def _profile(self, eta: float, ml: bool = False) -> tuple:
+        X, z = self.mat.X, self.z
+        Hi = self._hinv(eta)
+        A = X.T @ Hi @ X
+        beta = np.linalg.solve(A, X.T @ Hi @ z)
+        r = z - X @ beta
+        q = float(r @ Hi @ r)
+        logdet_h = float(np.sum(np.log1p(eta * self.m)))
+        n, p = self.n, self.p
+        if ml:
+            s2 = q / n
+            ll = -0.5 * (n * math.log(max(s2, 1e-300)) + logdet_h) - 0.5 * n * (
+                1 + math.log(2 * math.pi))
+        else:
+            s2 = q / (n - p)
+            ll = -0.5 * ((n - p) * math.log(max(s2, 1e-300)) + logdet_h
+                         + np.linalg.slogdet(A)[1])
+        return ll, beta, s2, Hi, A
+
+    def _maximise(self, ml: bool = False) -> float:
+        def neg(u):
+            return -self._profile(math.exp(u), ml)[0]
+
+        grid = np.linspace(-14, 8, 45)
+        vals = [neg(u) for u in grid]
+        i = int(np.argmin(vals))
+        lo, hi = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
+        res = optimize.minimize_scalar(neg, bounds=(lo, hi), method="bounded",
+                                       options={"xatol": 1e-10})
+        best = min(res.fun, vals[i])
+        eta = math.exp(res.x) if res.fun <= vals[i] else math.exp(grid[i])
+        if -self._profile(0.0, ml)[0] <= best + 1e-12:  # boundary: no whole-plot variance
+            eta = 0.0
+        return eta
+
+    def _reml(self) -> None:
+        eta = self._maximise()
+        ll, beta, s2, Hi, A = self._profile(eta)
+        self.eta = eta
+        self.s2 = s2
+        self.s2_wp = eta * s2
+        self.loglik_reml = ll
+        X = self.mat.X
+        self.Vinv = Hi / s2
+        self.Phi = np.linalg.inv(A) * s2
+        G = [self.Z @ self.Z.T, np.eye(self.n)]
+        VX = self.Vinv @ X
+        P = [VX.T @ g @ VX for g in G]
+        Pm = self.Vinv - VX @ self.Phi @ VX.T
+        info = np.array([[0.5 * np.trace(Pm @ G[i] @ Pm @ G[j]) for j in range(2)]
+                         for i in range(2)])
+        try:
+            W = np.linalg.inv(info)
+        except np.linalg.LinAlgError:
+            W = np.linalg.pinv(info)
+        self.W, self.P = W, P
+        Q = [[VX.T @ G[i] @ self.Vinv @ G[j] @ VX for j in range(2)] for i in range(2)]
+        lam = np.zeros_like(self.Phi)
+        for i in range(2):
+            for j in range(2):
+                lam += W[i, j] * (Q[i][j] - P[i] @ self.Phi @ P[j])
+        self.Phi_A = self.Phi + 2 * self.Phi @ lam @ self.Phi
+        self.beta = beta
+        self.fitted = X @ beta
+        self.resid = self.z - self.fitted
+        self.ss_res = float(self.resid @ self.resid)
+        total = self.s2 + self.s2_wp
+        self.ms_res = total                      # variance of a new observation
+        self.XtX_inv = self.Phi_A / total        # so x'(X'X)^-1 x * ms_res = var(x'b)
+        # whitened regression (V = s2 L L') for the case diagnostics
+        L = np.linalg.cholesky(np.eye(self.n) + eta * (self.Z @ self.Z.T))
+        self._Xw = np.linalg.solve(L, X)
+        self._ew = np.linalg.solve(L, self.z) - self._Xw @ beta
+        self._XtXw_inv = np.linalg.inv(self._Xw.T @ self._Xw)
+        self.h = np.einsum("ij,jk,ik->i", self._Xw, self._XtXw_inv, self._Xw)
+        self._anova = None
+
+    # ------------------------------------------------------------------ Kenward-Roger
+    def kr_test(self, cols) -> tuple[float, float, float, float]:
+        """Kenward-Roger F test of b[cols] = 0: (F, numerator df, denominator df, p)."""
+        key = tuple(int(c) for c in cols)
+        if key in self._kr_cache:
+            return self._kr_cache[key]
+        nl = len(key)
+        L = np.zeros((self.p, nl))
+        L[list(key), range(nl)] = 1.0
+        Phi, W = self.Phi, self.W
+        Theta = L @ np.linalg.inv(L.T @ Phi @ L) @ L.T
+        M = [Theta @ Phi @ Pi @ Phi for Pi in self.P]
+        A1 = sum(W[i, j] * np.trace(M[i]) * np.trace(M[j]) for i in range(2) for j in range(2))
+        A2 = sum(W[i, j] * np.trace(M[i] @ M[j]) for i in range(2) for j in range(2))
+        b = self.beta[list(key)]
+        Fw = float(b @ np.linalg.solve(L.T @ self.Phi_A @ L, b)) / nl
+        lc = float(nl)
+        m, lam = 1e6, 1.0
+        if A2 > 1e-14:  # as in pbkrtest (Halekoh & Hojsgaard 2014)
+            B = (A1 + 6 * A2) / (2 * lc)
+            g = ((lc + 1) * A1 - (lc + 4) * A2) / ((lc + 2) * A2)
+            den = 3 * lc + 2 * (1 - g)
+            c1, c2, c3 = g / den, (lc - g) / den, (lc + 2 - g) / den
+            v0, v1, v2 = 1 + c1 * B, 1 - c2 * B, 1 - c3 * B
+            v0 = 0.0 if abs(v0) < 1e-10 else v0
+            if abs(v2) < 1e-10 or abs(v1) < 1e-14:
+                m = 4.0
+            else:
+                rho = (1 / lc) * ((1 - A2 / lc) / v1) ** 2 * v0 / v2
+                m = 4 + (lc + 2) / (lc * rho - 1) if abs(lc * rho - 1) > 1e-12 else 1e6
+            if m <= 0:
+                m = 1e6
+            lam = 1.0 if abs(m - 2) < 1e-2 else m * (1 - A2 / lc) / (m - 2)
+        F = lam * Fw
+        p = float(stats.f.sf(F, nl, m))
+        self._kr_cache[key] = (F, lc, m, p)
+        return F, lc, m, p
+
+    def is_whole_plot(self, t: Term) -> bool:
+        return bool(t) and all(self.space.factors[i].hard for i in term_factors(t))
+
+    def term_tests(self) -> list[tuple]:
+        """[(term, source, F, df, error df, p)] in model order."""
+        out = []
+        for t, s in self.mat.groups:
+            if not t:
+                continue
+            F, nl, m, p = self.kr_test(range(s.start, s.stop))
+            name = self.space.factors[t[0]].source if len(t) == 1 else term_name(t)
+            out.append((t, name, F, int(nl), m, p))
+        return out
+
+    def term_p_values(self) -> dict:
+        return {t: (F, p) for t, _n, F, _l, _m, p in self.term_tests()}
+
+    def section_test(self, whole: bool) -> tuple | None:
+        cols = [c for t, s in self.mat.groups if t and self.is_whole_plot(t) == whole
+                for c in range(s.start, s.stop)]
+        return self.kr_test(cols) if cols else None
+
+    def model_test(self) -> tuple[float, float]:
+        cols = [c for t, s in self.mat.groups if t for c in range(s.start, s.stop)]
+        if not cols:
+            return float("nan"), float("nan")
+        F, _l, _m, p = self.kr_test(cols)
+        return F, p
+
+    def anova(self) -> dict:
+        if self._anova is None:
+            tests = self.term_tests()
+            self._anova = {"kind": "reml",
+                           "whole": [r for r in tests if self.is_whole_plot(r[0])],
+                           "sub": [r for r in tests if not self.is_whole_plot(r[0])],
+                           "whole_test": self.section_test(True),
+                           "sub_test": self.section_test(False),
+                           "block": (self.n_blocks - 1) if self.n_blocks else 0}
+        return self._anova
+
+    # ------------------------------------------------------------------ statistics
+    def press(self) -> float | None:
+        return None
+
+    def information(self) -> dict:
+        """Maximum-likelihood statistics (the fixed effects differ between candidate models, so
+        model selection uses ML rather than REML); k = coefficients + 2 variances."""
+        eta = self._maximise(ml=True)
+        ll = self._profile(eta, ml=True)[0]
+        n, k = self.n, self.p + 2
+        m2ll = -2 * ll
+        aicc = m2ll + 2 * k + (2 * k * (k + 1) / (n - k - 1) if n - k - 1 > 0 else math.inf)
+        return {"m2ll": m2ll, "aic": m2ll + 2 * k, "aicc": aicc, "bic": m2ll + k * math.log(n),
+                "k": k, "m2ll_reml": -2 * self.loglik_reml}
+
+    def fit_statistics(self) -> dict:
+        sd = math.sqrt(self.s2)
+        r2 = 1 - self.ss_res / self.ss_cor if self.ss_cor > 0 else float("nan")
+        adj = 1 - (1 - r2) * (self.n - 1) / (self.n - self.p) if self.n > self.p else \
+            float("nan")
+        prng = float(self.fitted.max() - self.fitted.min())
+        avg_var = float(np.mean(np.einsum("ij,jk,ik->i", self.mat.X, self.Phi_A, self.mat.X)))
+        return {"std_dev": sd, "mean": self.mean,
+                "cv": 100 * sd / abs(self.mean) if self.mean else float("nan"),
+                "r2": r2, "adj_r2": adj, "pred_r2": float("nan"), "press": None,
+                "adeq": prng / math.sqrt(avg_var) if avg_var > 0 else float("nan")}
+
+    def variance_components(self) -> list[dict]:
+        """Group (whole-plot) and residual variances with standard errors from the inverse
+        REML information and Wald 95 % intervals."""
+        out = []
+        q = stats.norm.ppf(0.975)
+        total = self.s2 + self.s2_wp
+        for name, v, i in (("Group", self.s2_wp, 0), ("Residual", self.s2, 1)):
+            se = math.sqrt(max(self.W[i, i], 0.0))
+            out.append({"source": name, "variance": v, "se": se, "low": v - q * se,
+                        "high": v + q * se, "percent": 100 * v / total if total else 0.0})
+        return out
+
+    def coefficients(self, level: float = 0.95) -> list[dict]:
+        rows = super().coefficients(level)
+        se = np.sqrt(np.clip(np.diag(self.Phi_A), 0, None))
+        for j, lab in enumerate(self.mat.labels):
+            r = next((r for r in rows if r["label"] == lab), None)
+            if r is None:
+                continue
+            _F, _l, m, _p = self.kr_test([j])
+            q = stats.t.ppf(0.5 + level / 2, m)
+            r.update(se=float(se[j]), low=float(self.beta[j] - q * se[j]),
+                     high=float(self.beta[j] + q * se[j]), df=m,
+                     whole_plot=self._column_is_whole(j))
+        return rows
+
+    def _column_is_whole(self, j: int) -> bool:
+        for t, s in self.mat.groups:
+            if s.start <= j < s.stop:
+                return self.is_whole_plot(t) if t else True
+        return True  # blocks
+
+    def diagnostics(self) -> dict:
+        out = case_statistics(self._Xw, self._ew, self._XtXw_inv, self.s2, self.df_res)
+        out.update({"run": self.obs.run, "std": self.obs.std, "actual": self.z,
+                    "predicted": self.fitted, "residual": self.resid,
+                    "labels": list(self.mat.labels)})
+        return out
+
+
+def case_statistics(X: np.ndarray, resid: np.ndarray, XtX_inv: np.ndarray, s2: float,
+                    df: int) -> dict:
+    """Leverage, studentized residuals, Cook's distance, DFFITS and DFBETAS of a least-squares
+    fit (Belsley, Kuh & Welsch). ``DFBETAS[i, j]`` is the change of coefficient j when run i
+    is left out, in units of its standard error estimated without run i."""
+    n, p = X.shape
+    h = np.einsum("ij,jk,ik->i", X, XtX_inv, X)
+    hc = np.clip(h, 0, 1 - 1e-12)
+    s = math.sqrt(max(s2, 0.0))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r = resid / (s * np.sqrt(1 - hc))
+        t = r * np.sqrt((df - 1) / np.clip(df - r ** 2, 1e-12, None)) if df > 1 else r * 0
+        cook = r ** 2 * hc / (p * (1 - hc))
+        dffits = t * np.sqrt(hc / (1 - hc))
+        s_i2 = np.clip((df * s2 - resid ** 2 / (1 - hc)) / max(df - 1, 1), 1e-300, None)
+        C = XtX_inv @ X.T                                   # p x n
+        dfbetas = (C * (resid / (1 - hc))).T / np.sqrt(np.outer(s_i2, np.diag(XtX_inv)))
+    return {"leverage": h, "int_stud": r, "ext_stud": t, "cooks": cook, "dffits": dffits,
+            "dfbetas": dfbetas}
+
+
 def _actual_label(space: Space, exps: tuple) -> str:
     parts = []
     for i, e in enumerate(exps):
@@ -915,24 +1221,157 @@ def removable(t: Term, terms: list[Term], space: Space, hierarchy: bool) -> bool
     return True
 
 
+def fit_class(space: Space):
+    """Least squares, or REML for a split-plot design (whole plots as a random effect)."""
+    return SplitPlotFit if space.split_plot else Fit
+
+
+def missing_parents(terms: list[Term], candidates: list[Term], space: Space) -> list[Term]:
+    """Lower-order terms that a hierarchical model needs but ``terms`` lacks."""
+    if space.mixture:
+        return []
+    return sort_terms({u for t in terms for u in candidates if contains(u, t)
+                       and u not in terms})
+
+
+SELECTION_CRITERIA = [("p", "p-value"), ("aicc", "AICc"), ("bic", "BIC")]
+SELECTION_METHODS = [("backward", "Backward"), ("forward", "Forward"), ("stepwise", "Stepwise")]
+
+
+def auto_select(space: Space, obs: Observations, terms: list[Term], transform: Transform,
+                method: str = "backward", criterion: str = "p", alpha_in: float = 0.10,
+                alpha_out: float = 0.10, hierarchy: bool = True, response: str = "R1",
+                forced: list[Term] | None = None):
+    """Design-Expert's Auto Select. ``terms`` are the candidates (the model chosen on the
+    Model tab); blocks, forced terms and (mixtures) the linear blending terms always stay in.
+
+    * backward: start with all candidates; remove the term with the largest p-value while it
+      exceeds alpha out (criterion p), or the term whose removal lowers AICc / BIC most.
+    * forward: start with the forced terms; add the term with the smallest p-value while it is
+      below alpha in, or the term that lowers AICc / BIC most. Every candidate may enter (as
+      in Design-Expert); with hierarchy on, the parents a selected term needs are added at the
+      end (steps marked "hierarchy").
+    * stepwise: forward steps, each followed by backward removals (alpha out).
+
+    Returns (fit, steps) with steps [(action, term, value)] (value = p or the criterion).
+    """
+    cls = fit_class(space)
+    candidates = sort_terms(terms)
+    keep = set(forced or [])
+    if space.mixture:
+        keep |= {t for t in candidates if len(t) == 1}
+
+    def make(ts):
+        return cls(space, obs, sort_terms(ts), transform, response)
+
+    def score(fit):
+        return fit.information()[criterion]
+
+    def p_of(fit, t):
+        return fit.term_p_values().get(t, (math.nan, math.nan))[1]
+
+    steps: list = []
+    if method == "backward":
+        current = list(candidates)
+    else:
+        current = [t for t in candidates if t in keep]
+    fit = make(current)
+    seen = {frozenset(current)}
+
+    def backward_step(fit, current, alpha) -> tuple:
+        cands = [t for t in current if t not in keep and removable(t, current, space,
+                                                                    hierarchy)]
+        if not cands:
+            return None
+        if criterion == "p":
+            pv = fit.term_p_values()
+            scored = [(pv.get(t, (0, math.nan))[1], t) for t in cands]
+            scored = [c for c in scored if np.isfinite(c[0])]
+            if not scored:
+                return None
+            p, worst = max(scored, key=lambda c: (c[0], term_degree(c[1])))
+            if p <= alpha:
+                return None
+            trial = [u for u in current if u != worst]
+            return make(trial), trial, ("remove", worst, p)
+        best = None
+        base = score(fit)
+        for t in cands:
+            trial = [u for u in current if u != t]
+            try:
+                f = make(trial)
+            except (ValueError, np.linalg.LinAlgError):
+                continue
+            v = score(f)
+            if v < base - 1e-9 and (best is None or v < best[0]):
+                best = (v, f, trial, t)
+        if best is None:
+            return None
+        return best[1], best[2], ("remove", best[3], best[0])
+
+    def forward_step(fit, current) -> tuple:
+        cands = [t for t in candidates if t not in current]
+        best = None
+        base = score(fit) if criterion != "p" else None
+        for t in cands:
+            trial = current + [t]
+            if frozenset(trial) in seen:
+                continue
+            try:
+                f = make(trial)
+            except (ValueError, np.linalg.LinAlgError):
+                continue
+            v = p_of(f, t) if criterion == "p" else score(f)
+            if not np.isfinite(v):
+                continue
+            if best is None or v < best[0]:
+                best = (v, f, trial, t)
+        if best is None:
+            return None
+        if criterion == "p" and best[0] >= alpha_in:
+            return None
+        if criterion != "p" and not best[0] < base - 1e-9:
+            return None
+        return best[1], best[2], ("add", best[3], best[0])
+
+    for _ in range(4 * len(candidates) + 4):
+        if method == "backward":
+            res = backward_step(fit, current, alpha_out)
+            if res is None:
+                break
+            fit, current, step = res
+            steps.append(step)
+            continue
+        res = forward_step(fit, current)
+        if res is None:
+            break
+        fit, current, step = res
+        steps.append(step)
+        seen.add(frozenset(current))
+        if method == "stepwise" and len([t for t in current if t not in keep]) >= 2:
+            while True:
+                back = backward_step(fit, current, alpha_out)
+                if back is None or back[2][1] == step[1]:
+                    break
+                fit, current, bstep = back
+                steps.append(bstep)
+                seen.add(frozenset(current))
+    if hierarchy and method != "backward":
+        parents = missing_parents(current, candidates, space)
+        if parents:
+            current = current + parents
+            fit = make(current)
+            steps += [("hierarchy", t, float("nan")) for t in parents]
+    return fit, steps
+
+
 def backward(space: Space, obs: Observations, terms: list[Term], transform: Transform,
              alpha: float = 0.1, hierarchy: bool = True, response: str = "R1"):
-    """Backward elimination by p-value (alpha out), keeping the model hierarchical."""
-    terms = list(terms)
-    steps = []
-    while True:
-        fit = Fit(space, obs, terms, transform, response)
-        pv = fit.term_p_values()
-        cands = [(pv[t][1], t) for t in terms if t in pv and removable(t, terms, space,
-                                                                       hierarchy)]
-        cands = [c for c in cands if np.isfinite(c[0])]
-        if not cands:
-            return fit, steps
-        p, worst = max(cands, key=lambda c: (c[0], term_degree(c[1])))
-        if p <= alpha:
-            return fit, steps
-        terms.remove(worst)
-        steps.append((worst, p))
+    """Backward elimination by p-value (alpha out), keeping the model hierarchical.
+    Returns (fit, [(term, p)])."""
+    fit, steps = auto_select(space, obs, terms, transform, "backward", "p", alpha_out=alpha,
+                             hierarchy=hierarchy, response=response)
+    return fit, [(t, v) for _, t, v in steps]
 
 
 @dataclass
@@ -1141,22 +1580,31 @@ class AnalysisSpec:
     factors: list[str] | None = None
     model: str = "suggested"       # suggested | <order> | manual
     terms: list[str] | None = None  # term keys for manual
-    reduction: str = "none"        # none | backward
+    reduction: str = "none"        # none | backward | forward | stepwise
     alpha_out: float = 0.10
     hierarchy: bool = True
     transform: Transform = field(default_factory=Transform)
+    criterion: str = "p"           # p | aicc | bic (Auto Select criterion)
+    alpha_in: float = 0.10
+    selection: dict | None = None  # last Auto Select settings shown on the Model tab
 
     def to_meta(self) -> dict:
-        return {"model": self.model, "terms": self.terms, "reduction": self.reduction,
-                "alpha_out": self.alpha_out, "hierarchy": self.hierarchy,
-                "transform": self.transform.to_meta(), "factors": self.factors}
+        d = {"model": self.model, "terms": self.terms, "reduction": self.reduction,
+             "alpha_out": self.alpha_out, "hierarchy": self.hierarchy,
+             "transform": self.transform.to_meta(), "factors": self.factors,
+             "criterion": self.criterion, "alpha_in": self.alpha_in}
+        if self.selection:
+            d["selection"] = dict(self.selection)
+        return d
 
     @classmethod
     def from_meta(cls, response: str, d: dict | None) -> "AnalysisSpec":
         d = d or {}
         return cls(response, d.get("factors"), d.get("model", "suggested"), d.get("terms"),
                    d.get("reduction", "none"), float(d.get("alpha_out", 0.10)),
-                   bool(d.get("hierarchy", True)), Transform.from_meta(d.get("transform")))
+                   bool(d.get("hierarchy", True)), Transform.from_meta(d.get("transform")),
+                   d.get("criterion", "p"), float(d.get("alpha_in", 0.10)),
+                   d.get("selection"))
 
 
 @dataclass
@@ -1206,11 +1654,12 @@ def analyze(ds, spec: AnalysisSpec, space: Space | None = None) -> Analysis:
         terms = model_terms(space, spec.model)
     terms, dropped = drop_aliased(space, obs, terms)
     steps: list = []
-    if spec.reduction == "backward":
-        fit, steps = backward(space, obs, terms, spec.transform, spec.alpha_out,
-                              spec.hierarchy, spec.response)
+    if spec.reduction in ("backward", "forward", "stepwise"):
+        fit, steps = auto_select(space, obs, terms, spec.transform, spec.reduction,
+                                 spec.criterion, spec.alpha_in, spec.alpha_out,
+                                 spec.hierarchy, spec.response)
     else:
-        fit = Fit(space, obs, terms, spec.transform, spec.response)
+        fit = fit_class(space)(space, obs, terms, spec.transform, spec.response)
     fit.response_name = response_name(ds, spec.response)
     fit.response_units = response_units(ds, spec.response)
     return Analysis(fit, summary, spec, steps, dropped, space, obs)

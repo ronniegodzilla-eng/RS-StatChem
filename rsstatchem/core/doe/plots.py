@@ -43,8 +43,16 @@ def _style(ax, title: str, xlabel: str, ylabel: str) -> None:
     ax.set_axisbelow(True)
 
 
+def figure_png(fig: Figure, dpi: float | None = None) -> bytes:
+    """PNG of a figure as it is now (e.g. the current view of a rotated 3D surface)."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="white", dpi=dpi or fig.dpi)
+    return buf.getvalue()
+
+
 def _png(fig: Figure) -> bytes:
-    fig.tight_layout()
+    if not fig.axes or fig.axes[0].name != "3d":
+        fig.tight_layout()
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor="white")
     return buf.getvalue()
@@ -172,6 +180,14 @@ def _design_points(ax, pts, color=POINT, size=26):
 def contour_plot(gx, gy, Z, xlabel: str, ylabel: str, title: str, points=None,
                  n_levels: int = 10, solution=None, zlabel: str = "", filled: bool = True,
                  mask=None) -> bytes:
+    return _png(contour_figure(gx, gy, Z, xlabel, ylabel, title, points, n_levels, solution,
+                               zlabel, filled, mask))
+
+
+def contour_figure(gx, gy, Z, xlabel: str, ylabel: str, title: str, points=None,
+                   n_levels: int = 10, solution=None, zlabel: str = "", filled: bool = True,
+                   mask=None) -> Figure:
+    """2D contour plot with the design points (the live Model Graphs view adds flags)."""
     fig = _figure(6.2, 4.8)
     ax = fig.add_subplot()
     Zm = np.ma.masked_invalid(Z if mask is None else np.where(mask, Z, np.nan))
@@ -191,11 +207,22 @@ def contour_plot(gx, gy, Z, xlabel: str, ylabel: str, title: str, points=None,
                    edgecolor="#000000", zorder=7)
     _style(ax, title, xlabel, ylabel)
     ax.grid(False)
-    return _png(fig)
+    fig.tight_layout()
+    return fig
 
 
 def surface_plot(gx, gy, Z, xlabel: str, ylabel: str, zlabel: str, title: str,
                  points=None) -> bytes:
+    return _png(surface_figure(gx, gy, Z, xlabel, ylabel, zlabel, title, points))
+
+
+SURFACE_VIEW = (28.0, -130.0)  # Design-Expert-like default elevation / azimuth
+
+
+def surface_figure(gx, gy, Z, xlabel: str, ylabel: str, zlabel: str, title: str,
+                   points=None) -> Figure:
+    """3D response surface (mplot3d); in the program it is shown on a live canvas that the
+    user rotates and zooms with the mouse."""
     fig = _figure(6.4, 5.0)
     ax = fig.add_subplot(projection="3d")
     ax.plot_surface(gx, gy, Z, cmap=DE_CMAP, linewidth=0.2, edgecolor="#555555",
@@ -208,8 +235,49 @@ def surface_plot(gx, gy, Z, xlabel: str, ylabel: str, zlabel: str, title: str,
     ax.set_zlabel(zlabel, fontsize=8)
     ax.tick_params(labelsize=7)
     ax.set_title(title, fontsize=11, fontweight="bold")
-    ax.view_init(elev=28, azim=-130)
-    return _png(fig)
+    ax.view_init(elev=SURFACE_VIEW[0], azim=SURFACE_VIEW[1])
+    fig.colorbar(ax.collections[0], ax=ax, shrink=0.6, pad=0.1).ax.tick_params(labelsize=7)
+    return fig
+
+
+def ternary_surface_figure(fn, lows, span: float, names: list[str], title: str,
+                           zlabel: str = "", feasible=None, points=None, n: int = 40
+                           ) -> Figure:
+    """Mixture 3D surface: the response over the (pseudo-component) simplex of three
+    components, drawn above the ternary triangle."""
+    fig = _figure(6.4, 5.0)
+    ax = fig.add_subplot(projection="3d")
+    pts = [(i, j, n - i - j) for i in range(n + 1) for j in range(n + 1 - i)]
+    P = np.array(pts, float) / n
+    actual = np.asarray(lows, float) + P * span
+    Z = np.asarray(fn(actual), float)
+    x, y = _ternary_xy(P)
+    tri = Triangulation(x, y)
+    ok = np.isfinite(Z)
+    if feasible is not None:
+        ok &= np.asarray(feasible(actual), bool)
+    tri.set_mask(~np.all(ok[tri.triangles], axis=1))
+    Zf = np.where(ok, Z, np.nanmin(np.where(ok, Z, np.inf)) if ok.any() else 0.0)
+    ax.plot_trisurf(tri, Zf, cmap=DE_CMAP, linewidth=0.15, edgecolor="#555555",
+                    antialiased=True, alpha=0.95)
+    zmin = float(np.min(Zf[ok])) if ok.any() else 0.0
+    h = math.sqrt(3) / 2
+    ax.plot([0, 1, 0.5, 0], [0, 0, h, 0], [zmin] * 4, color="#222222", linewidth=1.2)
+    ax.text(0.5, h + 0.06, zmin, names[0], fontsize=8, ha="center")
+    ax.text(-0.08, -0.06, zmin, names[1], fontsize=8, ha="center")
+    ax.text(1.08, -0.06, zmin, names[2], fontsize=8, ha="center")
+    if points is not None and len(points):
+        pp = (np.asarray(points, float)[:, :3] - np.asarray(lows, float)) / span
+        px, py = _ternary_xy(np.clip(pp, 0, None) + 1e-12)
+        ax.scatter(px, py, np.asarray(points, float)[:, 3], color=POINT, s=18,
+                   depthshade=False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_zlabel(zlabel, fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.set_title(title, fontsize=11, fontweight="bold")
+    ax.view_init(elev=SURFACE_VIEW[0], azim=-60)
+    return fig
 
 
 def perturbation_plot(curves: list[tuple[str, np.ndarray, np.ndarray]], ylabel: str,
@@ -307,6 +375,13 @@ def _ternary_xy(p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def ternary_contour(fn, lows, span: float, names: list[str], title: str, zlabel: str = "",
                     feasible=None, points=None, n: int = 70, n_levels: int = 10,
                     vertex_values: list[str] | None = None) -> bytes:
+    return _png(ternary_figure(fn, lows, span, names, title, zlabel, feasible, points, n,
+                               n_levels, vertex_values))
+
+
+def ternary_figure(fn, lows, span: float, names: list[str], title: str, zlabel: str = "",
+                   feasible=None, points=None, n: int = 70, n_levels: int = 10,
+                   vertex_values: list[str] | None = None) -> Figure:
     """Contours over the (pseudo-component) simplex of three components.
 
     ``fn(actual (m x 3)) -> values``; ``lows`` the lower bounds and ``span`` the amount shared
@@ -359,7 +434,17 @@ def ternary_contour(fn, lows, span: float, names: list[str], title: str, zlabel:
     ax.set_xlim(-0.25, 1.25)
     ax.set_ylim(-0.2, h + 0.2)
     ax.set_title(title, fontsize=11, fontweight="bold")
-    return _png(fig)
+    fig.tight_layout()
+    return fig
+
+
+def ternary_point(x: float, y: float) -> np.ndarray | None:
+    """Plane coordinates of the ternary plot -> proportions (a, b, c), None outside."""
+    a = y / (math.sqrt(3) / 2)
+    c = x - 0.5 * a
+    b = 1 - a - c
+    p = np.array([a, b, c])
+    return p if np.all(p >= -1e-9) else None
 
 
 # ---------------------------------------------------------------------------- optimisation

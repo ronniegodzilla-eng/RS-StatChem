@@ -1,10 +1,12 @@
 """New Design wizard, laid out like Design-Expert's.
 
 Page 1: the design families on the left (Standard Designs: Factorial, Response Surface,
-Mixture; Custom Designs: Optimal), the designs of the chosen family in the middle and, on the
-right, the number of factors, the factor table (name, units, type, minimum/maximum or levels,
-coded low/high and the axial points of a CCD) and the design options (alpha, centre points,
-blocks, replicates, fraction, ...), with the run count updated live.
+Mixture, Split-Plot; Custom Designs: Optimal), the designs of the chosen family in the middle
+and, on the right, the number of factors, the factor table (name, units, type — numeric or
+categoric with named levels —, changes — easy or hard to change, which makes a split-plot —,
+minimum/maximum or levels, coded low/high and the axial points of a CCD) and the design
+options (alpha, centre points, blocks, replicates, fraction, groups, ...), with the run count
+updated live.
 Page 2: the responses (number, names, units). Finish builds the design with
 :func:`rsstatchem.core.doe.designs.build_design` and emits ``created(DesignDocument)``.
 
@@ -16,6 +18,7 @@ import math
 import random
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -31,6 +34,7 @@ from rsstatchem.ui.dx.document import DesignDocument
 # family key -> (tree text, designs)
 FAMILIES = {
     "factorial": ("Factorial", [("factorial", "Regular Two-Level"),
+                                ("mr5", "Min-Run Characterize"), ("mr4", "Min-Run Screen"),
                                 ("general", "Multilevel Categoric"),
                                 ("pb", "Plackett-Burman"), ("taguchi", "Taguchi OA")]),
     "rsm": ("Response Surface", [("ccd", "Central Composite"), ("bbd", "Box-Behnken"),
@@ -39,10 +43,15 @@ FAMILIES = {
     "mixture": ("Mixture", [("lattice", "Simplex Lattice"), ("centroid", "Simplex Centroid"),
                             ("ev", "Screening (Extreme Vertices)"),
                             ("mixdopt", "Optimal (Custom)")]),
+    "splitplot": ("Split-Plot", [("factorial", "Regular Two-Level"),
+                                 ("general", "Multilevel Categoric"),
+                                 ("ccd", "Central Composite"), ("dopt", "Optimal (Custom)")]),
     "custom": ("Optimal (Custom)", [("dopt", "Optimal (Custom) Process"),
                                     ("mixdopt", "Optimal (Custom) Mixture")]),
 }
-TREE = [("Standard Designs", ["factorial", "rsm", "mixture"]), ("Custom Designs", ["custom"])]
+TREE = [("Standard Designs", ["factorial", "rsm", "mixture", "splitplot"]),
+        ("Custom Designs", ["custom"])]
+RO = Qt.ItemFlag.ItemIsEnabled
 HELP = {
     "ccd": "Central composite design: a two-level factorial (or fraction), axial (star) points "
            "at ±alpha and centre points. The standard design for a quadratic model.",
@@ -52,7 +61,17 @@ HELP = {
             "to fit, plus lack-of-fit and replicate points.",
     "mixdopt": "Optimal (custom) mixture: D-optimal blends inside the constrained mixture "
                "region, plus lack-of-fit and replicate points.",
+    "mr5": "Min-Run Characterize: a minimum-run equireplicated resolution V design (MR5). All "
+           "main effects and two-factor interactions can be estimated with about as many runs "
+           "as model terms (an even number, each factor balanced). Built by an exchange "
+           "algorithm; losing a run reduces it to resolution IV.",
+    "mr4": "Min-Run Screen: a minimum-run resolution IV design (MR4) in 2 x factors runs — the "
+           "foldover of a main-effects design, so main effects are clear of two-factor "
+           "interactions. The 2 extra runs (default) protect against a botched run.",
 }
+SPLIT_HELP = ("  Split-plot: set Changes = Hard for factors that are hard to change; their "
+              "settings stay fixed within each group (whole plot), the groups are run in random "
+              "order and the runs within each group in random order. The analysis uses REML.")
 ALPHAS = [("rotatable", "Rotatable"), ("spherical", "Spherical"),
           ("orthogonal", "Orthogonal Quadratic"), ("practical", "Practical"),
           ("face", "Face Centered"), ("custom", "Other (enter value)")]
@@ -141,7 +160,8 @@ class NewDesignWizard(QDialog):
                 it = QTreeWidgetItem([FAMILIES[key][0]])
                 it.setData(0, Qt.ItemDataRole.UserRole, key)
                 it.setIcon(0, icons.icon({"factorial": "cube", "rsm": "surface",
-                                          "mixture": "ternary", "custom": "evaluation"}[key]))
+                                          "mixture": "ternary", "custom": "evaluation",
+                                          "splitplot": "splitplot"}[key]))
                 top.addChild(it)
                 self._family_items[key] = it
             top.setExpanded(True)
@@ -321,14 +341,24 @@ class NewDesignWizard(QDialog):
             return "categoric"
         return "process"
 
+    @property
+    def split_capable(self) -> bool:
+        return self.design in designs.SPLIT_PLOT_DESIGNS
+
+    def split(self) -> bool:
+        """Split-plot: some factor is hard to change."""
+        return self.split_capable and any(r.get("changes") == "Hard" for r in
+                                          self._rows[:self.k_spin.value()])
+
     def _columns(self) -> list[str]:
         k = self.kind()
         if k == "mixture":
             return ["Component", "Name", "Units", "Type", "Low", "High"]
+        changes = ["Changes"] if self.split_capable else []
         if k == "categoric":
-            return ["Factor", "Name", "Units", "Type", "Levels", "Level Names"]
-        cols = ["Factor", "Name", "Units", "Type", "Minimum", "Maximum", "Coded Low",
-                "Coded High"]
+            return ["Factor", "Name", "Units", "Type"] + changes + ["Levels", "Level Names"]
+        cols = ["Factor", "Name", "Units", "Type"] + changes + [
+            "Minimum", "Maximum", "Levels", "Level Names", "Coded Low", "Coded High"]
         if self.design == "ccd":
             cols += ["-alpha", "+alpha"]
         return cols
@@ -341,24 +371,31 @@ class NewDesignWizard(QDialog):
             self._last_kind = self.kind()
         self._loading = True
         self.title.setText(f"{FAMILIES[self.family][0]}: {designs.DESIGN_TITLES[d]}")
-        self.desc.setText(HELP.get(d, DESCRIPTIONS.get(d, "")))
+        self.desc.setText(HELP.get(d, DESCRIPTIONS.get(d, ""))
+                          + (SPLIT_HELP if self.family == "splitplot" else ""))
         lo, hi = LIMITS[d]
         self.k_spin.setRange(lo, hi)
         if not self._rows:
-            self.k_spin.setValue(DEFAULT_K[d])
+            self.k_spin.setValue(DEFAULT_K[d] if self.family != "splitplot" else
+                                 max(DEFAULT_K[d], 3 if d != "general" else 2))
         else:
             self.k_spin.setValue(min(max(len(self._rows), lo), hi))
         self.k_label.setText({"mixture": "Components:", "categoric": "Categoric factors:"}
-                             .get(self.kind(), "Numeric factors:"))
+                             .get(self.kind(), "Factors:"))
         self.ccd_alpha_entry.setVisible(d == "ccd")
         self._build_options()
         self._loading = False
         self._resize_factors()
+        if self.family == "splitplot" and self._rows and not self.split():
+            self._rows[0]["changes"] = "Hard"  # a split-plot needs a hard-to-change factor
+            self._fill_table(self.k_spin.value())
+            self._changed()
 
     def _default_row(self, j: int) -> dict:
         return {"name": designs.letter(j), "units": "", "low": "-1", "high": "1",
-                "mlow": "0", "mhigh": "", "levels": "1, 2, 3" if self.design != "taguchi"
-                else ""}
+                "mlow": "0", "mhigh": "", "type": "Numeric", "changes": "Easy",
+                "levels": ("1, 2, 3" if self.kind() == "categoric" else "L1, L2")
+                if self.design != "taguchi" else ""}
 
     def _resize_factors(self) -> None:
         if self._loading:
@@ -369,7 +406,8 @@ class NewDesignWizard(QDialog):
             self._rows.append(self._default_row(len(self._rows)))
         centers = {"ccd": designs.CCD_CENTERS, "bbd": designs.BBD_CENTERS}.get(self.design)
         w = self._opt.get("center_points")
-        if centers and w is not None and w.value() == centers.get(self._opt_k, -1):
+        if centers and w is not None and w.value() == centers.get(self._opt_k, -1) \
+                and not self.split():
             w.setValue(centers.get(k, w.value()))  # untouched default follows k
         self._opt_k = k
         self._fill_table(k)
@@ -380,15 +418,25 @@ class NewDesignWizard(QDialog):
         for r in range(min(self.table.rowCount(), len(self._rows))):
             row = self._rows[r]
             for c, name in enumerate(self.table_columns):
+                if name in ("Type", "Changes"):
+                    w = self.table.cellWidget(r, c)
+                    if isinstance(w, QComboBox):
+                        row[name.lower()] = w.currentText()
+                    continue
                 it = self.table.item(r, c)
                 if it is None:
                     continue
                 key = {"Name": "name", "Units": "units", "Minimum": "low", "Maximum": "high",
                        "Low": "mlow", "High": "mhigh", "Level Names": "levels"}.get(name)
-                if key:
+                if key and it.flags() & Qt.ItemFlag.ItemIsEditable:
                     row[key] = it.text()
 
     table_columns: list[str] = []
+
+    def _row_categoric(self, r: int) -> bool:
+        kind = self.kind()
+        return kind == "categoric" or (kind == "process"
+                                       and self._rows[r].get("type") == "Categoric")
 
     def _fill_table(self, k: int) -> None:
         cols = self._columns()
@@ -398,40 +446,55 @@ class NewDesignWizard(QDialog):
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setRowCount(k)
-        ro = Qt.ItemFlag.ItemIsEnabled
         kind = self.kind()
         taguchi_levels = designs.TAGUCHI_ARRAYS.get(self._opt_value("array", "L9"),
                                                     (0, []))[1] if self.design == "taguchi" \
             else []
         for r in range(k):
             row = self._rows[r]
+            catrow = self._row_categoric(r)
             for c, name in enumerate(cols):
                 if name in ("Factor", "Component"):
                     it = QTableWidgetItem(designs.letter(r) + (f" [X{r + 1}]"
                                                                if kind == "process" else ""))
-                    it.setFlags(ro)
+                    it.setFlags(RO)
                     it.setBackground(Qt.GlobalColor.white)
                 elif name == "Name":
                     it = QTableWidgetItem(row["name"])
                 elif name == "Units":
                     it = QTableWidgetItem(row["units"])
+                elif name == "Type" and kind == "process":
+                    self.table.setItem(r, c, QTableWidgetItem(""))
+                    self.table.setCellWidget(r, c, self._cell_combo(
+                        ["Numeric", "Categoric"], row.get("type", "Numeric"),
+                        lambda _=0, rr=r: self._type_changed(rr),
+                        "Numeric: a continuous range (minimum to maximum). Categoric: named "
+                        "levels (nominal), coded with effect coding in the model."))
+                    continue
                 elif name == "Type":
-                    it = QTableWidgetItem({"mixture": "Mixture", "categoric": "Categoric"}
-                                          .get(kind, "Numeric"))
-                    it.setFlags(ro)
-                    it.setToolTip("The factor type is set by the design: numeric for factorial "
-                                  "and response surface designs, categoric for multilevel and "
-                                  "Taguchi designs.")
+                    it = QTableWidgetItem({"mixture": "Mixture"}.get(kind, "Categoric"))
+                    it.setFlags(RO)
+                    it.setToolTip("The factor type is set by the design: mixture components, "
+                                  "or categoric levels for multilevel and Taguchi designs.")
+                elif name == "Changes":
+                    self.table.setItem(r, c, QTableWidgetItem(""))
+                    self.table.setCellWidget(r, c, self._cell_combo(
+                        ["Easy", "Hard"], row.get("changes", "Easy"),
+                        lambda _=0, rr=r: self._changes_changed(rr),
+                        "Hard-to-change factors are reset only between groups of runs (whole "
+                        "plots): the design becomes a split-plot with restricted "
+                        "randomisation."))
+                    continue
                 elif name == "Minimum":
-                    it = QTableWidgetItem(row["low"])
+                    it = QTableWidgetItem("" if catrow else row["low"])
                 elif name == "Maximum":
-                    it = QTableWidgetItem(row["high"])
+                    it = QTableWidgetItem("" if catrow else row["high"])
                 elif name == "Low":
                     it = QTableWidgetItem(row["mlow"])
                 elif name == "High":
                     it = QTableWidgetItem(row["mhigh"] or _fmt(self._total()))
                 elif name == "Level Names":
-                    text = row["levels"]
+                    text = row["levels"] if catrow else ""
                     if self.design == "taguchi":
                         nl = taguchi_levels[r] if r < len(taguchi_levels) else 2
                         parts = [p.strip() for p in text.split(",") if p.strip()]
@@ -442,20 +505,57 @@ class NewDesignWizard(QDialog):
                     it.setToolTip("Level names or values, separated by commas.")
                 elif name == "Levels":
                     it = QTableWidgetItem(str(len([p for p in row["levels"].split(",")
-                                                   if p.strip()])))
-                    it.setFlags(ro)
+                                                   if p.strip()])) if catrow else "")
+                    it.setFlags(RO)
                 else:  # computed: coded low/high, -alpha/+alpha
                     it = QTableWidgetItem("")
-                    it.setFlags(ro)
+                    it.setFlags(RO)
                     it.setForeground(Qt.GlobalColor.darkGray)
+                if catrow and name in ("Minimum", "Maximum"):
+                    it.setFlags(RO)
+                    it.setBackground(QColor("#EEF1F5"))
+                if not catrow and name == "Level Names":
+                    it.setFlags(RO)
+                    it.setBackground(QColor("#EEF1F5"))
                 self.table.setItem(r, c, it)
         hh = self.table.horizontalHeader()
+        stretch = "Level Names" if "Level Names" in cols else "Name"
         for c, name in enumerate(cols):
-            mode = QHeaderView.ResizeMode.Stretch if name in ("Name", "Level Names") else \
-                QHeaderView.ResizeMode.ResizeToContents
-            hh.setSectionResizeMode(c, mode)
+            if name == stretch:
+                hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+            elif name == "Name":
+                hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(c, 120)
+            else:
+                hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         self._loading = False
         self._refresh_coded()
+
+    def _cell_combo(self, items: list[str], current: str, slot, tip: str) -> QComboBox:
+        box = QComboBox()
+        box.addItems(items)
+        box.setCurrentIndex(max(items.index(current) if current in items else 0, 0))
+        box.setToolTip(tip)
+        box.currentIndexChanged.connect(slot)
+        return box
+
+    def _type_changed(self, r: int) -> None:
+        if self._loading:
+            return
+        self._read_table()
+        row = self._rows[r]
+        if row.get("type") == "Categoric" and not [p for p in row["levels"].split(",")
+                                                   if p.strip()]:
+            row["levels"] = "L1, L2"
+        self._fill_table(self.k_spin.value())
+        self._changed()
+
+    def _changes_changed(self, r: int) -> None:
+        if self._loading:
+            return
+        self._read_table()
+        self._update_split_options()
+        self._changed()
 
     def _refresh_coded(self) -> None:
         if self.kind() != "process" or not self.table_columns:
@@ -464,6 +564,11 @@ class NewDesignWizard(QDialog):
         cols = self.table_columns
         alpha = self._ccd_alpha() if self.design == "ccd" else None
         for r in range(self.table.rowCount()):
+            if self._row_categoric(r):
+                for name in ("Coded Low", "Coded High", "-alpha", "+alpha"):
+                    if name in cols:
+                        self.table.item(r, cols.index(name)).setText("")
+                continue
             lo = _num(self._cell(r, "Minimum"), -1)
             hi = _num(self._cell(r, "Maximum"), 1)
             if alpha and self.ccd_alpha_entry.isChecked():
@@ -494,7 +599,7 @@ class NewDesignWizard(QDialog):
             return
         name = self.table_columns[item.column()] if item.column() < len(self.table_columns) \
             else ""
-        if name == "Level Names":
+        if name == "Level Names" and "Levels" in self.table_columns:
             self._loading = True
             lv = self.table_columns.index("Levels")
             n = len([p for p in item.text().split(",") if p.strip()])
@@ -587,11 +692,19 @@ class NewDesignWizard(QDialog):
             self._combo("blocks", "Blocks:", [(1, "1"), (2, "2"), (4, "4"), (8, "8")])
             self._spin("center_points", "Center points per block:", 0, 50, 0)
             self._spin("replicates", "Replicates:", 1, 20, 1)
+            self._spin("groups", "Groups per replicate (0 = one per hard-to-change setting):",
+                       0, 256, 0, "Split-plot: the number of whole plots in each replicate")
+            self._check("block_per_replicate", "One block per replicate", False)
+        elif d in ("mr5", "mr4"):
+            if d == "mr4":
+                self._check("extra_runs", "Add 2 runs (MR4+2, recommended)", True)
+            self._spin("center_points", "Center points:", 0, 50, 0)
         elif d == "pb":
             self._spin("center_points", "Center points:", 0, 50, 0)
             self._spin("replicates", "Replicates:", 1, 20, 1)
         elif d == "general":
             self._spin("replicates", "Replicates:", 1, 20, 1)
+            self._check("block_per_replicate", "One block per replicate", False)
         elif d == "taguchi":
             self._combo("array", "Orthogonal array:", [(a, f"{a} ({n} runs)") for a, (n, _)
                                                        in designs.TAGUCHI_ARRAYS.items()], "L9")
@@ -606,6 +719,8 @@ class NewDesignWizard(QDialog):
             self._combo("blocks", "Blocks:", [(1, "1"), (2, "2"), (3, "3"), (5, "5")])
             self._spin("center_axial", "Center points in axial block:", 0, 20, 2)
             self._spin("replicates", "Replicates:", 1, 20, 1)
+            if self.family == "splitplot":
+                self._opt["center_points"].setValue(1)
             for key in ("alpha_type", "ccd_type", "fraction", "center_points", "blocks"):
                 w = self._opt[key]
                 sig = w.currentIndexChanged if isinstance(w, QComboBox) else w.valueChanged
@@ -620,6 +735,10 @@ class NewDesignWizard(QDialog):
             self._spin("model_points", "Model points (0 = number of terms):", 0, 500, 0)
             self._spin("lof_points", "Lack-of-fit points:", 0, 50, 5)
             self._spin("replicate_points", "Replicate points:", 0, 50, 5)
+            self._spin("groups", "Groups (whole plots):", 2, 200, 8)
+            self._spin("group_size", "Runs per group:", 2, 50, 4)
+            self._dspin("variance_ratio", "Variance ratio (group / residual):", 0.01, 100,
+                        1.0, 2)
         elif d in designs.MIXTURE_DESIGNS:
             self._dspin("total", "Mixture total:", 0.0001, 1e6, 1.0, 4)
             self._opt["total"].valueChanged.connect(lambda *_: self._resize_factors())
@@ -640,6 +759,20 @@ class NewDesignWizard(QDialog):
                 self._spin("replicate_points", "Replicate points:", 0, 50, 5)
             self._spin("center_points", "Replicates of the centroid:", 0, 20, 0)
         self._update_fractions()
+        self._update_split_options()
+
+    def _update_split_options(self) -> None:
+        """Options that only apply to split-plot (or only to completely randomised) runs."""
+        split = self.split()
+        for key in ("groups", "group_size", "variance_ratio"):
+            if key in self._opt:
+                self._opt[key].setEnabled(split)
+        if self.design == "dopt":
+            for key in ("model_points", "lof_points", "replicate_points"):
+                if key in self._opt:
+                    self._opt[key].setEnabled(not split)
+        if self.design == "factorial" and "blocks" in self._opt:
+            self._opt["blocks"].setEnabled(not split)
 
     def _update_fractions(self) -> None:
         w = self._opt.get("fraction")
@@ -696,12 +829,21 @@ class NewDesignWizard(QDialog):
     def _options(self) -> dict:
         d = self.design
         opt: dict = {}
+        split = self.split()
         for key in ("blocks", "center_points", "replicates", "array", "alpha_type", "ccd_type",
                     "center_axial", "model", "lof_points", "replicate_points", "degree",
-                    "augment", "total"):
+                    "augment", "total", "extra_runs", "block_per_replicate"):
             v = self._opt_value(key)
             if v is not None:
                 opt[key] = v
+        if split:
+            opt.pop("blocks", None)
+            for key in ("group_size", "variance_ratio"):
+                if self._opt_value(key) is not None:
+                    opt[key] = self._opt_value(key)
+            g = self._opt_value("groups")
+            if g:
+                opt["groups"] = g
         if self._opt_value("alpha_type") == "custom":
             opt["alpha"] = self._opt_value("alpha")
         mp = self._opt_value("model_points")
@@ -729,7 +871,12 @@ class NewDesignWizard(QDialog):
         for r in range(k):
             row = self._rows[r]
             f = {"name": row["name"].strip() or designs.letter(r), "units": row["units"].strip()}
-            if kind == "process":
+            if self.split_capable and row.get("changes") == "Hard":
+                f["changes"] = "hard"
+            if kind == "process" and row.get("type") == "Categoric":
+                f.update(type="categoric",
+                         levels=[p.strip() for p in row["levels"].split(",") if p.strip()])
+            elif kind == "process":
                 lo, hi = _num(row["low"], -1), _num(row["high"], 1)
                 if alpha:
                     c, h = (lo + hi) / 2, (hi - lo) / 2 / alpha
@@ -761,7 +908,8 @@ class NewDesignWizard(QDialog):
         if "alpha" in self._opt:
             self._opt["alpha"].setEnabled(self._opt_value("alpha_type") == "custom")
         if "center_axial" in self._opt:
-            self._opt["center_axial"].setEnabled((self._opt_value("blocks") or 1) > 1)
+            self._opt["center_axial"].setEnabled((self._opt_value("blocks") or 1) > 1
+                                                 and not self.split())
         spec = self.spec()
         count = designs.design_run_count(spec)
         if isinstance(count, str):
@@ -772,6 +920,10 @@ class NewDesignWizard(QDialog):
             extra = ""
             if self.design == "ccd":
                 extra = f", alpha = {self._ccd_alpha():.5g}"
+            if self.split():
+                hard = [designs.letter(j) for j, r in enumerate(self._rows[:len(spec['factors'])])
+                        if r.get("changes") == "Hard"]
+                extra += f"; split-plot, hard to change: {', '.join(hard)}"
             self.summary.setText(f"{designs.DESIGN_TITLES[self.design]}: "
                                  f"{len(spec['factors'])} factors, {count} runs{extra}.  "
                                  "Click Next to name the responses.")
@@ -782,12 +934,20 @@ class NewDesignWizard(QDialog):
         self._rows = []
         for j, r in enumerate(rows):
             row = self._default_row(j)
-            row.update({k: str(v) for k, v in r.items()})
+            for key, v in r.items():
+                if key == "levels" and isinstance(v, (list, tuple)):
+                    v = ", ".join(map(str, v))
+                elif key == "type":
+                    v = "Categoric" if str(v).lower().startswith("cat") else "Numeric"
+                elif key == "changes":
+                    v = "Hard" if str(v).lower().startswith("hard") else "Easy"
+                row[key] = str(v)
             self._rows.append(row)
         self._loading = True
         self.k_spin.setValue(len(rows))
         self._loading = False
         self._fill_table(len(rows))
+        self._update_split_options()
         self._changed()
 
     def set_option(self, key: str, value) -> None:

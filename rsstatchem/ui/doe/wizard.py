@@ -44,12 +44,18 @@ DESCRIPTIONS = {
     "ev": "Extreme vertices of a constrained mixture region (lower/upper limits): vertices, "
           "edge centres, plane centroids, axial check blends and the overall centroid.",
     "mixdopt": "D-optimal mixture design chosen from the extreme-vertices candidate set.",
+    "mr5": "Minimum-run equireplicated resolution V design (MR5): every main effect and "
+           "two-factor interaction estimable in about as many runs as model terms.",
+    "mr4": "Minimum-run resolution IV design (MR4): main effects clear of two-factor "
+           "interactions in 2k runs (+2 recommended runs).",
 }
 LIMITS = {"factorial": (2, 15), "general": (1, 6), "pb": (2, 31), "taguchi": (1, 13),
           "ccd": (2, 10), "bbd": (3, 7), "threelevel": (1, 5), "dopt": (1, 8),
-          "lattice": (2, 8), "centroid": (2, 8), "ev": (2, 8), "mixdopt": (2, 8)}
+          "lattice": (2, 8), "centroid": (2, 8), "ev": (2, 8), "mixdopt": (2, 8),
+          "mr5": (6, 12), "mr4": (5, 30)}
 DEFAULT_K = {"factorial": 3, "general": 2, "pb": 7, "taguchi": 4, "ccd": 2, "bbd": 3,
-             "threelevel": 2, "dopt": 3, "lattice": 3, "centroid": 3, "ev": 3, "mixdopt": 3}
+             "threelevel": 2, "dopt": 3, "lattice": 3, "centroid": 3, "ev": 3, "mixdopt": 3,
+             "mr5": 6, "mr4": 8}
 START = {"factorial": "factorial", "rsm": "ccd", "mixture": "lattice", "taguchi": "taguchi",
          "optimal": "dopt"}
 

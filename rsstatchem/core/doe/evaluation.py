@@ -4,7 +4,9 @@ For a chosen model: degrees of freedom (model, residual, lack of fit, pure error
 standard error of each coefficient in units of sigma, variance inflation factors, Ri², the
 power to detect an effect of a given signal-to-noise ratio, the leverage of each run and the
 fraction of design space (FDS) curve of the prediction standard error. Only the design matrix
-is used, so this works on an empty design layout.
+is used, so this works on an empty design layout. For a split-plot design the coefficient
+variances are those of generalised least squares with the whole-plot / residual variance ratio
+of the design (V = I + ratio Z Z').
 """
 from __future__ import annotations
 
@@ -37,7 +39,8 @@ def power(c_jj: float, df_res: int, signal_noise: float = 2.0, alpha: float = 0.
 
 def evaluate(space: Space, coded: np.ndarray, order: str | None = None, terms=None,
              blocks: np.ndarray | None = None, signal_noise: float = 2.0,
-             alpha: float = 0.05) -> dict:
+             alpha: float = 0.05, groups: np.ndarray | None = None,
+             variance_ratio: float = 1.0) -> dict:
     """Evaluation of the design ``coded`` (coded factor levels) for a model order or terms."""
     coded = np.asarray(coded, float)
     if blocks is not None and len(np.unique(blocks)) < 2:
@@ -69,8 +72,16 @@ def evaluate(space: Space, coded: np.ndarray, order: str | None = None, terms=No
            "intercept": mat.intercept}
     if p == 0 or n == 0:
         return out
+    W = np.eye(n)
+    if groups is not None and len(np.unique(groups)) > 1:
+        _, gidx = np.unique(groups, return_inverse=True)
+        Z = np.zeros((n, gidx.max() + 1))
+        Z[np.arange(n), gidx] = 1.0
+        m = Z.sum(axis=0)
+        W = np.eye(n) - (Z * (variance_ratio / (1 + variance_ratio * m))) @ Z.T
+        out["split_plot"] = True
     try:
-        inv = np.linalg.inv(X.T @ X)
+        inv = np.linalg.inv(X.T @ W @ X)
     except np.linalg.LinAlgError:
         return out
     out["xtx_inv"] = inv

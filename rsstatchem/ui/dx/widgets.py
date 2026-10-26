@@ -210,21 +210,82 @@ class ReportView(QTextBrowser):
 
 # ---------------------------------------------------------------------------- graph pane
 class GraphView(QWidget):
-    """Shows a rendered graph (PNG) scaled to fit; right-click to copy or export it."""
+    """Shows a graph scaled to fit: a rendered PNG, or a live matplotlib figure on an
+    interactive canvas (3D views rotate with the left mouse button and zoom with the wheel or
+    the right button, "Reset View" restores the start view; contour plots set a flag with the
+    factor values and the prediction where you click). Right-click to copy or export the graph
+    as an image — for a live figure the current view."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.png: bytes | None = None
+        self._png: bytes | None = None
         self._pix: QPixmap | None = None
         self.message = ""
         self.export_name = "graph"
+        self.figure = None
+        self.canvas = None
+        self.probe = None
+        self.rotatable = False
+        self.flags: list = []
+        self._view0 = None
+        self._zoom = 1.0
         self.setMinimumSize(320, 240)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.bar = QFrame()
+        self.bar.setObjectName("graphBar")
+        bl = QHBoxLayout(self.bar)
+        bl.setContentsMargins(6, 2, 6, 2)
+        self.bar_hint = QLabel()
+        self.bar_hint.setStyleSheet(f"color:{style.MUTED}; font-size:9pt;")
+        self.reset_btn = QToolButton()
+        self.reset_btn.setText("Reset View")
+        self.reset_btn.setIcon(icons.icon("reset_view"))
+        self.reset_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.reset_btn.clicked.connect(self.reset_view)
+        self.clear_btn = QToolButton()
+        self.clear_btn.setText("Clear Flags")
+        self.clear_btn.setIcon(icons.icon("flag"))
+        self.clear_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.clear_btn.clicked.connect(self.clear_flags)
+        bl.addWidget(self.bar_hint, 1)
+        bl.addWidget(self.clear_btn)
+        bl.addWidget(self.reset_btn)
+        self.bar.hide()
+        lay.addWidget(self.bar)
+        self.host = QVBoxLayout()
+        self.host.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(self.host, 1)
+
+    # ------------------------------------------------------------------ content
+    @property
+    def png(self) -> bytes | None:
+        """The graph as PNG bytes (a live figure is rendered in its current view)."""
+        if self.figure is not None:
+            from rsstatchem.core.doe.plots import figure_png
+
+            return figure_png(self.figure)
+        return self._png
+
+    @property
+    def has_graph(self) -> bool:
+        return self.figure is not None or bool(self._png)
+
+    def _drop_canvas(self) -> None:
+        if self.canvas is not None:
+            self.host.removeWidget(self.canvas)
+            self.canvas.hide()
+            self.canvas.deleteLater()
+        self.canvas, self.figure, self.probe, self.flags = None, None, None, []
+        self.bar.hide()
 
     def set_png(self, png: bytes | None, name: str = "graph") -> None:
-        self.png, self.message, self.export_name = png, "", name
+        self._drop_canvas()
+        self._png, self.message, self.export_name = png, "", name
         self._pix = None
         if png:
             pix = QPixmap()
@@ -233,13 +294,147 @@ class GraphView(QWidget):
         self.update()
 
     def set_message(self, text: str) -> None:
-        self.png, self._pix, self.message = None, None, text
+        self._drop_canvas()
+        self._png, self._pix, self.message = None, None, text
         self.update()
 
+    def set_figure(self, fig, name: str = "graph", rotatable: bool = False,
+                   probe=None) -> None:
+        """Show a live matplotlib figure. ``rotatable``: a 3D view the mouse turns;
+        ``probe(x, y) -> lines``: clicking sets a flag with those lines."""
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+        keep_view = None
+        if rotatable and self.rotatable and self.figure is not None and self.figure.axes:
+            ax0 = self.figure.axes[0]
+            if getattr(ax0, "name", "") == "3d":  # same kind of graph redrawn: keep the view
+                keep_view = (ax0.elev, ax0.azim, getattr(ax0, "roll", 0.0), self._zoom)
+        self._drop_canvas()
+        self._png, self._pix, self.message, self.export_name = None, None, "", name
+        self.figure, self.rotatable, self.probe = fig, rotatable, probe
+        canvas = FigureCanvasQTAgg(fig)
+        canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        canvas.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        canvas.customContextMenuRequested.connect(
+            lambda pos: self._menu(canvas.mapTo(self, pos)))
+        self.canvas = canvas
+        self.host.addWidget(canvas)
+        ax = fig.axes[0] if fig.axes else None
+        if rotatable and ax is not None:
+            self._view0 = (ax.elev, ax.azim, getattr(ax, "roll", 0.0))
+            self._zoom = 1.0
+            canvas.mpl_connect("scroll_event", self._scroll)
+            canvas.mpl_connect("button_press_event", self._drag_start)
+            canvas.mpl_connect("button_release_event", self._drag_end)
+            if keep_view is not None:
+                self.set_view(*keep_view)
+        if probe is not None:
+            canvas.mpl_connect("button_press_event", self._click)
+        self.bar_hint.setText(
+            "Drag with the left mouse button to rotate, the wheel (or right button) to zoom."
+            if rotatable else "Click the plot to place a flag with the factor settings and "
+                              "the predicted response." if probe is not None else "")
+        self.reset_btn.setVisible(rotatable)
+        self.clear_btn.setVisible(probe is not None)
+        self.bar.setVisible(rotatable or probe is not None)
+        canvas.draw_idle()
+        self.update()
+
+    # ------------------------------------------------------------------ 3D view
+    def axes3d(self):
+        if self.figure is None or not self.figure.axes:
+            return None
+        ax = self.figure.axes[0]
+        return ax if getattr(ax, "name", "") == "3d" else None
+
+    def view(self) -> tuple | None:
+        ax = self.axes3d()
+        if ax is None:
+            return None
+        return ax.elev, ax.azim, getattr(ax, "roll", 0.0), self._zoom
+
+    def set_view(self, elev: float, azim: float, roll: float = 0.0, zoom: float = 1.0) -> None:
+        ax = self.axes3d()
+        if ax is None:
+            return
+        ax.view_init(elev=elev, azim=azim, roll=roll)
+        self._zoom = float(min(max(zoom, 0.3), 4.0))
+        ax.set_box_aspect(None, zoom=self._zoom)
+        if self.canvas is not None:
+            self.canvas.draw_idle()
+
+    def reset_view(self) -> None:
+        if self._view0 is not None:
+            self.set_view(*self._view0, zoom=1.0)
+
+    _saved_style = None
+
+    def _drag_start(self, event) -> None:
+        """Turn the surface like Design-Expert (azimuth / elevation, the response axis stays
+        vertical) for this drag only, without changing matplotlib's global default."""
+        import matplotlib as mpl
+
+        key = "axes3d.mouserotationstyle"
+        if key in mpl.rcParams and self._saved_style is None:
+            self._saved_style = mpl.rcParams[key]
+            mpl.rcParams[key] = "azel"
+
+    def _drag_end(self, event) -> None:
+        import matplotlib as mpl
+
+        if self._saved_style is not None:
+            mpl.rcParams["axes3d.mouserotationstyle"] = self._saved_style
+            self._saved_style = None
+
+    def _scroll(self, event) -> None:
+        ax = self.axes3d()
+        if ax is None:
+            return
+        factor = 1.1 if event.button == "up" else 1 / 1.1
+        self.set_view(ax.elev, ax.azim, getattr(ax, "roll", 0.0), self._zoom * factor)
+
+    # ------------------------------------------------------------------ flags
+    def add_flag(self, x: float, y: float) -> list[str] | None:
+        """Place a Design-Expert-style flag at data point (x, y) of the plot."""
+        if self.probe is None or self.figure is None or not self.figure.axes:
+            return None
+        lines = self.probe(x, y)
+        if not lines:
+            return None
+        ax = self.figure.axes[0]
+        dot = ax.plot([x], [y], marker="o", markersize=5, color="#000000", zorder=9)[0]
+        txt = ax.annotate("\n".join(lines), (x, y), xytext=(10, 10),
+                          textcoords="offset points", fontsize=7, zorder=10,
+                          bbox={"boxstyle": "round,pad=0.3", "facecolor": "#FFFFE0",
+                                "edgecolor": "#333333", "alpha": 0.95},
+                          arrowprops={"arrowstyle": "-", "color": "#333333", "lw": 0.8})
+        self.flags.append((dot, txt, lines))
+        if self.canvas is not None:
+            self.canvas.draw_idle()
+        return lines
+
+    def clear_flags(self) -> None:
+        for dot, txt, _ in self.flags:
+            dot.remove()
+            txt.remove()
+        self.flags = []
+        if self.canvas is not None:
+            self.canvas.draw_idle()
+
+    def _click(self, event) -> None:
+        if event.button != 1 or event.inaxes is None or self.figure is None:
+            return
+        if event.inaxes is not self.figure.axes[0] or event.xdata is None:
+            return
+        self.add_flag(float(event.xdata), float(event.ydata))
+
+    # ------------------------------------------------------------------ painting / export
     def sizeHint(self) -> QSize:
         return QSize(640, 480)
 
     def paintEvent(self, event) -> None:
+        if self.canvas is not None:
+            return
         p = QPainter(self)
         p.fillRect(self.rect(), Qt.GlobalColor.white)
         if self._pix is not None and not self._pix.isNull():
@@ -255,11 +450,12 @@ class GraphView(QWidget):
         p.end()
 
     def copy_graph(self) -> None:
-        if self.png:
-            copy_png(self.png)
+        png = self.png
+        if png:
+            copy_png(png)
 
     def export_graph(self) -> None:
-        if not self.png:
+        if not self.has_graph:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export Graph As", f"{self.export_name}.png",
                                               "PNG image (*.png);;JPEG image (*.jpg);;"
@@ -271,8 +467,12 @@ class GraphView(QWidget):
         menu = QMenu(self)
         a = menu.addAction(icons.icon("copy"), "Copy Graph", self.copy_graph)
         b = menu.addAction(icons.icon("export"), "Export Graph As...", self.export_graph)
-        a.setEnabled(bool(self.png))
-        b.setEnabled(bool(self.png))
+        a.setEnabled(self.has_graph)
+        b.setEnabled(self.has_graph)
+        if self.axes3d() is not None:
+            menu.addAction(icons.icon("reset_view"), "Reset View", self.reset_view)
+        if self.flags:
+            menu.addAction(icons.icon("flag"), "Clear Flags", self.clear_flags)
         menu.exec(self.mapToGlobal(pos))
 
 

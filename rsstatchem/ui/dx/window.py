@@ -20,10 +20,10 @@ from pathlib import Path
 import pandas as pd
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QActionGroup, QKeySequence, QUndoStack
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QSplitter, QStackedWidget,
-                               QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+                               QLabel, QLineEdit, QMainWindow, QMessageBox, QSplitter,
+                               QStackedWidget, QTextBrowser, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from rsstatchem import APP_NAME
 from rsstatchem.ui.dx import icons, style
@@ -57,13 +57,19 @@ TIPS = {
                 "&gt; 10 suggests otherwise.</li><li><b>Fit Summary</b>: the suggested model "
                 "is highlighted (significant sequential p, insignificant lack of fit, highest "
                 "adjusted and predicted R²).</li><li><b>Model</b>: accept the suggestion or "
-                "pick terms (M = model, e = error); Auto Select removes insignificant terms."
-                "</li><li><b>ANOVA</b>: model p &lt; 0.05 significant, lack of fit not "
-                "significant, Adeq Precision &gt; 4; the coded and actual equations.</li>"
+                "pick terms (M = model, e = error); Auto Select chooses terms forward, "
+                "backward or stepwise by p-value (alpha in / out), AICc or BIC.</li>"
+                "<li><b>ANOVA</b>: model p &lt; 0.05 significant, lack of fit not "
+                "significant, Adeq Precision &gt; 4; the coded and actual equations (one per "
+                "categoric level). Split-plot designs show the <b>ANOVA (REML)</b>: whole-plot "
+                "and subplot terms tested separately (Kenward-Roger) and the variance "
+                "components.</li>"
                 "<li><b>Diagnostics</b>: residuals should follow a straight line on the normal "
                 "plot and scatter randomly against predicted and run order.</li><li><b>Model "
                 "Graphs</b>: contour, 3D surface, interaction, perturbation; use the Factors "
-                "Tool to choose the axes and move the other factors.</li></ol>"
+                "Tool to choose the axes, move the other factors and pick categoric levels. "
+                "Drag a 3D surface to rotate it (wheel = zoom, Reset View); click a contour "
+                "plot to place a flag with the settings and the prediction.</li></ol>"
                 "<p>p-value colours: <span style='color:#D0021B'>red &lt; 0.01</span>, "
                 "<span style='color:#1E8C2E'>green &lt; 0.05</span>, <span style='color:"
                 "#1F5FD0'>blue &lt; 0.10</span>, black not significant.</p>",
@@ -123,6 +129,74 @@ class InfoDialog(QDialog):
                 r = self.doc.responses[i]
                 if (n.text(), u.text()) != (r["name"], r.get("units", "")):
                     self.doc.set_response_info(i, n.text().strip(), u.text().strip())
+        self.accept()
+
+
+class FoldoverDialog(QDialog):
+    """Design Tools > Augment Design > Foldover: full, single-factor or semifold foldover of a
+    two-level design, added as a new block."""
+
+    KINDS = [("full", "Full foldover (reverse every factor)"),
+             ("single", "Single-factor foldover"), ("semifold", "Semifold (half the runs)")]
+
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Augment Design: Foldover")
+        self.doc = doc
+        self.added = 0
+        self.kind = QComboBox()
+        for key, text in self.KINDS:
+            self.kind.addItem(text, key)
+        self.factor, self.keep = QComboBox(), QComboBox()
+        for j in range(len(doc.factors)):
+            self.factor.addItem(doc.factor_title(j), j)
+            self.keep.addItem(doc.factor_title(j), j)
+        if self.keep.count() > 1:
+            self.keep.setCurrentIndex(1)
+        self.level = QComboBox()
+        self.level.addItem("High (+)", 1.0)
+        self.level.addItem("Low (-)", -1.0)
+        self.info = QLabel()
+        self.info.setWordWrap(True)
+        form = QFormLayout()
+        form.addRow("Foldover:", self.kind)
+        form.addRow("Fold on factor:", self.factor)
+        form.addRow("Semifold keeps runs where:", self.keep)
+        form.addRow("is at level:", self.level)
+        for w in (self.kind, self.factor, self.keep, self.level):
+            w.currentIndexChanged.connect(self._update)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.apply)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(self.info)
+        lay.addWidget(buttons)
+        self._update()
+
+    def _update(self) -> None:
+        kind = self.kind.currentData()
+        self.factor.setEnabled(kind != "full")
+        self.keep.setEnabled(kind == "semifold")
+        self.level.setEnabled(kind == "semifold")
+        self.info.setText({
+            "full": "Reverses the signs of every factor. A resolution III fraction becomes "
+                    "resolution IV: all main effects clear of two-factor interactions.",
+            "single": "Reverses only the chosen factor: it and all its two-factor "
+                      "interactions are de-aliased.",
+            "semifold": "Half of the single-factor foldover (the runs where the second factor "
+                        "is at the chosen level): de-aliases the chosen factor's two-factor "
+                        "interactions in half the runs."}[kind]
+            + " The new runs form a new block.")
+
+    def apply(self) -> None:
+        try:
+            self.added = self.doc.foldover(self.kind.currentData(), self.factor.currentData(),
+                                           self.keep.currentData(), self.level.currentData())
+        except ValueError as exc:
+            self.info.setText(f"<span style='color:#B00020'>{exc}</span>")
+            return
         self.accept()
 
 
@@ -211,6 +285,10 @@ class DXMainWindow(QMainWindow):
         self.a_sort_run = A(self, "Sort by &Run Order", lambda: self.sort("run"))
         self.a_randomize = A(self, "Randomi&ze Run Order...", self.randomize)
         self.a_info = A(self, "&Edit Factor and Response Info...", self.edit_info)
+        self.a_foldover = A(self, "Augment Design: &Foldover...", self.foldover,
+                            icon_name="foldover",
+                            tip="Add the foldover (full, single-factor or semifold) of a "
+                                "two-level design as a new block")
         self.a_eval = A(self, "&Evaluate Design", lambda: self.show_node("evaluation"),
                         icon_name="evaluation")
         self.a_numerical = A(self, "&Numerical", lambda: self.show_node("numerical"),
@@ -232,7 +310,8 @@ class DXMainWindow(QMainWindow):
         self.design_actions = [self.a_save, self.a_save_as, self.a_import,
                                self.a_export_layout, self.a_copy, self.a_paste, self.a_coded,
                                self.a_actual, self.a_type, self.a_sort_std, self.a_sort_run,
-                               self.a_randomize, self.a_info, self.a_eval, self.a_numerical,
+                               self.a_randomize, self.a_info, self.a_foldover, self.a_eval,
+                               self.a_numerical,
                                self.a_graphical, self.a_prediction, self.a_confirmation,
                                self.a_coefficients, self.a_export_graph, self.a_copy_graph]
 
@@ -265,6 +344,10 @@ class DXMainWindow(QMainWindow):
         m.addActions([self.a_sort_std, self.a_sort_run, self.a_randomize])
         m.addSeparator()
         m.addActions([self.a_info, self.a_eval])
+        m.addSeparator()
+        m.addAction(self.a_foldover)
+        m.aboutToShow.connect(lambda: self.a_foldover.setEnabled(
+            self.doc is not None and self.doc.two_level()))
         m.addSeparator()
         m.addAction(self.a_import)
         self.analysis_menu = mb.addMenu("&Analysis")
@@ -735,7 +818,7 @@ class DXMainWindow(QMainWindow):
             focus.copy()
             return
         g = self.current_graph()
-        if g is not None and g.png and (rep is None or not rep.isVisible()):
+        if g is not None and g.has_graph and (rep is None or not rep.isVisible()):
             g.copy_graph()
             self.statusBar().showMessage("Graph copied to the clipboard.", 4000)
             return
@@ -757,7 +840,7 @@ class DXMainWindow(QMainWindow):
 
     def export_graph(self) -> None:
         g = self.current_graph()
-        if g is None or not g.png:
+        if g is None or not g.has_graph:
             self.statusBar().showMessage("No graph on this screen.", 4000)
             return
         g.export_graph()
@@ -809,6 +892,27 @@ class DXMainWindow(QMainWindow):
         self.doc.randomize(random.randint(1, 99999))
         self.undo.clear()
         self.sort("run")
+
+    def foldover(self) -> FoldoverDialog | None:
+        if self.doc is None:
+            return None
+        if not self.doc.two_level():
+            self.error("Foldover is for two-level designs (factorial, Plackett-Burman, "
+                       "min-run) without split-plot groups.")
+            return None
+        dlg = FoldoverDialog(self.doc, self)
+        dlg.setStyleSheet(style.STYLESHEET)
+
+        def done(result):
+            if result and dlg.added:
+                self.undo.clear()
+                self.statusBar().showMessage(f"Foldover: {dlg.added} runs added as block "
+                                             f"{self.doc.n_blocks}.", 6000)
+                self.sort("std")
+
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
 
     def edit_info(self) -> None:
         if self.doc is None:

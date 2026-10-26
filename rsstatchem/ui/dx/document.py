@@ -106,6 +106,17 @@ class DesignDocument:
     def n_blocks(self) -> int:
         return int(self.meta.get("blocks", 1) or 1)
 
+    @property
+    def group_col(self) -> str | None:
+        """The whole-plot (Group) column of a split-plot design, else None."""
+        col = (self.meta.get("columns") or {}).get("group")
+        return col if col and self.ds.has_name(col) else None
+
+    @property
+    def split_plot(self) -> bool:
+        return self.group_col is not None and any(f.get("changes") == "hard"
+                                                  for f in self.factors)
+
     def factor_title(self, j: int) -> str:
         return f"{designs.letter(j)}:{self.factors[j]['name']}"
 
@@ -120,7 +131,7 @@ class DesignDocument:
             return self.response_title(self.response_index(col))
         if col in self.factor_cols:
             return self.factor_title(self.factor_cols.index(col))
-        return {"Space_Type": "Space Type"}.get(col, col)
+        return {"Space_Type": "Space Type", "Group": "Group"}.get(col, col)
 
     def space(self) -> model.Space:
         return model.space_from_dataset(self.ds)
@@ -160,18 +171,107 @@ class DesignDocument:
         return [int(i) for i in np.argsort(self.ds.df[col].to_numpy(float), kind="stable")]
 
     def randomize(self, seed: int | None = None) -> None:
+        """New run order: random within blocks; a split-plot keeps its restricted
+        randomisation (groups in random order, runs random within each group)."""
         rng = np.random.default_rng(seed)
         blocks = self.ds.df["Block"].to_numpy(float)
-        run = np.empty(len(blocks))
-        pos = 0
-        for b in sorted(set(blocks.tolist())):
-            members = np.flatnonzero(blocks == b)
-            perm = rng.permutation(members)
-            run[perm] = np.arange(pos + 1, pos + len(members) + 1)
-            pos += len(members)
-        self.ds.df["Run"] = run
+        groups = self.ds.df[self.group_col].to_numpy(float) if self.group_col else None
+        self.ds.df["Run"] = designs.randomized_run_order(blocks, groups, rng).astype(float)
         self.meta["randomized"] = True
         self.touch("data", [])
+
+    def two_level(self) -> bool:
+        """Every factor at two levels (numeric -1/+1, centre points allowed, or a two-level
+        categoric factor): the design can be folded over."""
+        if self.mixture or self.split_plot or not self.factors:
+            return False
+        coded = self.coded_matrix()
+        for j, f in enumerate(self.factors):
+            if f.get("type") == "categoric":
+                if len(f.get("levels", [])) != 2:
+                    return False
+            elif not np.all(np.isclose(np.abs(coded[:, j]), 1) | np.isclose(coded[:, j], 0)):
+                return False
+        return True
+
+    def foldover(self, kind: str = "full", factor: int | None = None,
+                 keep_factor: int | None = None, keep_level: float = 1.0,
+                 seed: int | None = None) -> int:
+        """Design Tools > Augment Design > Foldover: append the full, single-factor or semifold
+        foldover of the factorial runs as a new block (empty responses). Returns the number
+        of runs added."""
+        if not self.two_level():
+            raise ValueError("Foldover needs a two-level design (no mixture, split-plot or "
+                             "multilevel factors).")
+        sp = self.space()
+        coded = self.coded_matrix().copy()
+        for j, f in enumerate(sp.factors):
+            if f.categoric:
+                coded[:, j] = 2 * coded[:, j] - 1
+        new = designs.foldover_runs(coded, kind, factor, keep_factor, keep_level)
+        if not len(new):
+            raise ValueError("The foldover adds no runs.")
+        df = self.ds.df
+        m = len(new)
+        block = float(np.nanmax(df["Block"].to_numpy(float))) + 1
+        rng = np.random.default_rng(seed)
+        rows = {"Std": np.nanmax(df["Std"].to_numpy(float)) + 1 + np.arange(m),
+                "Run": np.nanmax(df["Run"].to_numpy(float)) + 1 + rng.permutation(m),
+                "Block": np.full(m, block)}
+        if "Space_Type" in df:
+            rows["Space_Type"] = np.ones(m)
+        for j, f in enumerate(sp.factors):
+            if f.categoric:
+                rows[f.column] = np.asarray(f.levels, float)[(new[:, j] > 0).astype(int)]
+            else:
+                rows[f.column] = f.center + new[:, j] * f.half
+        add = pd.DataFrame({c: rows.get(c, np.full(m, np.nan)) for c in df.columns})
+        self.ds.df = pd.concat([df, add], ignore_index=True)
+        var = self.ds.var("Block")
+        var.value_labels = dict(var.value_labels or {})
+        var.value_labels[block] = f"Block {block:g}"
+        meta = self.meta
+        meta["runs"] = self.ds.n_cases
+        meta["blocks"] = int(block)
+        label = {"full": "Full foldover", "single": "Single-factor foldover on "
+                 + designs.letter(factor if factor is not None else 0),
+                 "semifold": "Semifold on " + designs.letter(factor if factor is not None
+                                                             else 0)}[kind]
+        if kind == "semifold":
+            label += f" keeping {designs.letter(keep_factor)}" \
+                     f"{'+' if keep_level > 0 else '-'}"
+        meta.setdefault("foldovers", []).append({"kind": kind, "factor": factor,
+                                                 "keep_factor": keep_factor,
+                                                 "keep_level": keep_level, "runs": m,
+                                                 "block": int(block), "label": label})
+        words = meta.get("defining_relation") or []
+        if len(words) > 1:
+            group = []
+            for w in words[1:]:
+                sign = -1 if w.startswith("-") else 1
+                mask = 0
+                for ch in w.lstrip("-"):
+                    mask ^= 1 << designs.LETTERS.index(ch)
+                group.append((mask, sign))
+            new_group = designs.folded_group(group, kind, factor)
+            if new_group is None:
+                meta["aliases"] = []
+                meta["resolution"] = None
+                meta["alias_note"] = "Semifold: an irregular fraction; check the aliasing " \
+                                     "with Design Evaluation."
+            else:
+                k = len(self.factors)
+                meta["defining_relation"] = ["I"] + [("-" if s < 0 else "") +
+                                                     designs.word_str(w) for w, s in new_group]
+                meta["resolution"] = designs.resolution(new_group)
+                meta["aliases"] = designs.alias_structure(k, new_group)
+        elif meta.get("min_run") or meta.get("design") == "pb":
+            meta["alias_note"] = f"{label} added; check the aliasing with Design Evaluation."
+        self.version += 1
+        self._cache.clear()
+        self.touch("meta")
+        self.touch("data", list(self.response_cols))
+        return m
 
     def analysis_dataset(self) -> Dataset:
         """The design with ignored runs' responses blanked (they drop out of every fit)."""

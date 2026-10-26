@@ -43,6 +43,8 @@ class AnalysisView(QWidget):
         self.annotate = True
         self.show_points = True
         self.strip = TabStrip(TABS)
+        if doc.space().split_plot:  # Design-Expert labels the REML analysis this way
+            self.strip.buttons[3].setText("ANOVA (REML)")
         self.title = QLabel()
         self.title.setStyleSheet(f"color:{style.BLUE}; font-weight:600; padding: 0 8px;")
         self.strip.extra.addWidget(self.title)
@@ -309,6 +311,10 @@ def fit_summary_items(a: model.Analysis) -> list:
         rows.append([src, pval(sp), pval(lp), fixed(adj), fixed(pred), remark or rem])
     items: list = [Table("Fit Summary", ["Source", "Sequential p-value", "Lack of Fit p-value",
                                          "Adjusted R²", "Predicted R²", ""], rows)]
+    if a.space.split_plot:
+        items.append(Text("", "Split-plot design: the Fit Summary is an ordinary least-squares "
+                              "guide; the chosen model is analysed by REML on the ANOVA (REML) "
+                              "tab.", style="warning"))
     items.append(annotation(
         f"The {fs.suggested} model is suggested: the highest-order polynomial whose added "
         "terms are significant (sequential p < 0.05), that is not aliased, with insignificant "
@@ -393,28 +399,46 @@ class ModelPage(QWidget):
         self._loading = False
         self.order = QComboBox()
         self.order.currentIndexChanged.connect(self._order_changed)
-        self.alpha = QDoubleSpinBox()
-        self.alpha.setRange(0.001, 0.5)
-        self.alpha.setDecimals(3)
-        self.alpha.setSingleStep(0.01)
-        self.alpha.setValue(0.10)
+        self.alpha = QDoubleSpinBox()          # alpha out
+        self.alpha_in = QDoubleSpinBox()
+        for w in (self.alpha, self.alpha_in):
+            w.setRange(0.001, 0.5)
+            w.setDecimals(3)
+            w.setSingleStep(0.01)
+            w.setValue(0.10)
+        self.criterion = QComboBox()
+        for key, text in model.SELECTION_CRITERIA:
+            self.criterion.addItem(text, key)
         self.method = QComboBox()
-        self.method.addItems(["Backward", "Manual"])
-        auto = QPushButton("Auto Select...")
+        for key, text in model.SELECTION_METHODS + [("manual", "Manual")]:
+            self.method.addItem(text, key)
+        self.criterion.currentIndexChanged.connect(self._selection_changed)
+        self.method.currentIndexChanged.connect(self._selection_changed)
+        auto = QPushButton(icons.icon("numerical"), "Auto Select")
+        auto.setToolTip("Choose the model terms automatically from the current model")
         auto.clicked.connect(self.auto_select)
         self.hierarchy = QCheckBox("Keep model hierarchical")
         self.hierarchy.setChecked(True)
         top = QHBoxLayout()
         top.addWidget(QLabel("Process Order:"))
         top.addWidget(self.order)
-        top.addSpacing(20)
-        top.addWidget(QLabel("Selection:"))
-        top.addWidget(self.method)
-        top.addWidget(QLabel("Alpha out:"))
-        top.addWidget(self.alpha)
+        top.addSpacing(16)
         top.addWidget(self.hierarchy)
-        top.addWidget(auto)
         top.addStretch(1)
+        sel = QHBoxLayout()
+        top2 = sel
+        top2.addWidget(QLabel("Auto Select — Criterion:"))
+        top2.addWidget(self.criterion)
+        top2.addWidget(QLabel("Selection:"))
+        top2.addWidget(self.method)
+        self.alpha_in_label = QLabel("Alpha in:")
+        top2.addWidget(self.alpha_in_label)
+        top2.addWidget(self.alpha_in)
+        self.alpha_out_label = QLabel("Alpha out:")
+        top2.addWidget(self.alpha_out_label)
+        top2.addWidget(self.alpha)
+        top2.addWidget(auto)
+        top2.addStretch(1)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["", "Term", "Type", "p-value (current fit)"])
         self.table.verticalHeader().setVisible(False)
@@ -427,23 +451,52 @@ class ModelPage(QWidget):
         self.table.cellClicked.connect(self._clicked)
         self.note = hint("Click M / e to move a term in or out of the model: M = in the model, "
                          "e = left for error. Aliased terms cannot be estimated with this "
-                         "design. Auto Select removes insignificant terms (backward "
-                         "elimination).")
+                         "design. Auto Select starts from the terms marked M: backward removes, "
+                         "forward adds and stepwise adds and removes terms by p-value (alpha "
+                         "in / out) or by AICc / BIC.")
         self.status = QLabel()
         self.status.setWordWrap(True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.addLayout(top)
+        lay.addLayout(sel)
         lay.addWidget(self.note)
         lay.addWidget(self.table, 1)
         lay.addWidget(self.status)
         self.terms: list = []
         self.aliased: set = set()
         self.candidates: list = []
+        self._selection_changed()
+
+    def _selection_changed(self, _=None) -> None:
+        crit, method = self.criterion.currentData(), self.method.currentData()
+        if crit != "p" and method == "stepwise":  # Design-Expert: AICc / BIC forward/backward
+            self.method.blockSignals(True)
+            self.method.setCurrentIndex(self.method.findData("forward"))
+            self.method.blockSignals(False)
+            method = "forward"
+        p = crit == "p"
+        self.alpha_in.setEnabled(p and method in ("forward", "stepwise"))
+        self.alpha.setEnabled(p and method in ("backward", "stepwise"))
+        self.alpha_in_label.setEnabled(self.alpha_in.isEnabled())
+        self.alpha_out_label.setEnabled(self.alpha.isEnabled())
+
+    def set_selection(self, method: str, criterion: str = "p", alpha_in: float = 0.1,
+                      alpha_out: float = 0.1) -> None:
+        self.criterion.setCurrentIndex(self.criterion.findData(criterion))
+        self.method.setCurrentIndex(self.method.findData(method))
+        self.alpha_in.setValue(alpha_in)
+        self.alpha.setValue(alpha_out)
+        self._selection_changed()
 
     def refresh(self) -> None:
         v = self.view
         sp = v.doc.space()
+        sel = v.spec().selection or {}
+        if sel:
+            self.set_selection(sel.get("method", "backward"), sel.get("criterion", "p"),
+                               float(sel.get("alpha_in", 0.1)),
+                               float(sel.get("alpha_out", 0.1)))
         try:
             a = v.analysis()
         except (ValueError, np.linalg.LinAlgError) as exc:
@@ -521,9 +574,13 @@ class ModelPage(QWidget):
                     return False
         return True
 
-    def _apply(self, terms: list) -> None:
+    def _apply(self, terms: list, selection: dict | None = None) -> None:
         spec = self.view.spec()
         spec.model, spec.terms, spec.reduction = "manual", [term_key(t) for t in terms], "none"
+        if selection is not None:
+            spec.selection = selection
+        elif spec.selection:
+            spec.selection = {k: v for k, v in spec.selection.items() if k != "steps"}
         self.view.set_spec(spec)
 
     def _clicked(self, row: int, col: int) -> None:
@@ -557,23 +614,64 @@ class ModelPage(QWidget):
             return
         self._apply(model.model_terms(self.view.doc.space(), key))
 
-    def auto_select(self) -> None:
-        if self.method.currentText() == "Manual":
+    def auto_select(self) -> list:
+        """Design-Expert's Auto Select on the current model's terms. Returns the steps."""
+        method, crit = self.method.currentData(), self.criterion.currentData()
+        if method == "manual":
             self.status.setText("Manual selection: click M / e in the term list.")
-            return
+            return []
         v = self.view
         try:
             a = v.analysis()
-            fit, steps = model.backward(a.space, a.obs, list(a.fit.terms), a.fit.transform,
-                                        self.alpha.value(), self.hierarchy.isChecked(),
-                                        v.col)
+            fit, steps = model.auto_select(a.space, a.obs, list(a.fit.terms), a.fit.transform,
+                                           method, crit, self.alpha_in.value(),
+                                           self.alpha.value(), self.hierarchy.isChecked(),
+                                           v.col)
         except (ValueError, np.linalg.LinAlgError) as exc:
             self.status.setText(f"<span style='color:#B00020'>{exc}</span>")
-            return
-        self._apply(list(fit.terms))
-        removed = ", ".join(f"{term_name(t)} (p = {pval(p)})" for t, p in steps) or "none"
-        self.status.setText(f"Backward elimination with alpha out = {self.alpha.value():g}: "
-                            f"removed {removed}.")
+            return []
+        selection = {"method": method, "criterion": crit, "alpha_in": self.alpha_in.value(),
+                     "alpha_out": self.alpha.value(), "hierarchy": self.hierarchy.isChecked(),
+                     "candidates": [term_key(t) for t in a.fit.terms],
+                     "steps": [[act, term_key(t), float(val)] for act, t, val in steps]}
+        self._apply(list(fit.terms), selection)
+        self.status.setText(selection_text(selection))
+        return steps
+
+
+def selection_text(sel: dict) -> str:
+    p_crit = sel.get("criterion", "p") == "p"
+    crit = dict(model.SELECTION_CRITERIA).get(sel.get("criterion", "p"), "p-value")
+    method = dict(model.SELECTION_METHODS).get(sel.get("method"), "")
+    parts = []
+    for act, key, val in sel.get("steps", []):
+        t = model.key_term(key)
+        v = pval(val) if p_crit else num(val)
+        if act == "hierarchy":
+            parts.append(f"added {term_name(t)} for hierarchy")
+            continue
+        parts.append(f"{'added' if act == 'add' else 'removed'} {term_name(t)} "
+                     f"({'p' if p_crit else crit} = {v})")
+    alphas = ""
+    if p_crit:
+        if sel.get("method") != "backward":
+            alphas += f", alpha in = {sel.get('alpha_in', 0.1):g}"
+        if sel.get("method") != "forward":
+            alphas += f", alpha out = {sel.get('alpha_out', 0.1):g}"
+    return f"Auto Select ({method}, {crit}{alphas}): " + ("; ".join(parts) or "no change") + "."
+
+
+def selection_items(spec: model.AnalysisSpec) -> list:
+    sel = spec.selection or {}
+    if not sel.get("steps"):
+        return []
+    s2 = model.AnalysisSpec(spec.response, reduction=sel.get("method", "backward"),
+                            criterion=sel.get("criterion", "p"),
+                            alpha_in=float(sel.get("alpha_in", 0.1)),
+                            alpha_out=float(sel.get("alpha_out", 0.1)),
+                            hierarchy=bool(sel.get("hierarchy", True)))
+    steps = [(act, model.key_term(key), val) for act, key, val in sel["steps"]]
+    return [report.selection_table(s2, steps)]
 
 
 # ---------------------------------------------------------------------------- ANOVA
@@ -587,6 +685,7 @@ def anova_items(a: model.Analysis) -> list:
     if a.dropped:
         items.append(Text("Aliased Terms", "Removed because they are aliased in this design: "
                           + ", ".join(term_name(t) for t in a.dropped) + ".", style="warning"))
+    items.extend(selection_items(a.spec))
     t, interp = report.anova_table(fit, name)
     items.append(t)
     if interp:
@@ -595,6 +694,13 @@ def anova_items(a: model.Analysis) -> list:
     items.append(st)
     if interp2:
         items.append(annotation("\n".join(interp2)))
+    if report.is_reml(fit):
+        items.append(report.variance_components_table(fit))
+        items.append(annotation(
+            f"The groups (whole plots) contribute a variance of {num(fit.s2_wp)} against a "
+            f"residual variance of {num(fit.s2)} (ratio {num(fit.eta)}). A large ratio means "
+            "the restricted randomisation matters: whole-plot effects are estimated less "
+            "precisely than subplot effects."))
     items.append(report.coefficient_table(fit))
     items.append(annotation("VIFs near 1 mean the coefficients are estimated independently "
                             "(orthogonal factors); VIFs above 10 indicate multicollinearity."))
@@ -632,7 +738,8 @@ DIAGNOSTICS = [("normal", "Normal Plot"), ("resid_pred", "Residuals vs. Predicte
                ("resid_run", "Residuals vs. Run"), ("pred_actual", "Predicted vs. Actual"),
                ("boxcox", "Box-Cox"), ("resid_factor", "Residuals vs. Factor"),
                ("cooks", "Cook's Distance"), ("leverage", "Leverage vs. Run"),
-               ("dffits", "DFFITS vs. Run"), ("report", "Report")]
+               ("dffits", "DFFITS vs. Run"), ("dfbetas", "DFBETAS vs. Run"),
+               ("report", "Report")]
 
 
 class DiagnosticsPage(QWidget):
@@ -659,9 +766,15 @@ class DiagnosticsPage(QWidget):
             self.factor.addItem(view.doc.factor_title(j), j)
         self.factor.currentIndexChanged.connect(lambda _: self.render())
         pl.addWidget(self.factor)
-        pl.addWidget(QLabel("<small>Residuals: externally studentized.<br>Red lines: limits "
-                            "(Bonferroni outlier limits, Cook's distance F(0.5), 2p/n "
-                            "leverage, 2√(p/n) DFFITS).</small>"))
+        pl.addWidget(QLabel("DFBETAS for term:"))
+        self.term = QComboBox()
+        self.term.currentIndexChanged.connect(lambda _: self.render())
+        pl.addWidget(self.term)
+        lab = QLabel("<small>Residuals: externally studentized.<br>Red lines: limits "
+                     "(Bonferroni outlier limits, Cook's distance F(0.5), 2p/n leverage, "
+                     "2√(p/n) DFFITS, 3/√n DFBETAS).</small>")
+        lab.setWordWrap(True)
+        pl.addWidget(lab)
         self.graph = GraphView()
         self.report = ReportView()
         self.right = QStackedWidget()
@@ -694,6 +807,17 @@ class DiagnosticsPage(QWidget):
             self.graph.set_message(str(exc))
             return
         key = self.key()
+        labels = list(a.fit.mat.labels)
+        if [self.term.itemText(i) for i in range(self.term.count())] != labels:
+            cur = self.term.currentText()
+            self.term.blockSignals(True)
+            self.term.clear()
+            self.term.addItems(labels)
+            i = labels.index(cur) if cur in labels else min(1, len(labels) - 1)
+            self.term.setCurrentIndex(i)
+            self.term.blockSignals(False)
+        self.term.setEnabled(key == "dfbetas")
+        self.factor.setEnabled(key == "resid_factor")
         if key == "report":
             sec = report.diagnostics_section(a, plots_wanted=(), table=True)
             self.right.setCurrentIndex(1)
@@ -707,7 +831,8 @@ class DiagnosticsPage(QWidget):
             return
         try:
             sec = report.diagnostics_section(a, plots_wanted=(key,), table=False,
-                                             factor_index=self.factor.currentData() or 0)
+                                             factor_index=self.factor.currentData() or 0,
+                                             term_index=max(self.term.currentIndex(), 0))
         except (ValueError, np.linalg.LinAlgError, ZeroDivisionError) as exc:
             self.right.setCurrentIndex(0)
             self.graph.set_message(str(exc))
@@ -730,8 +855,10 @@ PROCESS_GRAPHS = [("perturbation", "perturbation", "Perturbation"),
                   ("cube", "cube", "Cube")]
 GRAPH_AXES = {"contour": 2, "surface": 2, "interaction": 2, "one_factor": 1, "cube": 3,
               "ternary": 3, "perturbation": 0, "trace": 0}
-MIXTURE_GRAPHS = [("ternary", "ternary", "Contour (Ternary)"), ("trace", "trace", "Trace (Cox)"),
+MIXTURE_GRAPHS = [("ternary", "ternary", "Contour (Ternary)"),
+                  ("surface3", "surface", "3D Surface"), ("trace", "trace", "Trace (Cox)"),
                   ("one_factor", "onefactor", "One Factor")]
+GRAPH_AXES["surface3"] = 3
 
 
 class ModelGraphsPage(QWidget):
@@ -762,7 +889,7 @@ class ModelGraphsPage(QWidget):
                 ok = False
             if key == "cube" and numeric < 3:
                 ok = False
-            if key == "ternary" and sp.k < 3:
+            if key in ("ternary", "surface3") and sp.k < 3:
                 ok = False
             b.setEnabled(ok)
             b.clicked.connect(lambda _=False, k=key: self.set_graph(k))
@@ -829,9 +956,14 @@ class ModelGraphsPage(QWidget):
                                    + (", X3" if need > 2 else "") + ") in the Factors Tool.")
             return
         ref = self.tool.point()
+        use = axes[:max(need, 1)] if need else axes or [0]
+        show = self.points.isChecked() and v.show_points
         try:
-            sec = report.graph_section(a, key, axes[:max(need, 1)] if need else axes or [0],
-                                       ref, points=self.points.isChecked() and v.show_points)
+            if key in report.FIGURE_GRAPHS:  # live canvas: rotate 3D views, flag contours
+                gf = report.graph_figure(a, key, use, ref, points=show)
+                self.graph.set_figure(gf.figure, f"{v.col}_{key}", gf.rotatable, gf.probe)
+                return
+            sec = report.graph_section(a, key, use, ref, points=show)
         except (ValueError, np.linalg.LinAlgError, IndexError) as exc:
             self.graph.set_message(str(exc))
             return

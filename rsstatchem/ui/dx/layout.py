@@ -1,6 +1,7 @@
 """The design layout grid (Design-Expert's "Design (Actual)" spreadsheet).
 
-Columns: Select, Std, Run, Block (when blocked), Space Type (optional), one column per factor
+Columns: Select, Std, Run, Block (when blocked), Group (split-plot whole plots), Space Type
+(optional), one column per factor
 headed "Factor 1 / A:Temperature / °C" and one per response headed "Response 1 / R1:Yield / %".
 Rows are shown in run order (or standard order). Response cells are editable; blocks of cells
 copied from Excel paste in one step; every change is undoable. Unticking Select ignores a run
@@ -86,6 +87,8 @@ class LayoutModel(QAbstractTableModel):
         cols = [("select", ""), ("std", "Std"), ("run", "Run")]
         if doc.n_blocks > 1:
             cols.append(("block", "Block"))
+        if doc.group_col:
+            cols.append(("group", doc.group_col))
         if self.show_type:
             cols.append(("type", "Space_Type"))
         cols += [("factor", c) for c in doc.factor_cols]
@@ -139,8 +142,8 @@ class LayoutModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if kind == "select":
                 return "Select"
-            if kind in ("std", "run", "block"):
-                return {"std": "Std", "run": "Run", "block": "Block"}[kind]
+            if kind in ("std", "run", "block", "group"):
+                return {"std": "Std", "run": "Run", "block": "Block", "group": "Group"}[kind]
             if kind == "type":
                 return "Space Type"
             if kind == "factor":
@@ -148,6 +151,8 @@ class LayoutModel(QAbstractTableModel):
                 f = doc.factors[j]
                 units = f.get("units", "") if not self.coded else "coded"
                 head = "Component" if doc.mixture else "Factor"
+                if f.get("changes") == "hard":
+                    units = (units + " " if units else "") + "(HTC)"
                 return f"{head} {j + 1}\n{designs.letter(j)}:{f['name']}\n{units}"
             i = doc.response_cols.index(col)
             r = doc.responses[i]
@@ -155,6 +160,9 @@ class LayoutModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             if kind == "select":
                 return "Untick to ignore a run (it is left out of the analyses)."
+            if kind == "group":
+                return "Whole plot: the hard-to-change factors stay at the same setting for all " \
+                       "runs of a group (split-plot design)."
             if kind == "response":
                 return "Type or paste the measured values here."
             if kind == "factor":
@@ -180,7 +188,7 @@ class LayoutModel(QAbstractTableModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             if kind == "select":
                 return None
-            if kind in ("std", "run", "block"):
+            if kind in ("std", "run", "block", "group"):
                 v = doc.value(row, col)
                 if kind == "block" and math.isfinite(v):
                     return doc.ds.var("Block").value_labels.get(v, f"Block {v:g}")
@@ -204,9 +212,15 @@ class LayoutModel(QAbstractTableModel):
                 return int(Qt.AlignmentFlag.AlignCenter)
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.BackgroundRole:
+            if kind == "group":
+                g = doc.value(row, col)
+                return QBrush(QColor("#FCE8D2" if math.isfinite(g) and int(g) % 2 else
+                                     "#F6F0E6"))
             if kind in ("std", "run", "block", "type", "select"):
                 return QBrush(QColor("#EDF1F6"))
             if kind == "factor":
+                if doc.factors[doc.factor_cols.index(col)].get("changes") == "hard":
+                    return QBrush(QColor("#F7EBDD"))
                 return QBrush(QColor(style.FACTOR_BG))
             if kind == "response" and not ignored and not math.isfinite(doc.value(row, col)):
                 return QBrush(QColor("#FFFBEA"))
@@ -369,6 +383,8 @@ class LayoutView(QTableView):
                 self.setColumnWidth(c, 46)
             elif kind in ("block", "type"):
                 self.setColumnWidth(c, 92)
+            elif kind == "group":
+                self.setColumnWidth(c, 56)
             else:
                 text = m.headerData(c, Qt.Orientation.Horizontal) or ""
                 width = max(len(s) for s in str(text).split("\n")) * 7 + 24

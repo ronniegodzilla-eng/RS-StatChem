@@ -8,6 +8,7 @@ signal-to-noise analysis.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import stats
@@ -60,6 +61,12 @@ def signed(x, sig: int = 4) -> str:
     return s if s.startswith("-") else "+" + s
 
 
+def _p_eq(p) -> str:
+    """'= 0.0123' or '< 0.0001' for running text."""
+    t = pval(p)
+    return t if t.startswith("<") else f"= {t}"
+
+
 def _sig_text(p, alpha=0.05) -> str:
     if p is None or not math.isfinite(p):
         return ""
@@ -88,7 +95,7 @@ def design_section(meta: dict, notes: list[str] | None = None, ds=None) -> Secti
             f"RUNS={meta['runs']} BLOCKS={meta['blocks']}"
             + (f" SEED={meta['seed']}" if meta.get("seed") is not None else ""))
     study = {"process": "Response Surface", "mixture": "Mixture"}[meta["kind"]]
-    if meta["design"] in ("factorial", "pb", "general"):
+    if meta["design"] in designs.FACTORIAL_DESIGNS:
         study = "Factorial"
     elif meta["design"] == "taguchi":
         study = "Taguchi"
@@ -112,6 +119,12 @@ def design_section(meta: dict, notes: list[str] | None = None, ds=None) -> Secti
         rows.append(["Block Generators", ", ".join(meta["block_generators"])])
     if meta.get("taguchi"):
         rows.append(["Orthogonal Array", meta["taguchi"]])
+    if meta.get("min_run"):
+        rows.append(["Min-Run Type", meta["min_run"]])
+    if meta.get("split_plot"):
+        sp = meta["split_plot"]
+        rows.append(["Split-Plot", f"{sp.get('groups')} groups; hard to change: "
+                     + ", ".join(designs.letter(j) for j in sp.get("hard", []))])
     if meta.get("model"):
         rows.append(["Design Model", str(meta["model"]).replace("_", " ").title()])
     if meta.get("mixture"):
@@ -214,6 +227,8 @@ def fit_summary_section(a: Analysis) -> Section:
 
 # ---------------------------------------------------------------------------- ANOVA
 def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
+    if is_reml(fit):
+        return reml_anova_table(fit, name)
     a = fit.anova()
     rows, interp = [], []
     ms_res = fit.ms_res
@@ -269,7 +284,84 @@ def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
                          "p-value", ""], rows, footnotes=foot), interp
 
 
+def is_reml(fit) -> bool:
+    return isinstance(fit, model.SplitPlotFit)
+
+
+def reml_anova_table(fit, name: str) -> tuple[Table, list[str]]:
+    """Design-Expert's "ANOVA (REML)": whole-plot and subplot terms tested separately with
+    Kenward-Roger F tests (term df, error df, F-value, p-value)."""
+    a = fit.anova()
+    rows, interp, sig = [], [], []
+
+    def section(label, test, terms):
+        if test is not None:
+            F, l, m, p = test
+            rows.append([label, str(int(l)), num(m, 4), fval(F), pval(p), _sig_text(p)])
+        else:
+            rows.append([label, "", "", "", "", ""])
+        for t, src, F, l, m, p in terms:
+            rows.append([f"  {src}", str(l), num(m, 4), fval(F), pval(p), ""])
+            if p < 0.05:
+                sig.append(src.split("-")[0] if len(t) == 1 else src)
+
+    if a["block"]:
+        rows.append(["Block", str(a["block"]), "", "", "", ""])
+    section("Whole-plot", a["whole_test"], a["whole"])
+    section("Subplot", a["sub_test"], a["sub"])
+    for label, test in (("whole-plot", a["whole_test"]), ("subplot", a["sub_test"])):
+        if test is not None and math.isfinite(test[3]):
+            interp.append(f"The {label} terms together have F = {test[0]:.2f} on {int(test[1])} "
+                          f"and {test[2]:.4g} df (p {_p_eq(test[3])}): "
+                          + ("significant." if test[3] < 0.05 else "not significant."))
+    if sig:
+        interp.append("P-values less than 0.0500 indicate model terms are significant. In this "
+                      f"case {', '.join(sig)} are significant model terms.")
+    foot = ["REML (restricted maximum likelihood) with the groups (whole plots) as a random "
+            "effect; F tests and error degrees of freedom by the Kenward-Roger method.",
+            "Whole-plot terms involve only hard-to-change factors; they are tested against the "
+            "between-group variation, the subplot terms against the within-group (residual) "
+            "variation."]
+    return Table(f"ANOVA (REML) for {name} model", ["Source", "Term df", "Error df",
+                                                    "F-value", "p-value", ""], rows,
+                 footnotes=foot), interp
+
+
+def variance_components_table(fit) -> Table:
+    rows = []
+    for v in fit.variance_components():
+        rows.append([v["source"], num(v["variance"]), num(v["se"]), num(v["low"]),
+                     num(v["high"]), f"{v['percent']:.2f}"])
+    info = fit.information()
+    rows.append(["Total", num(fit.s2 + fit.s2_wp), "", "", "", "100.00"])
+    rows.append(["Ratio (Group / Residual)", num(fit.eta), "", "", "", ""])
+    rows.append(["-2 Res. Log Likelihood", num(info["m2ll_reml"], 6), "", "", "", ""])
+    rows.append(["AICc (ML)", num(info["aicc"], 6), "", "", "", ""])
+    rows.append(["BIC (ML)", num(info["bic"], 6), "", "", "", ""])
+    return Table("Variance Components", ["Source", "Variance", "Std. Error", "95% CI Low",
+                                         "95% CI High", "% of Total"], rows,
+                 footnotes=["Group = whole-plot (restriction on randomisation) variance; "
+                            "standard errors from the inverse REML information (Wald "
+                            "intervals). AICc / BIC use the maximum likelihood (k = "
+                            "coefficients + 2 variances) for comparing models."])
+
+
+def reml_fit_statistics_table(fit) -> tuple[Table, list[str]]:
+    s = fit.fit_statistics()
+    info = fit.information()
+    rows = [["Std. Dev.", num(s["std_dev"]), "R²", fixed(s["r2"])],
+            ["Mean", num(s["mean"]), "Adjusted R²", fixed(s["adj_r2"])],
+            ["C.V. %", num(s["cv"]), "AICc", num(info["aicc"], 6)],
+            ["-2 Res. LL", num(info["m2ll_reml"], 6), "BIC", num(info["bic"], 6)]]
+    interp = ["Std. Dev. is the square root of the residual (subplot) variance. R² compares the "
+              "fixed-effect predictions with the total variation; Predicted R² and PRESS are "
+              "not defined for REML fits."]
+    return Table("Fit Statistics", ["", "Value", "", "Value"], rows), interp
+
+
 def fit_statistics_table(fit: Fit) -> tuple[Table, list[str]]:
+    if is_reml(fit):
+        return reml_fit_statistics_table(fit)
     s = fit.fit_statistics()
     rows = [["Std. Dev.", num(s["std_dev"]), "R²", fixed(s["r2"])],
             ["Mean", num(s["mean"]), "Adjusted R²", fixed(s["adj_r2"])],
@@ -299,11 +391,20 @@ def fit_statistics_table(fit: Fit) -> tuple[Table, list[str]]:
 def coefficient_table(fit: Fit, level: float = 0.95) -> Table:
     pct = f"{level * 100:g}%"
     rows = []
+    reml = is_reml(fit)
     for c in fit.coefficients(level):
-        rows.append([c["label"] if c["label"] != "Intercept" else "Intercept",
-                     num(c["estimate"]), "1", num(c["se"]), num(c["low"]), num(c["high"]),
-                     num(c["vif"]) if c["vif"] is not None else ""])
+        row = [c["label"] if c["label"] != "Intercept" else "Intercept",
+               num(c["estimate"]), "1", num(c["se"]), num(c["low"]), num(c["high"]),
+               num(c["vif"]) if c["vif"] is not None else ""]
+        if reml:
+            row[2] = num(c["df"], 4) if c.get("df") is not None else ""
+        rows.append(row)
     title = "Coefficients in Terms of Coded Factors"
+    if reml:
+        return Table(title, ["Factor", "Coefficient Estimate", "Error df", "Standard Error",
+                             f"{pct} CI Low", f"{pct} CI High", "VIF"], rows,
+                     footnotes=["REML estimates (GLS); standard errors and error df by the "
+                                "Kenward-Roger method."])
     if fit.space.mixture:
         title = "Coefficients in Terms of L_Pseudo Components"
     return Table(title, ["Factor", "Coefficient Estimate", "df", "Standard Error",
@@ -369,17 +470,14 @@ def anova_section(a: Analysis, show_summary: bool = True, show_anova: bool = Tru
         sec.note("Aliased Terms", "Removed because they are aliased in this design: "
                  + ", ".join(term_name(t) for t in a.dropped) + ".", style="warning")
     if a.steps:
-        rows = [[str(i + 1), term_name(t), pval(p)] for i, (t, p) in enumerate(a.steps)]
-        sec.table(Table("Backward Elimination Regression with Alpha to Exit = "
-                        f"{a.spec.alpha_out:g}", ["Step", "Removed", "p-value"], rows,
-                        footnotes=["Hierarchical terms added back to keep the model "
-                                   "hierarchical are never removed."
-                                   if a.spec.hierarchy else "Hierarchy not enforced."]))
+        sec.table(selection_table(a.spec, a.steps))
     if show_anova:
         t, interp = anova_table(fit, name)
         sec.table(t)
         st, interp2 = fit_statistics_table(fit)
         sec.table(st)
+        if is_reml(fit):
+            sec.table(variance_components_table(fit))
         sec.note("Interpretation", "\n".join(interp + interp2))
     if show_coef:
         sec.table(coefficient_table(fit, level))
@@ -390,6 +488,34 @@ def anova_section(a: Analysis, show_summary: bool = True, show_anova: bool = Tru
         sec.note("", f"Analysis on the transformed scale {label}; predictions are "
                      "back-transformed to original units.")
     return sec
+
+
+def selection_table(spec, steps: list) -> Table:
+    """The Auto Select history: [(action, term, value)]."""
+    crit = dict(model.SELECTION_CRITERIA).get(spec.criterion, spec.criterion)
+    method = dict(model.SELECTION_METHODS).get(spec.reduction, spec.reduction)
+    rows = []
+    for i, (action, t, v) in enumerate(steps):
+        rows.append([str(i + 1), {"add": "Added", "remove": "Removed"}.get(
+            action, "Added for hierarchy"), term_name(t),
+            pval(v) if spec.criterion == "p" else num(v)])
+    if spec.criterion == "p":
+        alphas = []
+        if spec.reduction in ("forward", "stepwise"):
+            alphas.append(f"Alpha in = {spec.alpha_in:g}")
+        if spec.reduction in ("backward", "stepwise"):
+            alphas.append(f"Alpha out = {spec.alpha_out:g}")
+        title = f"{method} Selection Regression ({', '.join(alphas)})"
+    else:
+        title = f"{method} Selection by {crit}"
+    foot = ["Hierarchy kept: a term is only removed when no higher-order term in the model "
+            "contains it; parents of selected terms are added at the end." if spec.hierarchy
+            else "Hierarchy not enforced."]
+    if spec.criterion != "p":
+        foot.append(f"{crit} = -2 ln L + penalty (AICc: 2k + 2k(k+1)/(n-k-1); BIC: k ln n), "
+                    "k = coefficients + 1; a step is taken while it lowers the criterion.")
+    return Table(title, ["Step", "Action", "Term", "p-value" if spec.criterion == "p"
+                         else crit], rows, footnotes=foot)
 
 
 # ---------------------------------------------------------------------------- effects
@@ -421,13 +547,14 @@ DIAGNOSTIC_PLOTS = [("normal", "Normal plot of residuals"),
                     ("boxcox", "Box-Cox plot for power transforms"),
                     ("resid_factor", "Residuals vs. Factor"),
                     ("cooks", "Cook's distance"), ("leverage", "Leverage"),
-                    ("dffits", "DFFITS")]
+                    ("dffits", "DFFITS"), ("dfbetas", "DFBETAS")]
 
 
 def diagnostics_section(a: Analysis, plots_wanted=("normal", "resid_pred", "resid_run",
                                                    "pred_actual", "boxcox", "cooks",
                                                    "leverage", "dffits"),
-                        table: bool = True, factor_index: int = 0) -> Section:
+                        table: bool = True, factor_index: int = 0,
+                        term_index: int = 1) -> Section:
     fit = a.fit
     d = fit.diagnostics()
     label = fit.transform.label(fit.response_name)
@@ -511,6 +638,13 @@ def diagnostics_section(a: Analysis, plots_wanted=("normal", "resid_pred", "resi
             lim = 2 * math.sqrt(p / n)
             sec.image("DFFITS", plots.index_plot(d["run"], d["dffits"], f"DFFITS vs. Run: {nm}",
                                                  "DFFITS", [-lim, lim]))
+        elif key == "dfbetas":
+            j = min(max(term_index, 0), d["dfbetas"].shape[1] - 1)
+            lim = 3 / math.sqrt(n)
+            term = d["labels"][j]
+            sec.image("DFBETAS", plots.index_plot(
+                d["run"], d["dfbetas"][:, j], f"DFBETAS for {term} vs. Run: {nm}",
+                f"DFBETAS for {term}", [-lim, lim]))
     return sec
 
 
@@ -518,7 +652,8 @@ def diagnostics_section(a: Analysis, plots_wanted=("normal", "resid_pred", "resi
 GRAPHS = [("contour", "Contour (2D)"), ("surface", "3D Surface"),
           ("perturbation", "Perturbation"), ("interaction", "Interaction"),
           ("one_factor", "One Factor"), ("cube", "Cube"),
-          ("ternary", "Mixture: Contour (ternary)"), ("trace", "Mixture: Trace (Cox)")]
+          ("ternary", "Mixture: Contour (ternary)"), ("surface3", "Mixture: 3D Surface"),
+          ("trace", "Mixture: Trace (Cox)")]
 
 
 def default_point(space: Space) -> np.ndarray:
@@ -546,6 +681,136 @@ def _slice_points(fit: Fit, axes: list[int], ref: np.ndarray, tol: float = 1e-6)
     return keep
 
 
+@dataclass
+class GraphFigure:
+    """A model graph as a live matplotlib figure: the Model Graphs view shows it on an
+    interactive canvas (3D views rotate, contour plots take flags); reports save a PNG."""
+    figure: object
+    title: str
+    rotatable: bool = False
+    probe: object = None          # (x, y) in data coordinates -> list of text lines | None
+    notes: list = field(default_factory=list)
+
+
+FIGURE_GRAPHS = ("contour", "surface", "ternary", "surface3")
+
+
+def _flag_lines(fit: Fit, X: np.ndarray, factors: list[int], nm: str) -> list[str]:
+    sp = fit.space
+    iv = fit.interval(X[None, :])
+    lines = [f"{sp.factors[j].letter}: {sp.factors[j].name} = {_fmt_level(sp.factors[j], X[j])}"
+             for j in factors]
+    lines.append(f"{nm}: {num(iv['median'][0])}")
+    lines.append(f"95% CI: {num(iv['ci'][0][0])} to {num(iv['ci'][1][0])}")
+    return lines
+
+
+def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
+                 points: bool = True, n_grid: int = 50, n_levels: int = 10,
+                 full_range: bool = False) -> GraphFigure:
+    """Contour, 3D surface, mixture ternary contour or mixture 3D surface as a figure."""
+    fit = a.fit
+    sp = fit.space
+    nm = fit.response_name
+    zlabel = nm + (f" ({_units(a)})" if _units(a) else "")
+    notes: list[str] = []
+
+    def rng(j):
+        f = sp.factors[j]
+        lo, hi = f.low, f.high
+        if full_range:
+            lo = min(lo, float(fit.obs.actual[:, j].min()))
+            hi = max(hi, float(fit.obs.actual[:, j].max()))
+        return lo, hi
+
+    if graph in ("contour", "surface"):
+        if sp.mixture:
+            raise ValueError("Use the ternary contour for mixture components.")
+        i, j = axes[:2]
+        if sp.factors[i].categoric or sp.factors[j].categoric:
+            raise ValueError("Contour and 3D plots need numeric factors on both axes; choose "
+                             "the categoric level in the Factors Tool.")
+        (xl, xh), (yl, yh) = rng(i), rng(j)
+        gx, gy = np.meshgrid(np.linspace(xl, xh, n_grid), np.linspace(yl, yh, n_grid))
+        X = np.tile(ref, (gx.size, 1))
+        X[:, i], X[:, j] = gx.ravel(), gy.ravel()
+        Z = fit.predict(X).reshape(gx.shape)
+        keep = _slice_points(fit, [i, j], ref) if points else np.zeros(fit.n, bool)
+        tol_x, tol_y = 1e-6 * (xh - xl), 1e-6 * (yh - yl)
+        keep &= (fit.obs.actual[:, i] >= xl - tol_x) & (fit.obs.actual[:, i] <= xh + tol_x)
+        keep &= (fit.obs.actual[:, j] >= yl - tol_y) & (fit.obs.actual[:, j] <= yh + tol_y)
+        pts = fit.obs.actual[keep][:, [i, j]]
+        if graph == "contour":
+            fig = plots.contour_figure(gx, gy, Z, sp.factors[i].axis_label,
+                                       sp.factors[j].axis_label, nm, points=pts,
+                                       n_levels=n_levels, zlabel=zlabel)
+
+            def probe(x, y):
+                if not (xl <= x <= xh and yl <= y <= yh):
+                    return None
+                Xp = ref.astype(float).copy()
+                Xp[i], Xp[j] = x, y
+                return _flag_lines(fit, Xp, [i, j], nm)
+
+            return GraphFigure(fig, "Contour Plot", False, probe, notes)
+        p3 = np.column_stack([pts, fit.obs.y[keep]]) if len(pts) else None
+        fig = plots.surface_figure(gx, gy, Z, sp.factors[i].axis_label,
+                                   sp.factors[j].axis_label, zlabel, nm, points=p3)
+        return GraphFigure(fig, "3D Surface", True, None, notes)
+    if graph in ("ternary", "surface3"):
+        if not sp.mixture:
+            raise ValueError("The ternary graphs are for mixture designs.")
+        tri = axes[:3]
+        if len(tri) < 3:
+            raise ValueError("Choose three components for the ternary plot.")
+        rest = [j for j in range(sp.k) if j not in tri]
+        lows = sp.lower[tri]
+        free = sp.total - ref[rest].sum() - lows.sum()
+        if free <= 0:
+            raise ValueError("The fixed components leave no room for the plotted ones.")
+
+        def to_full(act3):
+            X = np.tile(ref, (len(act3), 1))
+            X[:, tri] = act3
+            return X
+
+        def fn(act3):
+            return fit.predict(to_full(act3))
+
+        def feas(act3):
+            X = to_full(act3)
+            return np.all((X >= sp.lower - 1e-9) & (X <= sp.upper + 1e-9), axis=1)
+
+        keep = np.ones(fit.n, bool)
+        for j in rest:
+            keep &= np.abs(fit.obs.actual[:, j] - ref[j]) < 1e-6 * max(1, abs(ref[j]))
+        names = [sp.factors[j].title for j in tri]
+        if sp.lower.sum() > 0:
+            notes.append("The triangle shows the L_Pseudo simplex of the three components; "
+                         "infeasible areas (upper limits) are left blank.")
+        if graph == "surface3":
+            pts = np.column_stack([fit.obs.actual[keep][:, tri], fit.obs.y[keep]]) \
+                if points and keep.any() else None
+            fig = plots.ternary_surface_figure(fn, lows, free, names, nm, zlabel, feas, pts)
+            return GraphFigure(fig, "Mixture 3D Surface", True, None, notes)
+        pts = fit.obs.actual[keep][:, tri] if points else None
+        vv = [f"{lows[m] + free:.4g}" for m in range(3)]
+        fig = plots.ternary_figure(fn, lows, free, names, nm, zlabel, feas, pts,
+                                   n_levels=n_levels, vertex_values=vv)
+
+        def probe(x, y):
+            prop = plots.ternary_point(x, y)
+            if prop is None:
+                return None
+            act = to_full((lows + prop * free)[None, :])[0]
+            if not feas(act[tri][None, :])[0]:
+                return None
+            return _flag_lines(fit, act, list(range(sp.k)), nm)
+
+        return GraphFigure(fig, "Mixture Contour", False, probe, notes)
+    raise ValueError(f"{graph!r} is not a figure graph.")
+
+
 def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
                   points: bool = True, n_grid: int = 50, n_levels: int = 10,
                   full_range: bool = False) -> Section:
@@ -567,31 +832,11 @@ def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
             hi = max(hi, float(fit.obs.actual[:, j].max()))
         return lo, hi
 
-    if graph in ("contour", "surface"):
-        if sp.mixture:
-            raise ValueError("Use the ternary contour for mixture components.")
-        i, j = axes[:2]
-        if sp.factors[i].categoric or sp.factors[j].categoric:
-            raise ValueError("Contour and 3D plots need numeric factors on both axes.")
-        (xl, xh), (yl, yh) = rng(i), rng(j)
-        gx, gy = np.meshgrid(np.linspace(xl, xh, n_grid), np.linspace(yl, yh, n_grid))
-        X = np.tile(ref, (gx.size, 1))
-        X[:, i], X[:, j] = gx.ravel(), gy.ravel()
-        Z = fit.predict(X).reshape(gx.shape)
-        keep = _slice_points(fit, [i, j], ref) if points else np.zeros(fit.n, bool)
-        tol_x, tol_y = 1e-6 * (xh - xl), 1e-6 * (yh - yl)
-        keep &= (fit.obs.actual[:, i] >= xl - tol_x) & (fit.obs.actual[:, i] <= xh + tol_x)
-        keep &= (fit.obs.actual[:, j] >= yl - tol_y) & (fit.obs.actual[:, j] <= yh + tol_y)
-        pts = fit.obs.actual[keep][:, [i, j]]
-        if graph == "contour":
-            sec.image("Contour Plot", plots.contour_plot(
-                gx, gy, Z, sp.factors[i].axis_label, sp.factors[j].axis_label, nm,
-                points=pts, n_levels=n_levels, zlabel=zlabel))
-        else:
-            p3 = np.column_stack([pts, fit.obs.y[keep]]) if len(pts) else None
-            sec.image("3D Surface", plots.surface_plot(
-                gx, gy, Z, sp.factors[i].axis_label, sp.factors[j].axis_label, zlabel, nm,
-                points=p3))
+    if graph in FIGURE_GRAPHS:
+        gf = graph_figure(a, graph, axes, ref, points, n_grid, n_levels, full_range)
+        sec.image(gf.title, plots.figure_png(gf.figure))
+        for text in gf.notes:
+            sec.note("", text)
     elif graph == "perturbation":
         curves = []
         for j, f in enumerate(sp.factors):
@@ -683,41 +928,6 @@ def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
             [f"{sp.factors[j].letter}-: {num(sp.factors[j].low)}" for j in ax3],
             [f"{sp.factors[j].letter}+: {num(sp.factors[j].high)}" for j in ax3],
             f"Cube: {nm}"))
-    elif graph == "ternary":
-        if not sp.mixture:
-            raise ValueError("The ternary contour is for mixture designs.")
-        tri = axes[:3]
-        if len(tri) < 3:
-            raise ValueError("Choose three components for the ternary plot.")
-        rest = [j for j in range(sp.k) if j not in tri]
-        lows = sp.lower[tri]
-        free = sp.total - ref[rest].sum() - lows.sum()
-        if free <= 0:
-            raise ValueError("The fixed components leave no room for the plotted ones.")
-
-        def to_full(act3):
-            X = np.tile(ref, (len(act3), 1))
-            X[:, tri] = act3
-            return X
-
-        def fn(act3):
-            return fit.predict(to_full(act3))
-
-        def feas(act3):
-            X = to_full(act3)
-            return np.all((X >= sp.lower - 1e-9) & (X <= sp.upper + 1e-9), axis=1)
-
-        keep = np.ones(fit.n, bool)
-        for j in rest:
-            keep &= np.abs(fit.obs.actual[:, j] - ref[j]) < 1e-6 * max(1, abs(ref[j]))
-        pts = fit.obs.actual[keep][:, tri] if points else None
-        vv = [f"{lows[m] + free:.4g}" for m in range(3)]
-        sec.image("Mixture Contour", plots.ternary_contour(
-            fn, lows, free, [sp.factors[j].title for j in tri], nm, zlabel, feas, pts,
-            n_levels=n_levels, vertex_values=vv))
-        if sp.lower.sum() > 0:
-            sec.note("", "The triangle shows the L_Pseudo simplex of the three components; "
-                         "infeasible areas (upper limits) are left blank.")
     else:
         raise ValueError(f"Unknown graph {graph!r}.")
     if others:

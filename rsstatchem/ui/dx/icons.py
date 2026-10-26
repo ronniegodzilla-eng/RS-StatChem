@@ -163,6 +163,30 @@ _SVG = {
               f'stroke-width="1.1"/>',
     "start": f'<rect x="2" y="2" width="20" height="20" rx="3" fill="{B}"/>'
              f'<path d="M9 7l8 5-8 5z" fill="#fff"/>',
+    # interactive graphs, split plots, augmentation
+    "reset_view": f'<path d="M12 4a8 8 0 1 1-7.4 5" fill="none" stroke="{B}" '
+                  f'stroke-width="2"/><path d="M3 4v6h6" fill="none" stroke="{B}" '
+                  f'stroke-width="2" stroke-linejoin="round"/><path d="M9 14l3-5 3 5z" '
+                  f'fill="{O}"/>',
+    "flag": f'<path d="M5 2v20" stroke="{D}" stroke-width="1.8"/><path d="M6 3h12l-3 4 3 4H6z" '
+            f'fill="{Y}" stroke="{D}" stroke-width="1.1"/>',
+    "foldover": f'<rect x="2" y="3" width="9" height="18" fill="#fff" stroke="{D}" '
+                f'stroke-width="1.2"/><rect x="13" y="3" width="9" height="18" fill="#E3EEFB" '
+                f'stroke="{B}" stroke-width="1.2"/><path d="M4 7h5M4 11h3M4 15h5" stroke="{D}"/>'
+                f'<path d="M15 7h3M15 11h5M15 15h3" stroke="{B}"/><path d="M8 1c2-1 6-1 8 1" '
+                f'fill="none" stroke="{O}" stroke-width="1.6"/>',
+    "variance": f'<path d="M3 21h18" stroke="{D}" stroke-width="1.2"/><rect x="5" y="6" '
+                f'width="5" height="15" fill="{O}"/><rect x="14" y="12" width="5" height="9" '
+                f'fill="{L}"/><path d="M7.5 3v3M16.5 9v3" stroke="{D}" stroke-width="1.2"/>',
+    "splitplot": f'<rect x="2" y="3" width="20" height="18" fill="#fff" stroke="{D}" '
+                 f'stroke-width="1.2"/><rect x="2" y="3" width="10" height="18" fill="#FCE8D2"/>'
+                 f'<path d="M12 3v18" stroke="{O}" stroke-width="2"/><path d="M2 9h20M2 15h20'
+                 f'M7 3v18M17 3v18" stroke="{L}" stroke-width="0.9"/>',
+    "dfbetas": f'<path d="M3 3v18h18" fill="none" stroke="{D}" stroke-width="1.2"/><path '
+               f'd="M4 7h17M4 17h17" stroke="{R}" stroke-width="1"/><circle cx="7" cy="12" '
+               f'r="1.5" fill="{B}"/><circle cx="11" cy="10" r="1.5" fill="{B}"/><circle '
+               f'cx="15" cy="15" r="1.5" fill="{B}"/><circle cx="19" cy="5" r="1.5" '
+               f'fill="{R}"/>',
 }
 
 

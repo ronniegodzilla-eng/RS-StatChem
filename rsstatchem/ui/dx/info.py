@@ -57,7 +57,7 @@ def summary_items(doc) -> list:
     items: list = []
     study = {"process": "Response Surface", "mixture": "Mixture"}.get(meta.get("kind"),
                                                                      "Response Surface")
-    if meta.get("design") in ("factorial", "pb", "general"):
+    if meta.get("design") in designs.FACTORIAL_DESIGNS:
         study = "Factorial"
     elif meta.get("design") == "taguchi":
         study = "Taguchi"
@@ -86,6 +86,18 @@ def summary_items(doc) -> list:
         rows.append(["Orthogonal Array", meta["taguchi"]])
     if meta.get("mixture"):
         rows.append(["Mixture Total", num(meta["mixture"]["total"])])
+    if meta.get("min_run"):
+        rows.append(["Min-Run Type", meta["min_run"]])
+    sp = meta.get("split_plot")
+    if sp and doc.split_plot:
+        hard = [designs.letter(j) for j in sp.get("hard", [])]
+        rows.append(["Split-Plot", f"{sp.get('groups')} groups (whole plots); hard to change: "
+                                   + ", ".join(hard)])
+        if meta.get("whole_plot_words"):
+            rows.append(["Whole-Plot Generators", ", ".join(meta["whole_plot_words"])])
+    for fo in meta.get("foldovers", []):
+        rows.append(["Augmented", f"{fo.get('label')}: {fo.get('runs')} runs in block "
+                                  f"{fo.get('block')}"])
     if doc.ignored:
         rows.append(["Ignored Runs", str(len(doc.ignored))])
     items.append(Table("Build Information", ["", "Value"], rows))
@@ -93,16 +105,19 @@ def summary_items(doc) -> list:
     frows = []
     for j, f in enumerate(doc.factors):
         vals = doc.ds.df[f["column"]].to_numpy(float)
+        hard = f.get("changes") == "hard"
         if f.get("type") == "categoric":
-            frows.append([designs.letter(j), f["name"], f.get("units", ""), "Categoric",
+            frows.append([designs.letter(j), f["name"], f.get("units", ""),
+                          "Categoric" + (" (HTC)" if hard else ""),
                           "Nominal", str(len(f.get("levels", []))),
                           ", ".join(map(str, f.get("labels", []))), "", "", "", ""])
             continue
         typ = "Mixture" if f.get("type") == "mixture" else "Numeric"
         clo = f"-1 ↔ {num(f['low'])}" if typ == "Numeric" else ""
         chi = f"+1 ↔ {num(f['high'])}" if typ == "Numeric" else ""
-        frows.append([designs.letter(j), f["name"], f.get("units", ""), typ,
-                      "Continuous", num(np.nanmin(vals)), num(np.nanmax(vals)), clo, chi,
+        frows.append([designs.letter(j), f["name"], f.get("units", ""),
+                      typ + (" (HTC)" if hard else ""), "Continuous", num(np.nanmin(vals)),
+                      num(np.nanmax(vals)), clo, chi,
                       num(np.nanmean(vals)), num(np.nanstd(vals, ddof=1))])
     items.append(Table("Factors", ["Factor", "Name", "Units", "Type", "SubType", "Minimum",
                                    "Maximum", "Coded Low", "Coded High", "Mean", "Std. Dev."],
@@ -131,6 +146,12 @@ def summary_items(doc) -> list:
     if meta.get("aliases"):
         items.append(Table("Alias Structure", ["Aliases"], [[a] for a in meta["aliases"]],
                            row_header_cols=0))
+    if meta.get("alias_note"):
+        items.append(Text("Aliasing", meta["alias_note"]))
+    if sp and doc.split_plot:
+        items.append(Text("", "HTC = hard-to-change (whole-plot) factor. The runs come in "
+                              "groups within which the HTC settings stay fixed; analyse with "
+                              "REML (ANOVA (REML) tab)."))
     for n in doc.build_notes:
         items.append(Text("", n))
     return items
@@ -219,7 +240,10 @@ def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, 
     keep = np.ones(len(coded), bool)
     keep[list(doc.ignored)] = False
     blocks = doc.ds.df["Block"].to_numpy(float)[keep] if doc.n_blocks > 1 else None
-    ev = evaluation.evaluate(sp, coded[keep], order, blocks=blocks, signal_noise=signal_noise)
+    groups = doc.ds.df[doc.group_col].to_numpy(float)[keep] if doc.split_plot else None
+    ratio = float((doc.meta.get("split_plot") or {}).get("variance_ratio", 1.0))
+    ev = evaluation.evaluate(sp, coded[keep], order, blocks=blocks, signal_noise=signal_noise,
+                             groups=groups, variance_ratio=ratio)
     name = next((n for n, o in model.model_orders(sp) if o == order), order)
     items: list = []
     if ev["aliased"]:
@@ -261,6 +285,10 @@ def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, 
     if df["Pure Error"] < 3:
         notes.append("At least 3 pure-error degrees of freedom (replicates) are recommended "
                      "for a reliable lack-of-fit test.")
+    if ev.get("split_plot"):
+        notes.append(f"Split-plot: standard errors and power use generalised least squares "
+                     f"with a group / residual variance ratio of {ratio:g}; whole-plot terms "
+                     "are estimated less precisely and have fewer error degrees of freedom.")
     if notes:
         items.append(annotation("\n".join(notes)))
     lev = ev["leverage"]
