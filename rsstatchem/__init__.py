@@ -3,4 +3,4 @@
 APP_NAME = "RS-StatChem"
 APP_ORG = "RS Education"
 APP_ID = "id.rseducation.rsstatchem"
-__version__ = "0.6.0"
+__version__ = "0.7.0"
