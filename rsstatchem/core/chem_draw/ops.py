@@ -18,7 +18,8 @@ from rsstatchem.core.chem_draw.model import Document
 
 __all__ = ["BOND_TOOLS", "RING_TEMPLATES", "add_bond_at_atom", "add_bond_free",
            "add_bond_between", "apply_bond_tool", "add_chain", "stamp_ring", "set_element",
-           "change_charge", "cycle_radical", "toggle_map_number", "atom_or_new", "snap_tol"]
+           "change_charge", "cycle_radical", "toggle_map_number", "atom_or_new", "snap_tol",
+           "CHAIR_TEMPLATES", "stamp_chair"]
 
 # tool name -> (order, style)
 BOND_TOOLS = {
@@ -203,6 +204,28 @@ def stamp_ring(doc: Document, template: str, atom: int | None = None,
                      for v in (i, j))
             if ok:
                 old.order = 2
+    return verts
+
+
+# Cyclohexane chair projections (ChemDraw's two chair tools), in bond lengths, y down: a 3D
+# chair (puckering +-0.25) seen 20 deg above its mean plane, so opposite bonds are parallel.
+_CHAIR = [(1.15 * x, 1.15 * y) for x, y in ((1.0, -0.235), (0.5, -0.059), (-0.5, -0.529),
+                                            (-1.0, 0.235), (-0.5, 0.059), (0.5, 0.529))]
+CHAIR_TEMPLATES = {"chair1": _CHAIR, "chair2": [(-x, y) for x, y in _CHAIR]}
+
+
+def stamp_chair(doc: Document, variant: str, point: tuple[float, float]) -> list[int]:
+    """Cyclohexane chair centred on ``point``; returns the ring atom ids in order."""
+    bl = doc.style.bond_length
+    pts = CHAIR_TEMPLATES[variant]
+    cx = sum(x for x, _ in pts) / len(pts)
+    cy = sum(y for _, y in pts) / len(pts)
+    verts: list[int] = []
+    for x, y in pts:
+        verts.append(atom_or_new(doc, point[0] + (x - cx) * bl, point[1] + (y - cy) * bl,
+                                 exclude=set(verts)))
+    for k in range(len(verts)):
+        doc.add_bond(verts[k], verts[(k + 1) % len(verts)])
     return verts
 
 

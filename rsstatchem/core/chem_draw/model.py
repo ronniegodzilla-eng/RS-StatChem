@@ -43,6 +43,8 @@ class Atom:
     label: str = ""                 # nickname or generic label (Ph, OMe, R1...)
     show_carbon: bool = False       # force the "C" label of a carbon
     group: int = 0
+    color: str = ""                 # "" = automatic (black / colour by element), else #RRGGBB
+    number: int = 0                 # displayed atom number (Structure > Add Atom Numbers)
 
 
 @dataclass
@@ -54,6 +56,7 @@ class Bond:
     style: str = ""                 # see BOND_STYLES
     double_pos: str = "auto"        # auto | center | left | right (seen from a to b)
     group: int = 0
+    color: str = ""
 
 
 @dataclass
@@ -69,6 +72,7 @@ class Arrow:
     below: str = ""
     z: float = 0.0
     group: int = 0
+    color: str = ""
 
 
 @dataclass
@@ -78,6 +82,7 @@ class Plus:
     y: float
     z: float = 0.0
     group: int = 0
+    color: str = ""
 
 
 @dataclass
@@ -91,6 +96,10 @@ class TextBox:
     bold: bool = False
     z: float = 0.0
     group: int = 0
+    color: str = ""
+    italic: bool = False
+    underline: bool = False
+    font: str = ""                  # "" = the style's font family
 
 
 @dataclass
@@ -104,6 +113,7 @@ class Bracket:
     label: str = ""                 # subscript at the lower right (n, 2, ‡ ...)
     z: float = 0.0
     group: int = 0
+    color: str = ""
 
 
 _CLASSES = {"atom": Atom, "bond": Bond, "arrow": Arrow, "plus": Plus, "text": TextBox,
@@ -550,7 +560,7 @@ class Document:
         for b in other.bonds.values():
             if b.a in amap and b.b in amap:
                 nb = self.add_bond(amap[b.a], amap[b.b], b.order, b.style,
-                                   double_pos=b.double_pos)
+                                   double_pos=b.double_pos, color=b.color)
                 new_keys.append(("bond", nb.id))
         for k in ("arrow", "plus", "text", "bracket"):
             for o in other.store(k).values():

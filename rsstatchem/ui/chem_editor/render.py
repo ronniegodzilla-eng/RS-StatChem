@@ -32,12 +32,14 @@ SELECT_COLOR = QColor(47, 125, 225)
 _FONTS: dict = {}
 
 
-def _font(family: str, bold: bool = False) -> tuple[QFont, QFontMetricsF]:
-    key = (family, bold)
+def _font(family: str, bold: bool = False, italic: bool = False
+          ) -> tuple[QFont, QFontMetricsF]:
+    key = (family, bold, italic)
     if key not in _FONTS:
         f = QFont(family)
         f.setPixelSize(int(REF_PX))
         f.setBold(bold)
+        f.setItalic(italic)
         f.setStyleStrategy(QFont.StyleStrategy.PreferOutline)
         _FONTS[key] = (f, QFontMetricsF(f))
     return _FONTS[key]
@@ -78,6 +80,9 @@ def chem_text_lines(text: str, chemical: bool = True) -> list[list[tuple[str, st
     """Runs per line; with ``chemical`` formulas get subscripts and charges superscripts."""
     lines = []
     for line in (text or "").split("\n"):
+        if "<sub>" in line or "<sup>" in line:      # explicit sub/superscript markup
+            lines.append(_html_runs(line) or [("", "n")])
+            continue
         if not chemical:
             lines.append([(line, "n")])
             continue
@@ -104,9 +109,9 @@ class Builder:
         self.style = style
 
     # --- text ----------------------------------------------------------------------------
-    def runs_path(self, runs, size: float, x: float, baseline: float, bold: bool = False
-                  ) -> tuple[QPainterPath, list[float]]:
-        font, fm = _font(self.style.font_family, bold)
+    def runs_path(self, runs, size: float, x: float, baseline: float, bold: bool = False,
+                  italic: bool = False, family: str = "") -> tuple[QPainterPath, list[float]]:
+        font, fm = _font(family or self.style.font_family, bold, italic)
         path = QPainterPath()
         widths = []
         cursor = x
@@ -126,29 +131,35 @@ class Builder:
             cursor += w
         return path, widths
 
-    def run_widths(self, runs, size: float, bold: bool = False) -> list[float]:
-        _, fm = _font(self.style.font_family, bold)
+    def run_widths(self, runs, size: float, bold: bool = False, italic: bool = False,
+                   family: str = "") -> list[float]:
+        _, fm = _font(family or self.style.font_family, bold, italic)
         return [fm.horizontalAdvance(t) * size * (SUB if k in ("sub", "sup") else 1.0)
                 / REF_PX for t, k in runs]
 
-    def cap_height(self, size: float) -> float:
-        _, fm = _font(self.style.font_family)
+    def cap_height(self, size: float, family: str = "") -> float:
+        _, fm = _font(family or self.style.font_family)
         return fm.capHeight() * size / REF_PX
 
-    def text_block(self, lines, size: float, x: float, y: float, bold=False, center=False
+    def text_block(self, lines, size: float, x: float, y: float, bold=False, center=False,
+                   italic: bool = False, family: str = "", underline: bool = False
                    ) -> tuple[QPainterPath, QRectF]:
         """Multi-line text with top-left (x, y) (or centred on x)."""
         path = QPainterPath()
         line_h = size * 1.25
-        cap = self.cap_height(size)
+        cap = self.cap_height(size, family)
         width = 0.0
         for i, runs in enumerate(lines):
-            w = sum(self.run_widths(runs, size, bold))
+            w = sum(self.run_widths(runs, size, bold, italic, family))
             width = max(width, w)
             x0 = x - w / 2 if center else x
             base = y + size * 0.2 + cap + i * line_h
-            p, _ = self.runs_path(runs, size, x0, base, bold)
+            p, _ = self.runs_path(runs, size, x0, base, bold, italic, family)
             path.addPath(p)
+            if underline and w > 0:
+                path.setFillRule(Qt.FillRule.WindingFill)   # glyph outlines are non-zero
+                t = max(0.5, size * 0.06)
+                path.addRect(QRectF(x0, base + size * 0.12, w, t))
         h = line_h * len(lines)
         rect = QRectF(x - width / 2 if center else x, y, width, h)
         return path, rect
@@ -203,7 +214,7 @@ class Builder:
             rect = rect.united(r2)
         anchor_sym = atom.symbol if not atom.label else ""
         color = element_color(anchor_sym, st.color_by_element) if anchor_sym else "#000000"
-        return path, rect, color
+        return path, rect, getattr(atom, "color", "") or color
 
     # --- scene ---------------------------------------------------------------------------
     def build(self, scene: QGraphicsScene, doc: Document, z0: float = 0.0) -> BuildInfo:
@@ -239,6 +250,8 @@ class Builder:
                 item.setPen(Qt.PenStyle.NoPen)
                 item.setZValue(z0 + 2)
                 scene.addItem(item)
+            if a.number:
+                self._atom_number(scene, doc, a, boxes.get(a.id), z0)
         info.label_boxes = boxes
         rings = doc.rings()
         for b in doc.bonds.values():
@@ -254,26 +267,29 @@ class Builder:
             side = None
             if b.order in (2, 1.5):
                 side = geo.double_bond_side(doc, b, labelled, rings)
+            color = _color(b, pen_color)
             for prim in geo.bond_primitives(doc, b, st, ta, tb, side, labelled):
-                self._prim(scene, prim, pen_color, z0 + 1)
+                self._prim(scene, prim, color, z0 + 1)
         for ar in doc.arrows.values():
             z = z0 + 3 + ar.z
             for prim in geo.arrow_primitives(ar, st):
-                self._prim(scene, prim, pen_color, z)
+                self._prim(scene, prim, _color(ar, pen_color), z)
             info.arrow_text[ar.id] = self._arrow_text(scene, ar, z)
         for p in doc.pluses.values():
             h = st.caption_size * 0.36
             w = max(st.line_width, 0.6)
             for x1, y1, x2, y2 in ((p.x - h, p.y, p.x + h, p.y), (p.x, p.y - h, p.x, p.y + h)):
-                self._prim(scene, ("line", x1, y1, x2, y2, w, False), pen_color,
+                self._prim(scene, ("line", x1, y1, x2, y2, w, False), _color(p, pen_color),
                            z0 + 3 + p.z, cap=Qt.PenCapStyle.FlatCap)
             info.plus_boxes[p.id] = QRectF(p.x - h, p.y - h, 2 * h, 2 * h)
         for t in doc.texts.values():
             size = t.size or st.caption_size
             path, rect = self.text_block(chem_text_lines(t.text, t.chemical), size, t.x, t.y,
-                                         t.bold)
+                                         t.bold, italic=getattr(t, "italic", False),
+                                         family=getattr(t, "font", ""),
+                                         underline=getattr(t, "underline", False))
             item = QGraphicsPathItem(path)
-            item.setBrush(QBrush(pen_color))
+            item.setBrush(QBrush(_color(t, pen_color)))
             item.setPen(Qt.PenStyle.NoPen)
             item.setZValue(z0 + 3 + t.z)
             scene.addItem(item)
@@ -281,12 +297,12 @@ class Builder:
         for br in doc.brackets.values():
             z = z0 + 3 + br.z
             for prim in geo.bracket_primitives(br.x1, br.y1, br.x2, br.y2, br.kind, st):
-                self._prim(scene, prim, pen_color, z)
+                self._prim(scene, prim, _color(br, pen_color), z)
             if br.label:
                 size = st.caption_size * 0.85
                 path, _ = self.runs_path([(br.label, "n")], size, br.x2 + 1.5, br.y2 + size * 0.5)
                 item = QGraphicsPathItem(path)
-                item.setBrush(QBrush(pen_color))
+                item.setBrush(QBrush(_color(br, pen_color)))
                 item.setPen(Qt.PenStyle.NoPen)
                 item.setZValue(z)
                 scene.addItem(item)
@@ -314,12 +330,27 @@ class Builder:
             cy = my + ny * sign * (gap + h / 2)
             path, rect = self.text_block(lines, size, cx, cy - h / 2, center=True)
             item = QGraphicsPathItem(path)
-            item.setBrush(QBrush(QColor("#000000")))
+            item.setBrush(QBrush(_color(ar, QColor("#000000"))))
             item.setPen(Qt.PenStyle.NoPen)
             item.setZValue(z)
             scene.addItem(item)
             rects.append(rect)
         return rects
+
+    def _atom_number(self, scene, doc, atom, box, z0) -> None:
+        """Small atom number beside the atom, on the side away from its bonds."""
+        size = self.style.font_size * 0.62
+        ang = geo.away_direction(doc, atom.id) if doc.bonds_of(atom.id) else -math.pi / 4
+        r = (max(box.width(), box.height()) / 2 if box is not None else 0) + size * 0.9
+        cx, cy = atom.x + r * math.cos(ang), atom.y + r * math.sin(ang)
+        runs = [(str(atom.number), "n")]
+        w = sum(self.run_widths(runs, size))
+        path, _ = self.runs_path(runs, size, cx - w / 2, cy + self.cap_height(size) / 2)
+        item = QGraphicsPathItem(path)
+        item.setBrush(QBrush(QColor(atom.color or "#5A5A5A")))
+        item.setPen(Qt.PenStyle.NoPen)
+        item.setZValue(z0 + 2)
+        scene.addItem(item)
 
     def _radicals(self, scene, x, y, n, z0):
         r = max(0.8, self.style.line_width * 1.1)
@@ -363,6 +394,11 @@ class Builder:
         item.setZValue(z)
         scene.addItem(item)
         return item
+
+
+def _color(obj, default: QColor) -> QColor:
+    c = getattr(obj, "color", "")
+    return QColor(c) if c else default
 
 
 def _box(r: QRectF) -> tuple[float, float, float, float]:

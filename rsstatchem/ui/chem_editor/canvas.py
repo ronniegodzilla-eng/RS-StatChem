@@ -30,6 +30,8 @@ __all__ = ["ChemCanvas", "SnapshotCommand"]
 
 _HOTKEY_ELEMENTS = {"c": "C", "n": "N", "o": "O", "s": "S", "p": "P", "f": "F", "i": "I",
                     "h": "H", "l": "Cl", "b": "Br", "B": "B", "k": "K"}
+_RING_KEYS = {"3": "cyclopropane", "4": "cyclobutane", "5": "cyclopentane",
+              "6": "cyclohexane", "7": "cycloheptane", "8": "cyclooctane"}
 
 
 class SnapshotCommand(QUndoCommand):
@@ -106,6 +108,7 @@ class ChemCanvas(QGraphicsView):
         self.problems: dict[int, str] = {}
         self.show_grid = False
         self.template_smiles = "c1ccccc1"
+        self.bracket_kind = "square"
         self._overlay: list = []
         self._preview: list = []
         self._press = None
@@ -482,6 +485,9 @@ class ChemCanvas(QGraphicsView):
             return
         if t.startswith("ring:"):
             tpl = t.split(":", 1)[1]
+            if tpl in ops.CHAIR_TEMPLATES:          # chairs are always placed free
+                self.edit("Add Ring", lambda: ops.stamp_chair(self.doc, tpl, (x, y)))
+                return
             if kind == "atom":
                 self.edit("Add Ring", lambda: ops.stamp_ring(self.doc, tpl, atom=i))
             elif kind == "bond":
@@ -530,6 +536,8 @@ class ChemCanvas(QGraphicsView):
                 self.edit_text(i)
             elif kind == "arrow":
                 self.arrow_properties(i)
+            elif kind == "atom":                    # ChemDraw's text tool labels atoms
+                self.edit_label(i)
             elif h is None:
                 tid = self.edit("Add Text", lambda: self.doc.add_text(x, y, "").id)
                 self.edit_text(tid, new=True)
@@ -538,7 +546,7 @@ class ChemCanvas(QGraphicsView):
             r = self._selection_rect()
             if r is not None:
                 self.edit("Add Brackets", lambda: self.doc.add_bracket(
-                    r.left(), r.top(), r.right(), r.bottom()))
+                    r.left(), r.top(), r.right(), r.bottom(), self.bracket_kind))
             return
         if t == "template" and h is None and self.template_smiles:
             self.insert_text(self.template_smiles, x, y, "Insert Template")
@@ -768,7 +776,7 @@ class ChemCanvas(QGraphicsView):
             self.commit("Add Arrow")
         elif m == "bracket":
             r = QRectF(self._press, p).normalized()
-            doc.add_bracket(r.left(), r.top(), r.right(), r.bottom())
+            doc.add_bracket(r.left(), r.top(), r.right(), r.bottom(), self.bracket_kind)
             self.commit("Add Brackets")
         else:
             self._before = None
@@ -903,15 +911,31 @@ class ChemCanvas(QGraphicsView):
             if text == "1":
                 self.edit("Add Bond", lambda: ops.add_bond_at_atom(self.doc, i))
                 return True
+            if text in _RING_KEYS:                  # 3-8: ring of that size on the atom
+                tpl = _RING_KEYS[text]
+                self.edit("Add Ring", lambda: ops.stamp_ring(self.doc, tpl, atom=i))
+                return True
+            if text == "/":
+                self.atom_properties(i)
+                return True
         if kind == "bond":
+            if text in _RING_KEYS and text != "3":  # 4-8: ring fused on the bond
+                tpl = _RING_KEYS[text]
+                self.edit("Add Ring", lambda: ops.stamp_ring(self.doc, tpl, bond=i))
+                return True
+            if text in ("l", "r", "c") and self.doc.bonds[i].order == 2:
+                pos = {"l": "left", "r": "right", "c": "center"}[text]
+                self.edit("Double Bond Position",
+                          lambda: setattr(self.doc.bonds[i], "double_pos", pos))
+                return True
             tools = {"1": "single", "2": "double", "3": "triple", "w": "wedge", "h": "hash",
-                     "y": "wavy", "a": "aromatic"}
+                     "y": "wavy", "a": "aromatic", "b": "bold", "d": "dashed"}
             if text in tools:
                 tool = tools[text]
 
                 def fn():
                     b = self.doc.bonds[i]
-                    if tool in ("single", "triple"):
+                    if tool in ("single", "triple", "bold", "dashed"):
                         b.order, b.style = ops.BOND_TOOLS[tool]
                     else:
                         ops.apply_bond_tool(self.doc, i, tool)
@@ -1170,7 +1194,8 @@ class ChemCanvas(QGraphicsView):
 
     def event(self, e) -> bool:
         if e.type() == QEvent.Type.ShortcutOverride and self.hover is not None and \
-                self._editor is None and e.text() and e.text() in "cnospfihlbBk+-=.123wya":
+                self._editor is None and e.text() and \
+                e.text() in "cnospfihlbBk+-=.12345678wyadrc/":
             e.accept()
             return True
         return super().event(e)
