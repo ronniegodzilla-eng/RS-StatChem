@@ -61,17 +61,20 @@ HELP = {
             "to fit, plus lack-of-fit and replicate points.",
     "mixdopt": "Optimal (custom) mixture: D-optimal blends inside the constrained mixture "
                "region, plus lack-of-fit and replicate points.",
-    "mr5": "Min-Run Characterize: a minimum-run equireplicated resolution V design (MR5). All "
-           "main effects and two-factor interactions can be estimated with about as many runs "
-           "as model terms (an even number, each factor balanced). Built by an exchange "
-           "algorithm; losing a run reduces it to resolution IV.",
-    "mr4": "Min-Run Screen: a minimum-run resolution IV design (MR4) in 2 x factors runs — the "
-           "foldover of a main-effects design, so main effects are clear of two-factor "
-           "interactions. The 2 extra runs (default) protect against a botched run.",
+    "mr5": "Min-Run Characterize: a minimum-run equireplicated resolution V design (MR5), 6 "
+           "to 50 factors. All main effects and two-factor interactions can be estimated with "
+           "about as many runs as model terms (an even number, each factor balanced). Built "
+           "by a fast columnwise-pairwise exchange; losing a run reduces it to resolution IV.",
+    "mr4": "Min-Run Screen: a minimum-run resolution IV design (MR4) in 2 x factors runs, 5 to "
+           "50 factors — the foldover of a main-effects design, so main effects are clear of "
+           "two-factor interactions. The 2 extra runs (default) protect against a botched "
+           "run.",
 }
 SPLIT_HELP = ("  Split-plot: set Changes = Hard for factors that are hard to change; their "
               "settings stay fixed within each group (whole plot), the groups are run in random "
-              "order and the runs within each group in random order. The analysis uses REML.")
+              "order and the runs within each group in random order. Numeric and categoric "
+              "factors can be hard or easy to change; two-level designs can be blocked by "
+              "confounding whole-plot interactions. The analysis uses REML.")
 ALPHAS = [("rotatable", "Rotatable"), ("spherical", "Spherical"),
           ("orthogonal", "Orthogonal Quadratic"), ("practical", "Practical"),
           ("face", "Face Centered"), ("custom", "Other (enter value)")]
@@ -771,8 +774,6 @@ class NewDesignWizard(QDialog):
             for key in ("model_points", "lof_points", "replicate_points"):
                 if key in self._opt:
                     self._opt[key].setEnabled(not split)
-        if self.design == "factorial" and "blocks" in self._opt:
-            self._opt["blocks"].setEnabled(not split)
 
     def _update_fractions(self) -> None:
         w = self._opt.get("fraction")
@@ -808,7 +809,9 @@ class NewDesignWizard(QDialog):
         w.blockSignals(False)
 
     def _ccd_alpha(self) -> float:
-        k = self.k_spin.value()
+        # the CCD (and its alpha) is built on the numeric factors only
+        k = sum(1 for r in range(min(self.k_spin.value(), len(self._rows)))
+                if not self._row_categoric(r)) or self.k_spin.value()
         try:
             spec_opt = self._options()
             res = designs.central_composite(k, spec_opt.get("alpha_type", "rotatable"),
@@ -837,7 +840,8 @@ class NewDesignWizard(QDialog):
             if v is not None:
                 opt[key] = v
         if split:
-            opt.pop("blocks", None)
+            if d != "factorial":  # split-plot factorials block by confounding
+                opt.pop("blocks", None)
             for key in ("group_size", "variance_ratio"):
                 if self._opt_value(key) is not None:
                     opt[key] = self._opt_value(key)

@@ -85,7 +85,7 @@ def evaluate(space: Space, coded: np.ndarray, order: str | None = None, terms=No
     except np.linalg.LinAlgError:
         return out
     out["xtx_inv"] = inv
-    out["leverage"] = np.einsum("ij,jk,ik->i", X, inv, X)
+    out["leverage"] = np.einsum("ij,ij->i", X @ inv, X)
     # VIF from the centred correlation matrix (as in Fit.vif)
     cols = [j for j in range(p) if not (mat.intercept and j == 0)
             and not (mat.block_slice is not None
@@ -142,7 +142,7 @@ def fds_curve(space: Space, ev: dict, n_points: int = 4000, seed: int = 0) -> tu
     R = np.hstack(parts)
     if R.shape[1] != inv.shape[0]:
         return np.array([]), np.array([])
-    se = np.sqrt(np.clip(np.einsum("ij,jk,ik->i", R, inv, R), 0, None))
+    se = np.sqrt(np.clip(np.einsum("ij,ij->i", R @ inv, R), 0, None))
     se.sort()
     frac = (np.arange(1, len(se) + 1) - 0.5) / len(se)
     return frac, se
