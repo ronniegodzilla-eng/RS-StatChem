@@ -12,3 +12,5 @@ UserData/
 # OPSIN jar + jlink Java runtime: fetched / built for packaging, never committed
 rsstatchem/resources/opsin/
 build-jre/
+# CDK jar + compiled helper (scripts/fetch_cdk.py), never committed
+rsstatchem/resources/java/

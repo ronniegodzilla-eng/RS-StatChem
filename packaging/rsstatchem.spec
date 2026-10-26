@@ -21,10 +21,12 @@ APP_MODULES = sorted(
 
 
 def resource_datas():
-    """Every resource file (icons, the offline name database, the OPSIN jar fetched by
-    scripts/fetch_opsin.py) except a local Java runtime in resources/opsin/jre: the CI
-    workflow copies the jlink runtime into the finished bundle so PyInstaller never
-    rewrites or re-signs the Java binaries."""
+    """Every resource file (icons, the offline name database, the experimental property
+    database and ML models in resources/properties, the OPSIN jar fetched by
+    scripts/fetch_opsin.py, the CDK jar + helper built by scripts/fetch_cdk.py in
+    resources/java) except a local Java runtime in resources/opsin/jre: the CI workflow
+    copies the jlink runtime into the finished bundle so PyInstaller never rewrites or
+    re-signs the Java binaries. The CDK jar must be present for a release build."""
     out = []
     for path in sorted(RES.rglob("*")):
         rel = path.relative_to(RES)
@@ -35,10 +37,19 @@ def resource_datas():
     return out
 
 
+def rdkit_datas():
+    """RDKit's functional-group table (rdkit/Data/FragmentDescriptors.csv): the fr_* descriptors
+    used by the Chemical Properties ML models are only defined when it is present (PyInstaller
+    does not collect rdkit/Data by itself; found by the packaged --selftest)."""
+    import rdkit
+    data = Path(rdkit.__file__).parent / "Data" / "FragmentDescriptors.csv"
+    return [(str(data), "rdkit/Data")]
+
+
 a = Analysis(
     [str(ROOT / "run.py")],
     pathex=[str(ROOT)],
-    datas=resource_datas(),
+    datas=resource_datas() + rdkit_datas(),
     hiddenimports=["pyreadstat._readstat_parser", "pyreadstat._readstat_writer",
                    "pyreadstat.worker", "mpl_toolkits.mplot3d",
                    "matplotlib.backends.backend_qtagg", "matplotlib.backends.backend_pdf",

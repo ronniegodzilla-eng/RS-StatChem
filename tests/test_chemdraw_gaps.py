@@ -383,17 +383,20 @@ def test_marrero_gani_against_literature():
 
 def test_caffeine_gets_labelled_fallback_values():
     rows = {p.name: p for p in chemical_properties(Chem.MolFromSmiles(CAFFEINE))}
-    bp = rows["Boiling Point"]
-    assert bp.short == "Stein-Brown" and "Stein & Brown" in bp.method
-    assert bp.value == pytest.approx(674.0, abs=1)          # EPI Suite MPBPWIN: ~689 K
-    assert rows["Melting Point"].short == "Marrero-Gani" and rows["Melting Point"].value
-    assert rows["Critical Temp."].value is None and "Joback" in rows["Critical Temp."].note
-    assert "Marrero-Gani" in rows["Critical Temp."].note
-    assert rows["LogP"].short == "Crippen" and "not BioByte" in rows["LogP"].method
-    # molecules Joback covers keep Joback values
-    eth = {p.name: p for p in chemical_properties(Chem.MolFromSmiles("CCO"))}
-    assert eth["Boiling Point"].short == "Joback"
-    assert eth["Boiling Point"].value == pytest.approx(337.54)
+    bp = {a.key: a for a in rows["Boiling Point"].alternatives}
+    assert bp["sb"].value == pytest.approx(674.0, abs=1)    # EPI Suite MPBPWIN: ~689 K
+    assert bp["joback"].value is None and "ring N" in bp["joback"].note   # why: no group
+    assert rows["Boiling Point"].short == "ML"               # lowest benchmark error
+    assert rows["Melting Point"].kind == "experimental"
+    mp = {a.key: a for a in rows["Melting Point"].alternatives}
+    assert mp["mg1"].value and mp["mg"].value                # still listed in the details
+    tc = {a.key: a for a in rows["Critical Temp."].alternatives}
+    assert tc["mg"].value is None and tc["joback"].value is None
+    assert rows["Critical Temp."].short == "Abdulelah-Gani" and rows["Critical Temp."].value
+    assert rows["LogP"].kind == "experimental"
+    novel = {p.name: p for p in chemical_properties(
+        Chem.MolFromSmiles("O=C(NC1CC2(C1)OCCO2)c1ccc(F)c(Cl)c1"))}
+    assert "not BioByte" in novel["LogP"].method
 
 
 # --- names: offline database, OPSIN --------------------------------------------------------
