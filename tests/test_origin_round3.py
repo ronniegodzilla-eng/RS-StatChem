@@ -196,13 +196,15 @@ def test_two_way_anova_raw_equals_indexed_and_balanced_types_agree():
                "factor_b": "[Book1]Index!B", "means": []}
     r1, _ = st.two_way_anova(books, raw)
     r2, _ = st.two_way_anova(books, indexed)
+    # report cells hold rounded text (6 significant digits), so the last digit may differ
+    # between platforms' floating-point summation orders
     for row in ("Error", "Corrected Total"):
         assert _value(r1, "Overall ANOVA", row, 2) == pytest.approx(
-            _value(r2, "Overall ANOVA", row, 2))
+            _value(r2, "Overall ANOVA", row, 2), rel=1e-5)
     ss = [st.two_way_anova(books, {**raw, "ss": t})[0] for t in ("1", "2", "3")]
     for term in ("A", "B", "A * B"):
         vals = [_value(r, "Overall ANOVA", term, 2) for r in ss]
-        assert vals[0] == pytest.approx(vals[1]) == pytest.approx(vals[2])
+        assert vals[0] == pytest.approx(vals[1], rel=1e-5) == pytest.approx(vals[2], rel=1e-5)
     assert dict((r[0], r[1]) for r in ss[0].table("Notes")["rows"])["Design"] == "Balanced"
     # wrong number of raw columns / missing cells are reported
     with pytest.raises(st.StatError, match="2 × 3"):
