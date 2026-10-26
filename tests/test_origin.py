@@ -143,7 +143,7 @@ def test_linear_fit_report_matches_numpy():
     params = report.table("Parameters")
     assert params["rows"][1][1] == "Slope" and float(params["rows"][1][2]) == \
         pytest.approx(slope, rel=1e-5)
-    assert any(i["kind"] == "image" for i in report.items)
+    assert any(i["kind"] == "graph" for i in report.items)   # live embedded graphs
     curve = book.sheet("FitLinearCurve1")
     assert curve.columns[1].long_name == "Linear Fit of Absorbance"
     assert "Slope" in out.log and "R-Square" in out.log

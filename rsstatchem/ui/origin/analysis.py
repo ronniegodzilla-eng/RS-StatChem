@@ -21,6 +21,7 @@ from rsstatchem.core.analysis import mathematics as maths
 from rsstatchem.core.analysis import signal as sig
 from rsstatchem.core.analysis.common import num, pval
 from rsstatchem.core.analysis.fitting import FitResult
+from rsstatchem.ui.origin import report_graphs as rg
 from rsstatchem.ui.origin.model import (ReportSheet, Workbook, Worksheet, jsonable, row_window,
                                         rows_text)
 
@@ -129,20 +130,6 @@ FIT_KINDS = {"linear": ("FitLinear", "Linear Fit"), "poly": ("FitPolynomial", "P
              "nlfit": ("FitNL", "Nonlinear Curve Fit")}
 
 
-def _residual_histogram(res: FitResult, ylabel: str) -> bytes:
-    from rsstatchem.core.analysis.common import figure, png
-    fig = figure(5.2, 3.4)
-    ax = fig.add_subplot(111)
-    r = np.asarray(res.residuals, float)
-    r = r[np.isfinite(r)]
-    ax.hist(r, bins=max(5, min(30, int(np.sqrt(len(r))) + 1)), color="#7fa7e0",
-            edgecolor="#1f1f1f", linewidth=0.6)
-    ax.set_xlabel(f"Residual of {ylabel}")
-    ax.set_ylabel("Count")
-    ax.set_title("Histogram of the Residual", fontsize=10)
-    return png(fig)
-
-
 def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none",
             params0=None, fixed=None, bounds=None, level: float = 0.95,
             conf_band: bool = True, pred_band: bool = False, residual_plot: bool = True,
@@ -193,16 +180,16 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
     xx = np.linspace(lo, hi, max(points, 10)) if hi > lo else np.array([lo])
     yy = res.predict(xx)
     curve_name = curve.name if curve is not None else book.unique_sheet_name(base + "Curve")
-    new.add_image("Fitted Curves Plot",
-                  fit.fit_plot(res, data.xtitle, data.ytitle, level, conf_band, pred_band,
+    new.add_graph("Fitted Curves Plot",
+                  rg.fit_graph(res, data.xtitle, data.ytitle, level, conf_band, pred_band,
                                data.yerr if weighting == "instrumental" else None,
                                title=f"{label} of {yname}"),
-                  graph={"kind": "fit", "curve": curve_name, **src})
+                  width=520, open_spec={"kind": "fit", "curve": curve_name, **src})
     if residual_plot:
-        new.add_image("Residual vs. Independent Plot",
-                      fit.residual_plot(res, data.xtitle, data.ytitle), width=460,
+        new.add_graph("Residual vs. Independent Plot",
+                      rg.residual_graph(res, data.xtitle, data.ytitle), width=460,
                       group="Residual Plots")
-        new.add_image("Histogram of the Residual", _residual_histogram(res, yname),
+        new.add_graph("Histogram of the Residual", rg.residual_histogram_graph(res, yname),
                       width=460, group="Residual Plots")
     new.op = {"kind": "fit", "fit_kind": kind, "input": src, "curve": curve_name,
               "mode": report.op.get("mode", mode) if rerun else mode,
@@ -427,10 +414,10 @@ def multi_peak_fit(data: XYData, n_peaks: int | None, shape: str = "gauss",
                       for r in summary])
     xx = np.linspace(float(np.min(data.x)), float(np.max(data.x)), 400)
     comps = sig.peak_components(res, xx)
-    report.add_image("Fitted Curves Plot", fit.fit_plot(
+    report.add_graph("Fitted Curves Plot", rg.fit_graph(
         res, data.xtitle, data.ytitle, conf=False, grid=xx,
         components=[(f"Peak {i + 1}", c) for i, c in enumerate(comps)],
-        title=f"Multiple Peak Fit of {data.yname}"))
+        title=f"Multiple Peak Fit of {data.yname}"), width=520)
     curve = Worksheet(name=book.unique_sheet_name("MultiPeakFitCurve"), n_rows=len(xx))
     c = curve.add_column("X")
     c.long_name = "Independent Variable"

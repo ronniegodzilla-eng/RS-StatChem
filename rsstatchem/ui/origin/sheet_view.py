@@ -7,8 +7,9 @@ the numbered data rows, and the sheet tabs at the bottom. Every change goes thro
 recalculates F(x)= formulas and tells the main window so linked graphs refresh.
 
 Report sheets are shown by :class:`ReportView` (see :mod:`rsstatchem.ui.origin.report_view`):
-collapsible sections with copyable tables and embedded graphs, and the lock button for
-recalculation.
+collapsible sections with copyable tables and live embedded graphs, and the lock button for
+recalculation. Output columns of Statistics on Rows and Frequency Counts show the same lock
+in their column header (Origin's locked output columns); right-click it to recalculate.
 """
 from __future__ import annotations
 
@@ -23,9 +24,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHeaderView, QMe
                                QVBoxLayout, QWidget)
 
 from rsstatchem.ui.origin import formula as fx
-from rsstatchem.ui.origin.model import (DESIGNATIONS, LABEL_ROWS, ReportSheet, Workbook,
-                                        Worksheet, format_cell, parse_cell, to_float)
-from rsstatchem.ui.origin.report_view import ReportView, report_html  # noqa: F401
+from rsstatchem.ui.origin.icons import icon
+from rsstatchem.ui.origin.model import (DESIGNATIONS, LABEL_ROWS, RECALC_MODES, ReportSheet,
+                                        Workbook, Worksheet, format_cell, parse_cell,
+                                        to_float)
+from rsstatchem.ui.origin.report_view import (ReportView, lock_icon_name,  # noqa: F401
+                                              report_html)
+
+OP_TITLES = {"rows": "Statistics on Rows", "freq": "Frequency Counts"}
 
 SPARK_ROW = len(LABEL_ROWS)            # the Sparklines row, below F(x)=
 HEADER_ROWS = len(LABEL_ROWS) + 1
@@ -134,11 +140,22 @@ class SheetModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole and orientation == Qt.Orientation.Vertical:
             return int((Qt.AlignmentFlag.AlignLeft if section < HEADER_ROWS
                         else Qt.AlignmentFlag.AlignCenter) | Qt.AlignmentFlag.AlignVCenter)
+        if role == Qt.ItemDataRole.DecorationRole and \
+                orientation == Qt.Orientation.Horizontal:
+            op = self.ws.op_of(section)
+            return icon(lock_icon_name(op)) if op is not None else None
         if role == Qt.ItemDataRole.ToolTipRole and orientation == Qt.Orientation.Horizontal \
                 and section < len(self.ws.columns):
             col = self.ws.columns[section]
-            return f"{col.name}: {DESIGNATIONS[col.designation][0]}" + \
+            tip = f"{col.name}: {DESIGNATIONS[col.designation][0]}" + \
                 (f" — {col.long_name}" if col.long_name else "")
+            op = self.ws.op_of(section)
+            if op is not None:
+                tip += (f"\nOutput of {OP_TITLES.get(op.get('kind'), 'an analysis')} — "
+                        f"Recalculate: {RECALC_MODES.get(op.get('mode', 'none'), 'None')}" +
+                        (" (the source data changed)" if op.get("dirty") else "") +
+                        "; right-click for Recalculate / Change Parameters.")
+            return tip
         return None
 
     def flags(self, index):
@@ -699,6 +716,11 @@ class BookWindow(QWidget):
         menu.addAction("Delete Rows", self.delete_rows)
         menu.addAction("Clear", self.clear_selection)
         menu.exec(global_pos)
+
+    @staticmethod
+    def lock_icon(target) -> str:
+        """Icon name of the lock of a recalculable output (report or column operation)."""
+        return lock_icon_name(target.op if target is not None else None)
 
     def column_properties(self, col: int) -> None:
         if self.main is not None:

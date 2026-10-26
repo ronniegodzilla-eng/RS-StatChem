@@ -4,7 +4,8 @@ A matrix is a 2-D array of Z values (row 0 = first row = ``y1``) with a linear X
 coordinate mapping ``(x1, x2, y1, y2)``. Functions return new arrays / mappings:
 
 * :func:`evaluate` — Set Matrix Values: ``Mat = f(x, y, i, j)`` in Origin's syntax;
-* :func:`transpose`, :func:`flip`, :func:`rotate` — the geometry commands;
+* :func:`transpose`, :func:`flip`, :func:`rotate` — the geometry commands (Rotate90 remaps
+  each value's X/Y coordinates, see :func:`cell_coordinates`);
 * :func:`expand` (bilinear interpolation) and :func:`shrink` (block averages);
 * :func:`from_columns` (Worksheet > Convert to Matrix > Direct) and :func:`from_xyz`
   (XYZ Gridding, through :mod:`rsstatchem.core.graph.gridding`);
@@ -101,15 +102,46 @@ def flip(data: np.ndarray, mapping: Mapping, direction: str = "horizontal") \
 
 
 def rotate(data: np.ndarray, mapping: Mapping, angle: int = 90) -> tuple[np.ndarray, Mapping]:
-    """Rotate 90 (counter-clockwise, as Origin's Rotate90), -90/270 (clockwise) or 180."""
+    """Origin's Rotate90: 90 (counter-clockwise, ``ccw90``), 270 / -90 (clockwise, ``cw90``)
+    or 180 degrees.
+
+    The grid turns as it is shown in the matrix sheet (row 1 at the top, so cell (i, j) of a
+    counter-clockwise turn comes from (j, n_cols-1-i)), and the X/Y mapping is remapped so
+    that every value keeps a rotated coordinate: a value at (x, y) moves to the point
+    obtained by turning (x, y) by the same angle about the centre of the matrix
+    ((x1+x2)/2, (y1+y2)/2) in the sheet's frame. The new X range has the length of the old
+    Y range and vice versa, both centred on the same point, so the rotated matrix covers
+    the rotated rectangle — not merely the old ranges swapped (:func:`cell_coordinates`
+    gives the coordinates of every cell)."""
     angle = int(angle) % 360
     if angle not in (0, 90, 180, 270):
         raise MatrixError("Rotation must be a multiple of 90 degrees.")
-    x1, x2, y1, y2 = mapping
-    # rows run downward in the sheet (row 1 at the top), so rotate the displayed picture
+    x1, x2, y1, y2 = (float(v) for v in mapping)
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     out = np.rot90(np.asarray(data), k=angle // 90)
-    new_map = (y1, y2, x1, x2) if angle in (90, 270) else mapping
-    return out.copy(), new_map
+    if angle == 90:     # (x, y) -> (cx + (y - cy), cy - (x - cx))
+        new_map = (cx + y1 - cy, cx + y2 - cy, cy + cx - x2, cy + cx - x1)
+    elif angle == 270:  # (x, y) -> (cx - (y - cy), cy + (x - cx))
+        new_map = (cx + cy - y2, cx + cy - y1, cy - cx + x1, cy - cx + x2)
+    else:               # 180: (x, y) -> (2cx - x, 2cy - y) keeps the ranges
+        new_map = (x1, x2, y1, y2)
+    return out.copy(), tuple(_tidy(v) for v in new_map)
+
+
+def _tidy(v: float) -> float:
+    """Round away binary noise (2.9999999999999996) left by the centre arithmetic."""
+    r = round(float(v), 12)
+    return 0.0 if r == 0 else r
+
+
+def cell_coordinates(shape: tuple[int, int], mapping: Mapping) \
+        -> tuple[np.ndarray, np.ndarray]:
+    """(X, Y) coordinate grids of every cell of a matrix of ``shape`` with ``mapping``."""
+    rows, cols = shape
+    x1, x2, y1, y2 = mapping
+    xs = np.linspace(x1, x2, cols) if cols > 1 else np.array([x1], float)
+    ys = np.linspace(y1, y2, rows) if rows > 1 else np.array([y1], float)
+    return tuple(np.meshgrid(xs, ys))
 
 
 def expand(data: np.ndarray, col_factor: int = 2, row_factor: int = 2) -> np.ndarray:

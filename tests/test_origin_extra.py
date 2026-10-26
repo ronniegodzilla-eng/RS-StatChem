@@ -103,7 +103,7 @@ def test_matrix_operations():
     assert list(f[0]) == [3, 2, 1, 0]
     assert list(mx.flip(data, mapping, "vertical")[0][0]) == [8, 9, 10, 11]
     r, rm = mx.rotate(data, mapping, 90)
-    assert np.array_equal(r, np.rot90(data)) and rm == (10.0, 30.0, 0.0, 3.0)
+    assert np.array_equal(r, np.rot90(data)) and rm == (-8.5, 11.5, 18.5, 21.5)
     assert np.array_equal(mx.rotate(data, mapping, 180)[0], data[::-1, ::-1])
     e = mx.expand(data, 2, 2)
     assert e.shape == (5, 7) and e[0, 0] == 0 and e[0, 1] == pytest.approx(0.5) and \

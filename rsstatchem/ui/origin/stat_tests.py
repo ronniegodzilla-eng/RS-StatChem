@@ -6,14 +6,23 @@ notation (``[Book1]Sheet1!B`` or ``[Book1]Sheet1!B[3:10]``) and the options. It 
 report sheet into the book of the first input — Descriptive Statistics, Normality Test,
 Correlation, t-tests, ANOVA with means comparisons, nonparametric tests — and returns
 ``(report, results-log text)``. The report remembers the analysis in ``report.op`` so it can
-be recalculated when the source data change (:func:`run` with ``report=``).
+be recalculated when the source data change (:func:`run` with ``report=``). Statistics on
+Rows and Frequency Counts write worksheet columns instead and record themselves in the
+sheet's ``ops`` (Origin's lock on output columns) so they can be recalculated too. Report
+plots are live graph objects (:mod:`rsstatchem.ui.origin.report_graphs`).
 
 Numbers come from scipy / statsmodels and, for the means comparisons, from
-:func:`rsstatchem.core.stats.anova.posthoc` (Tukey, Bonferroni, Šidák, Scheffé, Fisher LSD).
+:func:`rsstatchem.core.stats.anova.posthoc` (Tukey, Bonferroni, Dunn-Šidák, Scheffé, Fisher
+LSD) plus Dunnett's many-to-one test (multivariate t, as scipy.stats.dunnett) and Holm's
+step-down Holm-Bonferroni / Holm-Šidák procedures. Two-Way ANOVA takes raw (one column per
+level combination) or indexed data, balanced or not, with Type I / II / III sums of squares.
+The Chen-Shapiro normality test uses the QH* statistic of Chen & Shapiro (1995) with a
+Monte Carlo p-value.
 """
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,9 +30,10 @@ from datetime import datetime
 import numpy as np
 from scipy import stats
 
-from rsstatchem.core.analysis.common import figure, num, png, pval
+from rsstatchem.core.analysis.common import num, pval
 from rsstatchem.core.stats.anova import posthoc
 from rsstatchem.core.stats.common import Group
+from rsstatchem.ui.origin import report_graphs as rg
 from rsstatchem.ui.origin.model import (ReportSheet, Workbook, Worksheet, jsonable,
                                         parse_range, row_window, rows_text, to_float)
 
@@ -136,18 +146,6 @@ def _decision(p: float, alpha: float, yes: str, no: str) -> str:
 
 def _level(alpha: float) -> str:
     return f"{alpha * 100:g}%"
-
-
-def _fig_png(draw, w: float = 5.0, h: float = 3.4) -> bytes:
-    fig = figure(w, h)
-    ax = fig.add_subplot(111)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        draw(ax)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(True)
-    ax.tick_params(direction="out", labelsize=8)
-    return png(fig)
 
 
 def _sort_levels(values: list[str]) -> list[str]:
@@ -277,20 +275,14 @@ def desc_stats(books: dict, settings: dict, report: ReportSheet | None = None,
     fresh.add_table("Descriptive Statistics", [""] + headers, rows)
     if settings.get("histogram"):
         for r in inputs:
-            v = r.finite
-            if len(v):
-                fresh.add_image(f"Histogram of {r.title}", _fig_png(lambda ax, v=v, r=r: (
-                    ax.hist(v, bins="auto", color="#e57373", edgecolor="#000", lw=0.6),
-                    ax.set_xlabel(r.column.axis_title), ax.set_ylabel("Counts"))),
-                    width=380, group="Histograms")
+            if len(r.finite):
+                fresh.add_graph(f"Histogram of {r.title}", rg.histogram_graph(
+                    r.finite, f"Histogram of {r.title}", r.column.axis_title), width=380,
+                    group="Histograms")
     if settings.get("box"):
-        data = [r.finite for r in inputs if len(r.finite)]
+        data = [(r.title, r.finite) for r in inputs if len(r.finite)]
         if data:
-            fresh.add_image("Box Chart", _fig_png(lambda ax: (
-                ax.boxplot(data, tick_labels=[r.title for r in inputs if len(r.finite)],
-                           patch_artist=True,
-                           boxprops={"facecolor": "#9ec2f0"}, medianprops={"color": "#000"}),
-                ax.set_ylabel("Value"))), width=420, group="Box Charts")
+            fresh.add_graph("Box Chart", rg.box_graph(data), width=420, group="Box Charts")
     report = _finish(report, fresh)
     text = f"{_stamp(first.book)}\nStatistics on Columns → [{first.book.name}]{report.name}"
     for r, d in zip(inputs, results):
@@ -304,9 +296,22 @@ ROW_QUANTITIES = {"mean": "Mean", "sd": "Standard Deviation", "se": "SE of Mean"
                   "max": "Maximum", "range": "Range"}
 
 
-def stats_on_rows(books: dict, settings: dict) -> tuple[Worksheet, list[int], str]:
+def _sheet_op(kind: str, settings: dict, mode: str, op: dict | None) -> dict:
+    """The recalculation record of an output-in-worksheet operation (kept on the sheet)."""
+    new = {"kind": kind, "settings": jsonable(settings),
+           "mode": op.get("mode", mode) if op else mode, "dirty": False}
+    if op is not None:
+        op.update(new)
+        return op
+    return new
+
+
+def stats_on_rows(books: dict, settings: dict, op: dict | None = None,
+                  mode: str = "manual") -> tuple[Worksheet, list[int], str]:
     """Statistics on Rows: append the chosen quantities as new columns of the source sheet
-    (one value per row across the input columns)."""
+    (one value per row across the input columns). The columns carry Origin's lock: the
+    operation is recorded in ``ws.ops`` and, with ``op`` (Recalculate), its output columns
+    are rewritten in place."""
     inputs = read_ranges(books, settings.get("ranges", []))
     ws = inputs[0].sheet
     if any(r.sheet is not ws for r in inputs):
@@ -314,6 +319,8 @@ def stats_on_rows(books: dict, settings: dict) -> tuple[Worksheet, list[int], st
     if len(inputs) < 2:
         raise StatError("Select two or more columns.")
     keys = [k for k in settings.get("quantities", ("mean", "sd", "n")) if k in ROW_QUANTITIES]
+    if not keys:
+        raise StatError("Select at least one quantity to compute.")
     n = max(len(r.values) for r in inputs)
     lo = (inputs[0].rows[0] - 1) if inputs[0].rows else 0
     m = np.full((n, len(inputs)), np.nan)
@@ -330,28 +337,44 @@ def stats_on_rows(books: dict, settings: dict) -> tuple[Worksheet, list[int], st
         out["se"] = out["sd"] / np.sqrt(cnt)
         out["range"] = out["max"] - out["min"]
     names = "".join(r.column.name for r in inputs)
+    old = [c for c in ((op or {}).get("outputs") or []) if c in ws.names()]
+    if op is not None:   # drop output columns no longer asked for
+        ws.delete_columns([ws.index_of(c) for c in old[len(keys):]])
+        old = old[:len(keys)]
     added = []
-    for k in keys:
-        col = ws.add_column("yEr" if k in ("sd", "se") else "Y")
+    for k_i, k in enumerate(keys):
+        if k_i < len(old):
+            col = ws.column(old[k_i])
+            col.designation = "yEr" if k in ("sd", "se") else "Y"
+        else:
+            col = ws.add_column("yEr" if k in ("sd", "se") else "Y")
         col.long_name, col.comments = ROW_QUANTITIES[k], f"{ROW_QUANTITIES[k]} of {names}"
-        idx = len(ws.columns) - 1
+        idx = ws.columns.index(col)
         vals = [None] * ws.n_rows
         for i, v in enumerate(out[k]):
             if lo + i < ws.n_rows and np.isfinite(v):
                 vals[lo + i] = float(v)
         ws.set_column_values(idx, vals)
         added.append(idx)
+    record = _sheet_op("rows", settings, mode, op)
+    record["outputs"] = [ws.columns[i].name for i in added]
+    if op is None:
+        ws.ops.append(record)
     return ws, added, (f"{_stamp(inputs[0].book)}\nStatistics on Rows of {names}: " +
                        ", ".join(ROW_QUANTITIES[k] for k in keys))
 
 
 # ====================================================================== frequency counts
-def frequency_counts(books: dict, settings: dict) -> tuple[Worksheet, str]:
+def frequency_counts(books: dict, settings: dict, out: Worksheet | None = None,
+                     mode: str = "manual") -> tuple[Worksheet, str]:
     """Statistics > Descriptive Statistics > Frequency Counts: a worksheet of bin centers,
-    counts, cumulative counts and relative frequencies (discrete counts for text data)."""
+    counts, cumulative counts and relative frequencies (discrete counts for text data).
+    The sheet records the operation (``ws.ops``, Origin's lock on its columns); with
+    ``out`` (Recalculate) that sheet is refilled in place."""
     r = read_range(books, settings.get("range", ""))
     book = r.book
-    out = Worksheet(name=book.unique_sheet_name("FreqCounts"))
+    sheet = Worksheet(name=out.name if out is not None else
+                      book.unique_sheet_name("FreqCounts"))
     discrete = r.column.is_text() or settings.get("discrete", False)
     if discrete:
         labels = [t for t in r.texts if t != ""]
@@ -362,56 +385,122 @@ def frequency_counts(books: dict, settings: dict) -> tuple[Worksheet, str]:
                 ("Percent", "Y", counts / total * 100),
                 ("Cumulative Count", "Y", np.cumsum(counts)),
                 ("Cumulative Percent", "Y", np.cumsum(counts) / total * 100)]
-        out.columns.clear()
-        out.set_rows(max(len(levels), 1))
+        sheet.columns.clear()
+        sheet.set_rows(max(len(levels), 1))
         for title, desig, vals in cols:
-            c = out.add_column("X" if title == "Data" else desig)
+            c = sheet.add_column("X" if title == "Data" else desig)
             c.long_name = title
-            out.set_column_values(len(out.columns) - 1, list(vals))
-        out.columns[0].designation = "X"
-        book.sheets.append(out)
-        return out, (f"{_stamp(book)}\nDiscrete Frequency of {r.text}: {len(levels)} "
-                     f"categories → [{book.name}]{out.name}")
-    v = r.finite
-    if len(v) == 0:
-        raise StatError(f"{r.text} has no numeric data.")
-    if settings.get("auto", True) or not settings.get("step"):
-        edges = np.histogram_bin_edges(v, bins="sturges")
-        step = float(edges[1] - edges[0]) if len(edges) > 1 else 1.0
-        lo, hi = float(edges[0]), float(edges[-1])
+            sheet.set_column_values(len(sheet.columns) - 1, list(vals))
+        sheet.columns[0].designation = "X"
+        text = (f"{_stamp(book)}\nDiscrete Frequency of {r.text}: {len(levels)} "
+                f"categories → [{book.name}]{sheet.name}")
     else:
-        lo, hi = float(settings.get("from", v.min())), float(settings.get("to", v.max()))
-        step = float(settings["step"])
-        if step <= 0 or hi <= lo:
-            raise StatError("Use From < To and a positive Step Size.")
-    nb = max(1, int(math.ceil((hi - lo) / step - 1e-9)))
-    edges = lo + step * np.arange(nb + 1)
-    counts, _ = np.histogram(v[(v >= lo) & (v <= edges[-1])], bins=edges)
-    counts = counts.astype(float)
-    total = float(len(v))
-    centers = (edges[:-1] + edges[1:]) / 2
-    cols = [("Bin Center", "X", centers), ("Bin Begin", "Y", edges[:-1]),
-            ("Bin End", "Y", edges[1:]), ("Count", "Y", counts),
-            ("Cumulative Count", "Y", np.cumsum(counts)),
-            ("Relative Frequency", "Y", counts / total),
-            ("Cumulative Frequency", "Y", np.cumsum(counts) / total)]
-    out.set_rows(len(centers))
-    for title, desig, vals in cols:
-        c = out.add_column(desig)
-        c.long_name = title
-        out.set_column_values(len(out.columns) - 1, list(vals))
-    out.columns[3].comments = f"counts of {r.text}"
-    book.sheets.append(out)
-    outside = int(np.sum((v < lo) | (v > edges[-1])))
-    return out, (f"{_stamp(book)}\nFrequency Counts of {r.text}: {nb} bins of width "
-                 f"{num(step)} from {num(lo)} → [{book.name}]{out.name}" +
-                 (f" ({outside} values outside the bins)" if outside else ""))
+        v = r.finite
+        if len(v) == 0:
+            raise StatError(f"{r.text} has no numeric data.")
+        if settings.get("auto", True) or not settings.get("step"):
+            edges = np.histogram_bin_edges(v, bins="sturges")
+            step = float(edges[1] - edges[0]) if len(edges) > 1 else 1.0
+            lo, hi = float(edges[0]), float(edges[-1])
+        else:
+            lo, hi = float(settings.get("from", v.min())), float(settings.get("to", v.max()))
+            step = float(settings["step"])
+            if step <= 0 or hi <= lo:
+                raise StatError("Use From < To and a positive Step Size.")
+        nb = max(1, int(math.ceil((hi - lo) / step - 1e-9)))
+        edges = lo + step * np.arange(nb + 1)
+        counts, _ = np.histogram(v[(v >= lo) & (v <= edges[-1])], bins=edges)
+        counts = counts.astype(float)
+        total = float(len(v))
+        centers = (edges[:-1] + edges[1:]) / 2
+        cols = [("Bin Center", "X", centers), ("Bin Begin", "Y", edges[:-1]),
+                ("Bin End", "Y", edges[1:]), ("Count", "Y", counts),
+                ("Cumulative Count", "Y", np.cumsum(counts)),
+                ("Relative Frequency", "Y", counts / total),
+                ("Cumulative Frequency", "Y", np.cumsum(counts) / total)]
+        sheet.set_rows(len(centers))
+        for title, desig, vals in cols:
+            c = sheet.add_column(desig)
+            c.long_name = title
+            sheet.set_column_values(len(sheet.columns) - 1, list(vals))
+        sheet.columns[3].comments = f"counts of {r.text}"
+        outside = int(np.sum((v < lo) | (v > edges[-1])))
+        text = (f"{_stamp(book)}\nFrequency Counts of {r.text}: {nb} bins of width "
+                f"{num(step)} from {num(lo)} → [{book.name}]{sheet.name}" +
+                (f" ({outside} values outside the bins)" if outside else ""))
+    old = out.ops[0] if out is not None and out.ops else None
+    record = _sheet_op("freq", settings, mode, old)
+    record["outputs"] = None   # the whole sheet
+    if out is None:
+        sheet.ops = [record]
+        book.sheets.append(sheet)
+        return sheet, text
+    # keep the sheet object (graphs link to its name and columns)
+    out.columns, out.n_rows, out.ops = sheet.columns, sheet.n_rows, [record]
+    return out, text
 
 
 # ====================================================================== normality
 NORMALITY_TESTS = {"shapiro": "Shapiro-Wilk", "ks": "Kolmogorov-Smirnov",
                    "lilliefors": "Lilliefors", "anderson": "Anderson-Darling",
-                   "dagostino": "D'Agostino-K squared", "jb": "Jarque-Bera"}
+                   "dagostino": "D'Agostino-K squared", "jb": "Jarque-Bera",
+                   "chen_shapiro": "Chen-Shapiro"}
+CHEN_SHAPIRO_REPLICATES = 10000
+_CS_NULL: dict[int, np.ndarray] = {}
+
+
+def chen_shapiro_statistic(v: np.ndarray) -> float:
+    """Chen & Shapiro's normalized-spacings statistic QH* = √n (1 − QH), with
+    QH = Σ (x₍ᵢ₊₁₎ − x₍ᵢ₎) / (Hᵢ₊₁ − Hᵢ) / ((n − 1) s) and Hᵢ = Φ⁻¹((i − 0.375)/(n + 0.25))
+    (Chen, L. & Shapiro, S. S. 1995, "An alternative test for normality based on normalized
+    spacings", J. Statist. Comput. Simul. 53, 269–287; the form used in Romão, Delgado &
+    Costa 2010, J. Statist. Comput. Simul. 80, 545–591). Large values reject normality."""
+    x = np.sort(np.asarray(v, float))
+    n = len(x)
+    s = x.std(ddof=1)
+    if n < 3 or not s > 0:
+        return math.nan
+    h = stats.norm.ppf((np.arange(1, n + 1) - 0.375) / (n + 0.25))
+    qh = float(np.sum(np.diff(x) / np.diff(h)) / ((n - 1) * s))
+    return math.sqrt(n) * (1.0 - qh)
+
+
+def _chen_shapiro_null(n: int) -> np.ndarray:
+    """Null distribution of QH* for sample size ``n`` by Monte Carlo (QH* does not depend
+    on the mean or the variance, so standard normal samples give the exact null law up to
+    simulation error); cached per ``n`` with a fixed seed, so p-values are reproducible."""
+    if n not in _CS_NULL:
+        rng = np.random.default_rng(1995 + n)
+        h = stats.norm.ppf((np.arange(1, n + 1) - 0.375) / (n + 0.25))
+        dh = np.diff(h)
+        out = []
+        chunk = max(1, min(CHEN_SHAPIRO_REPLICATES, 2_000_000 // n))
+        left = CHEN_SHAPIRO_REPLICATES
+        while left > 0:
+            m = min(chunk, left)
+            x = np.sort(rng.standard_normal((m, n)), axis=1)
+            qh = np.sum(np.diff(x, axis=1) / dh, axis=1) / ((n - 1) * x.std(axis=1, ddof=1))
+            out.append(math.sqrt(n) * (1.0 - qh))
+            left -= m
+        _CS_NULL[n] = np.sort(np.concatenate(out))
+    return _CS_NULL[n]
+
+
+def chen_shapiro(v: np.ndarray) -> tuple[float, float]:
+    """(QH*, Monte Carlo p-value) of the Chen-Shapiro test (3 ≤ n ≤ 5000)."""
+    v = np.asarray(v, float)
+    n = len(v)
+    stat = chen_shapiro_statistic(v)
+    if not np.isfinite(stat) or n > 5000:
+        return math.nan, math.nan
+    null = _chen_shapiro_null(n)
+    exceed = len(null) - np.searchsorted(null, stat - 1e-12, side="left")
+    return stat, float((exceed + 1) / (len(null) + 1))
+
+
+def chen_shapiro_critical(n: int, alpha: float) -> float:
+    """Upper ``alpha`` critical value of QH* (Monte Carlo)."""
+    return float(np.quantile(_chen_shapiro_null(n), 1 - alpha))
 
 
 def normality_values(v: np.ndarray, test: str) -> tuple[float, float]:
@@ -455,6 +544,8 @@ def normality_values(v: np.ndarray, test: str) -> tuple[float, float]:
                 return math.nan, math.nan
             res = stats.jarque_bera(v)
             return float(res.statistic), float(res.pvalue)
+        if test == "chen_shapiro":
+            return chen_shapiro(v)
     raise StatError(f"Unknown normality test {test}.")
 
 
@@ -488,23 +579,22 @@ def normality(books: dict, settings: dict, report: ReportSheet | None = None,
                          _decision(p, alpha, "Reject normality", "Can't reject normality")])
             lines.append(f"  {NORMALITY_TESTS[t]:<22} {r.title}: statistic = {num(s, 5)}, "
                          f"p = {pval(p)}")
+        notes = [f"At the {num(alpha)} level, the data were significantly drawn from "
+                 "a normally distributed population unless the decision rejects normality."]
+        if t == "chen_shapiro":
+            notes.append("Statistic QH* = √n(1 − QH) of Chen & Shapiro (1995), normalized "
+                         "spacings with Blom scores; the p-value comes from a Monte Carlo "
+                         f"null distribution ({CHEN_SHAPIRO_REPLICATES:,} normal samples of "
+                         "the same size).")
         fresh.add_table(NORMALITY_TESTS[t], ["", "DF", "Statistic", "p-value",
                                              f"Decision at level({_level(alpha)})"], rows,
-                        [f"At the {num(alpha)} level, the data were significantly drawn from "
-                         "a normally distributed population unless the decision rejects "
-                         "normality."])
+                        notes)
     if settings.get("qq", True):
         for r in inputs:
-            v = r.finite
-            if len(v) >= 3:
-                def draw(ax, v=v):
-                    (osm, osr), (slope, icpt, _) = stats.probplot(v, dist="norm")
-                    ax.plot(osm, osr, "s", ms=4, mfc="#1f5fbf", mec="#1f5fbf")
-                    ax.plot(osm, slope * np.asarray(osm) + icpt, "-", color="#d62728", lw=1.2)
-                    ax.set_xlabel("Theoretical Quantiles (Normal)")
-                    ax.set_ylabel(r.column.axis_title)
-                fresh.add_image(f"Q-Q Plot of {r.title}", _fig_png(draw), width=380,
-                                group="Q-Q Plots")
+            if len(r.finite) >= 3:
+                fresh.add_graph(f"Q-Q Plot of {r.title}", rg.qq_graph(
+                    r.finite, f"Q-Q Plot of {r.title}", r.column.axis_title), width=380,
+                    group="Q-Q Plots")
     report = _finish(report, fresh)
     return report, f"{_stamp(first.book)}\nNormality Test → [{first.book.name}]{report.name}\n" \
         + "\n".join(lines)
@@ -582,10 +672,9 @@ def correlation(books: dict, settings: dict, report: ReportSheet | None = None,
     if settings.get("scatter") and len(inputs) == 2:
         a, b = data[0], data[1]
         ok = np.isfinite(a) & np.isfinite(b)
-        fresh.add_image("Scatter Plot", _fig_png(lambda ax: (
-            ax.plot(a[ok], b[ok], "s", ms=4, color="#1f5fbf"),
-            ax.set_xlabel(inputs[0].column.axis_title),
-            ax.set_ylabel(inputs[1].column.axis_title))), width=380)
+        fresh.add_graph("Scatter Plot", rg.scatter_graph(
+            a[ok], b[ok], "Scatter Plot", inputs[0].column.axis_title,
+            inputs[1].column.axis_title), width=380)
     report = _finish(report, fresh)
     return report, f"{_stamp(first.book)}\nCorrelation Coefficient → " \
                    f"[{first.book.name}]{report.name}\n" + "\n".join(lines)
@@ -754,13 +843,113 @@ def paired_t(books: dict, settings: dict, report: ReportSheet | None = None,
 
 
 # ====================================================================== ANOVA
-MEANS_METHODS = {"tukey": "Tukey", "bonferroni": "Bonferroni", "sidak": "Sidak",
-                 "scheffe": "Scheffe", "lsd": "Fisher LSD"}
+MEANS_METHODS = {"tukey": "Tukey", "bonferroni": "Bonferroni", "sidak": "Dunn-Sidak",
+                 "lsd": "Fisher LSD", "scheffe": "Scheffe", "dunnett": "Dunnett",
+                 "holm_bonferroni": "Holm-Bonferroni", "holm_sidak": "Holm-Sidak"}
+DUNNETT_SEED = 20240521   # fixed: the multivariate t integration is randomized QMC
+
+
+def _pairs(gs: list[Group], mse: float, df_error: float):
+    """(i, j, mean diff, SE, t, unadjusted two-sided p) for i > j, Origin's order."""
+    out = []
+    for i in range(len(gs)):
+        for j in range(i):
+            d = float(gs[i].data.mean() - gs[j].data.mean())
+            se = math.sqrt(mse * (1 / gs[i].n + 1 / gs[j].n))
+            t = d / se if se > 0 else math.nan
+            out.append((i, j, d, se, t, float(2 * stats.t.sf(abs(t), df_error))))
+    return out
+
+
+def holm_rows(groups: list[tuple[str, np.ndarray]], method: str, mse: float,
+              df_error: float, alpha: float) -> list[list[str]]:
+    """Holm-Bonferroni / Holm-Sidak step-down comparisons of all pairs (pooled MSE t tests,
+    as Origin): the p-values are ranked; the i-th smallest (of m) is tested at
+    α/(m − i + 1) (Holm-Bonferroni) or 1 − (1 − α)^(1/(m − i + 1)) (Holm-Sidak), and every
+    comparison after the first non-significant one is non-significant. "Alpha" is the
+    step's critical level and LCL/UCL the interval at that level."""
+    gs = [Group(k, name, v) for k, (name, v) in enumerate(groups)]
+    pairs = _pairs(gs, mse, df_error)
+    m = len(pairs)
+    order = sorted(range(m), key=lambda k: (pairs[k][5], k))
+    level, sig = {}, {}
+    still = True
+    for rank, k in enumerate(order):
+        left = m - rank
+        a = alpha / left if method == "holm_bonferroni" else 1 - (1 - alpha) ** (1 / left)
+        level[k] = a
+        still = still and pairs[k][5] < a
+        sig[k] = still
+    rows = []
+    for k, (i, j, d, se, t, p) in enumerate(pairs):
+        crit = stats.t.ppf(1 - level[k] / 2, df_error)
+        rows.append([f"{gs[i].label}  {gs[j].label}", num(d), num(se), num(t, 5), pval(p),
+                     num(level[k], 5), "1" if sig[k] else "0", num(d - crit * se),
+                     num(d + crit * se)])
+    return rows
+
+
+def _dunnett_cdf(c: np.ndarray, rho: np.ndarray, df: float) -> np.ndarray:
+    """P(|T_j| < c for all j) of the multivariate t with correlation ``rho``, for every
+    value of ``c`` (Dunnett 1955; integrated like scipy.stats.dunnett)."""
+    c = np.atleast_1d(np.asarray(c, float))
+    m = rho.shape[0]
+    if m == 1:
+        return 1 - 2 * stats.t.sf(np.abs(c), df)
+    mvt = stats.multivariate_t(shape=rho, df=df, seed=DUNNETT_SEED)
+    x = np.repeat(np.abs(c)[:, None], m, axis=1)
+    return np.atleast_1d(mvt.cdf(x, lower_limit=-x))
+
+
+def dunnett_values(groups: list[tuple[str, np.ndarray]], control: int, mse: float,
+                   df_error: float, alpha: float) -> list[tuple]:
+    """Dunnett's two-sided many-to-one comparisons against group ``control`` with the pooled
+    MSE: ``(i, mean diff, SE, t, p, LCL, UCL)`` for every other group."""
+    others = [i for i in range(len(groups)) if i != control]
+    n0 = len(groups[control][1])
+    ns = np.array([len(groups[i][1]) for i in others], float)
+    r = n0 / ns + 1
+    rho = 1 / np.sqrt(r[:, None] * r[None, :])
+    np.fill_diagonal(rho, 1.0)
+    m0 = float(np.mean(groups[control][1]))
+    diffs = np.array([float(np.mean(groups[i][1])) - m0 for i in others])
+    se = np.sqrt(mse * (1 / ns + 1 / n0))
+    t = diffs / se
+    p = np.clip(1 - _dunnett_cdf(t, rho, df_error), 0.0, 1.0)
+    from scipy.optimize import brentq
+    f = lambda c: 1 - _dunnett_cdf(c, rho, df_error)[0] - alpha   # noqa: E731
+    hi = 3.0
+    while f(hi) > 0 and hi < 200:
+        hi *= 2
+    crit = brentq(f, 1e-6, hi, xtol=1e-6)
+    return [(i, float(diffs[k]), float(se[k]), float(t[k]), float(p[k]),
+             float(diffs[k] - crit * se[k]), float(diffs[k] + crit * se[k]))
+            for k, i in enumerate(others)]
+
+
+def control_index(groups: list[tuple[str, np.ndarray]], control: str | None) -> int:
+    """Index of the Dunnett control level (by name; the first level when blank)."""
+    if control:
+        for k, (name, _) in enumerate(groups):
+            if str(name) == str(control).strip():
+                return k
+        raise StatError(f"There is no level “{control}” for the Dunnett control "
+                        f"({', '.join(str(n) for n, _ in groups)}).")
+    return 0
 
 
 def means_comparison_rows(groups: list[tuple[str, np.ndarray]], method: str, mse: float,
-                          df_error: float, alpha: float) -> list[list[str]]:
+                          df_error: float, alpha: float, control: str | None = None) \
+        -> list[list[str]]:
     """Origin's Means Comparisons table rows ("B A" = mean of B − mean of A)."""
+    if method in ("holm_bonferroni", "holm_sidak"):
+        return holm_rows(groups, method, mse, df_error, alpha)
+    if method == "dunnett":
+        c = control_index(groups, control)
+        return [[f"{groups[i][0]}  {groups[c][0]}", num(d), num(se), num(t, 5), pval(p),
+                 num(alpha), "1" if p < alpha else "0", num(lo), num(hi)]
+                for i, d, se, t, p, lo, hi in dunnett_values(groups, c, mse, df_error,
+                                                             alpha)]
     gs = [Group(k, name, v) for k, (name, v) in enumerate(groups)]
     comps = {(i, j): (d, se, p, lo, hi) for i, j, d, se, p, lo, hi in
              posthoc(gs, method, mse, df_error, 1 - alpha)}
@@ -775,30 +964,25 @@ def means_comparison_rows(groups: list[tuple[str, np.ndarray]], method: str, mse
 
 
 def _means_tables(fresh: ReportSheet, groups, methods, mse, df_error, alpha,
-                  factor: str = "") -> None:
+                  factor: str = "", control: str | None = None) -> None:
     for m in methods:
         stat = "q Value" if m == "tukey" else "t Value"
+        notes = [f"Sig equals 1 indicates that the difference of the means is "
+                 f"significant at the {num(alpha)} level.",
+                 "Sig equals 0 indicates that the difference of the means is not "
+                 f"significant at the {num(alpha)} level."]
+        if m == "dunnett":
+            c = control_index(groups, control)
+            notes.insert(0, f"Each level is compared with the control level "
+                            f"{groups[c][0]} (two-sided Dunnett test).")
+        elif m.startswith("holm"):
+            notes.insert(0, "Prob is the unadjusted p-value; Alpha is the step-down "
+                            "critical level of that comparison (Holm's sequential "
+                            "procedure).")
         fresh.add_table(f"{MEANS_METHODS[m]} Test" + (f" ({factor})" if factor else ""),
                         ["", "MeanDiff", "SEM", stat, "Prob", "Alpha", "Sig", "LCL", "UCL"],
-                        means_comparison_rows(groups, m, mse, df_error, alpha),
-                        [f"Sig equals 1 indicates that the difference of the means is "
-                         f"significant at the {num(alpha)} level.",
-                         "Sig equals 0 indicates that the difference of the means is not "
-                         f"significant at the {num(alpha)} level."],
-                        group="Means Comparisons")
-
-
-def _means_plot(groups, alpha: float) -> bytes:
-    def draw(ax):
-        names = [g for g, _ in groups]
-        means = [v.mean() for _, v in groups]
-        se = [v.std(ddof=1) / math.sqrt(len(v)) if len(v) > 1 else 0 for _, v in groups]
-        ax.errorbar(range(len(groups)), means, yerr=se, fmt="s-", color="#1f1f1f",
-                    mfc="#d62728", capsize=4, lw=1)
-        ax.set_xticks(range(len(groups)), names)
-        ax.set_ylabel("Mean ± SE")
-        ax.margins(x=0.15)
-    return _fig_png(draw, 4.8, 3.2)
+                        means_comparison_rows(groups, m, mse, df_error, alpha, control),
+                        notes, group="Means Comparisons")
 
 
 def one_way_anova(books: dict, settings: dict, report: ReportSheet | None = None,
@@ -834,7 +1018,8 @@ def one_way_anova(books: dict, settings: dict, report: ReportSheet | None = None
     fresh.add_table("Fit Statistics", ["R-Square", "Coeff Var", "Root MSE", "Data Mean"],
                     [[num(r2), num(math.sqrt(mse) / grand if grand else math.nan),
                       num(math.sqrt(mse)), num(grand)]])
-    _means_tables(fresh, groups, methods, mse, df_w, alpha)
+    _means_tables(fresh, groups, methods, mse, df_w, alpha,
+                  control=settings.get("control") or None)
     homog = settings.get("homogeneity", "levene")
     if homog != "none":
         center = "median" if homog == "brown_forsythe" else "mean"
@@ -846,51 +1031,133 @@ def one_way_anova(books: dict, settings: dict, report: ReportSheet | None = None
                           pval(ph), _decision(ph, alpha, "Variances differ",
                                               "Equal variances")]])
     if settings.get("means_plot", True):
-        fresh.add_image("Means Plot", _means_plot(groups, alpha), width=420)
+        fresh.add_graph("Means Plot", rg.means_graph(groups), width=420)
     report = _finish(report, fresh)
     return report, f"{_stamp(first.book)}\nOne-Way ANOVA: F({df_b}, {df_w}) = {num(f, 5)}, " \
                    f"p = {pval(p)} → [{first.book.name}]{report.name}"
 
 
-def two_way_anova(books: dict, settings: dict, report: ReportSheet | None = None,
-                  mode: str = "manual") -> tuple[ReportSheet, str]:
-    """Two-Way ANOVA (indexed data, Type III sums of squares as in Origin)."""
-    import pandas as pd
-    import statsmodels.formula.api as smf
-    from statsmodels.stats.anova import anova_lm
+SS_TYPES = {"3": "Type III", "2": "Type II", "1": "Type I (sequential)"}
 
+
+def level_names(text: str, n: int, prefix: str) -> list[str]:
+    """Level names typed as "Male, Female" (missing ones become A1, A2…)."""
+    names = [t.strip() for t in re.split(r"[,;\t]", text or "") if t.strip()]
+    names = names[:n]
+    used = set(names)
+    k = len(names)
+    while len(names) < n:
+        k += 1
+        cand = f"{prefix}{k}"
+        if cand not in used:
+            names.append(cand)
+    if len(set(names)) != len(names):
+        raise StatError(f"Level names must be different ({', '.join(names)}).")
+    return names
+
+
+@dataclass
+class TwoWayData:
+    inputs: list[RangeData]
+    rows: list[tuple[str, str, float]]   # (level of A, level of B, response)
+    a_title: str
+    b_title: str
+    levels_a: list[str]
+    levels_b: list[str]
+    data_title: str
+    raw: bool
+
+
+def two_way_data(books: dict, settings: dict) -> TwoWayData:
+    """The observations of a Two-Way ANOVA from Origin's two input forms.
+
+    **Raw**: one column per factor-level combination, Factor A outermost — with levels
+    A1, A2 of A and B1, B2, B3 of B the ranges are A1B1, A1B2, A1B3, A2B1, A2B2, A2B3 (Origin's
+    raw layout, e.g. Male SV, Male LV, Male Nor, Female SV…); the factor names, numbers of
+    levels and level names come from the dialog. Columns may have different lengths
+    (unbalanced design). **Indexed**: a data column and two factor columns."""
+    if settings.get("form", "indexed") == "raw":
+        inputs = read_ranges(books, settings.get("ranges", []))
+        na, nb = int(settings.get("levels_a", 2)), int(settings.get("levels_b", 2))
+        if na < 2 or nb < 2:
+            raise StatError("Each factor needs at least two levels.")
+        if len(inputs) != na * nb:
+            raise StatError(f"Raw data need one column per level combination: {na} × {nb} = "
+                            f"{na * nb} ranges (got {len(inputs)}).")
+        a_title = (settings.get("name_a") or "Factor A").strip()
+        b_title = (settings.get("name_b") or "Factor B").strip()
+        la = level_names(settings.get("names_a", ""), na, "A")
+        lb = level_names(settings.get("names_b", ""), nb, "B")
+        rows = [(la[k // nb], lb[k % nb], float(v)) for k, r in enumerate(inputs)
+                for v in r.finite]
+        titles = {r.column.long_name for r in inputs if r.column.long_name}
+        return TwoWayData(inputs, rows, a_title, b_title, la, lb,
+                          titles.pop() if len(titles) == 1 else "Data", True)
     data = read_range(books, settings.get("data", ""))
     fa = read_range(books, settings.get("factor_a", ""))
     fb = read_range(books, settings.get("factor_b", ""))
     n = min(len(data.values), len(fa.texts), len(fb.texts))
-    rows = [(fa.texts[i], fb.texts[i], data.values[i]) for i in range(n)
+    rows = [(fa.texts[i], fb.texts[i], float(data.values[i])) for i in range(n)
             if fa.texts[i] != "" and fb.texts[i] != "" and np.isfinite(data.values[i])]
-    if len(rows) < 4:
+    return TwoWayData([data, fa, fb], rows, fa.title, fb.title,
+                      _sort_levels([r[0] for r in rows]), _sort_levels([r[1] for r in rows]),
+                      data.title, False)
+
+
+def two_way_anova(books: dict, settings: dict, report: ReportSheet | None = None,
+                  mode: str = "manual") -> tuple[ReportSheet, str]:
+    """Two-Way ANOVA of raw or indexed data, balanced or unbalanced, with Type I, II or III
+    sums of squares (Origin uses Type III; statsmodels ``anova_lm`` with sum-to-zero
+    contrasts gives the numbers)."""
+    import pandas as pd
+    import statsmodels.formula.api as smf
+    from statsmodels.stats.anova import anova_lm
+
+    tw = two_way_data(books, settings)
+    if len(tw.rows) < 4:
         raise StatError("Two-Way ANOVA needs data with two grouping columns.")
-    frame = pd.DataFrame(rows, columns=["A", "B", "y"])
-    la, lb = _sort_levels(list(frame.A)), _sort_levels(list(frame.B))
+    frame = pd.DataFrame(tw.rows, columns=["A", "B", "y"])
+    la, lb = [lv for lv in tw.levels_a if (frame.A == lv).any()], \
+        [lv for lv in tw.levels_b if (frame.B == lv).any()]
     if len(la) < 2 or len(lb) < 2:
         raise StatError("Each factor needs at least two levels.")
     interaction = settings.get("interaction", True)
     alpha = float(settings.get("alpha", 0.05))
+    ss_type = str(settings.get("ss", "3"))
+    if ss_type not in SS_TYPES:
+        raise StatError(f"Unknown type of sums of squares {ss_type}.")
     methods = [m for m in settings.get("means", ["tukey"]) if m in MEANS_METHODS]
+    counts = frame.groupby(["A", "B"]).size()
+    if interaction and len(counts) < len(la) * len(lb):
+        missing = [f"{a} {b}" for a in la for b in lb if (a, b) not in counts.index]
+        raise StatError("Some level combinations have no data (" + ", ".join(missing) +
+                        "): turn off Interactions to fit the main effects only.")
+    balanced = counts.nunique() == 1 and len(counts) == len(la) * len(lb)
     rhs = "C(A, Sum) * C(B, Sum)" if interaction else "C(A, Sum) + C(B, Sum)"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = smf.ols(f"y ~ {rhs}", data=frame).fit()
-        table = anova_lm(model, typ=3)
+        table = anova_lm(model, typ=int(ss_type))
     df_e, ss_e = float(model.df_resid), float(model.ssr)
     if df_e <= 0:
         raise StatError("No degrees of freedom for error: each cell needs replicates "
                         "(or turn off the interaction).")
     mse = ss_e / df_e
-    an, bn = fa.title, fb.title
+    an, bn = tw.a_title, tw.b_title
     names = {"C(A, Sum)": an, "C(B, Sum)": bn, "C(A, Sum):C(B, Sum)": f"{an} * {bn}"}
-    report, fresh = _new_report(data, f"Two-Way ANOVA of {data.text}", "ANOVA2Way", report,
-                                "anova2", settings, mode)
-    _notes(fresh, "Two-Way ANOVA", [data, fa, fb],
-           [["Interactions", "Yes" if interaction else "No"],
-            ["Sums of Squares", "Type III"], ["Significance Level", num(alpha)]])
+    first = tw.inputs[0]
+    report, fresh = _new_report(first, f"Two-Way ANOVA of {first.text}" +
+                                (" …" if tw.raw and len(tw.inputs) > 1 else ""),
+                                "ANOVA2Way", report, "anova2", settings, mode)
+    extra = [["Data Form", "Raw" if tw.raw else "Indexed"]]
+    if tw.raw:
+        extra += [[f"{an} Levels", ", ".join(tw.levels_a)],
+                  [f"{bn} Levels", ", ".join(tw.levels_b)]]
+    _notes(fresh, "Two-Way ANOVA", tw.inputs, extra + [
+        ["Interactions", "Yes" if interaction else "No"],
+        ["Sums of Squares", SS_TYPES[ss_type]],
+        ["Design", "Balanced" if balanced else "Unbalanced"],
+        ["Significance Level", num(alpha)]])
     desc = []
     for a_ in la:
         for b_ in lb:
@@ -917,30 +1184,30 @@ def two_way_anova(books: dict, settings: dict, report: ReportSheet | None = None
                   pval(float(stats.f.sf(f_m, df_model_total, df_e)))],
                  ["Error", num(df_e), num(ss_e), num(mse), "", ""],
                  ["Corrected Total", num(len(frame) - 1), num(ss_tot), "", "", ""]]
+    notes = [f"At the {num(alpha)} level, a term with Prob>F < {num(alpha)} has a "
+             "significant effect."]
+    if not balanced:
+        notes.append(f"Unbalanced design: {SS_TYPES[ss_type]} sums of squares" +
+                     (" depend on the order of the terms." if ss_type == "1" else "."))
     fresh.add_table("Overall ANOVA", ["", "DF", "Sum of Squares", "Mean Square", "F Value",
-                                      "Prob>F"], out_rows,
-                    [f"At the {num(alpha)} level, a term with Prob>F < {num(alpha)} has a "
-                     "significant effect."])
+                                      "Prob>F"], out_rows, notes)
     fresh.add_table("Fit Statistics", ["R-Square", "Coeff Var", "Root MSE", "Data Mean"],
                     [[num(ss_model_total / ss_tot if ss_tot else math.nan),
                       num(math.sqrt(mse) / frame.y.mean() if frame.y.mean() else math.nan),
                       num(math.sqrt(mse)), num(frame.y.mean())]])
+    control = settings.get("control") or None
     for title, col, levels in ((an, "A", la), (bn, "B", lb)):
         groups = [(lv, frame.y[frame[col] == lv].to_numpy(float)) for lv in levels]
-        _means_tables(fresh, groups, methods, mse, df_e, alpha, title)
+        _means_tables(fresh, groups, methods, mse, df_e, alpha, title,
+                      control if control in levels else None)
     if settings.get("means_plot", True):
-        def draw(ax):
-            for k, b_ in enumerate(lb):
-                means = [frame.y[(frame.A == a_) & (frame.B == b_)].mean() for a_ in la]
-                ax.plot(range(len(la)), means, "s-", label=f"{bn} = {b_}", lw=1.2, ms=5)
-            ax.set_xticks(range(len(la)), la)
-            ax.set_xlabel(an)
-            ax.set_ylabel(f"Mean of {data.title}")
-            ax.legend(fontsize=7, frameon=False)
-        fresh.add_image("Interaction Plot", _fig_png(draw, 4.8, 3.2), width=420)
+        means = np.array([[frame.y[(frame.A == a_) & (frame.B == b_)].mean() for b_ in lb]
+                          for a_ in la], float)
+        fresh.add_graph("Interaction Plot", rg.interaction_graph(la, lb, means, an, bn,
+                                                                 tw.data_title), width=420)
     report = _finish(report, fresh)
-    return report, f"{_stamp(data.book)}\nTwo-Way ANOVA → [{data.book.name}]{report.name}\n" \
-        + "\n".join(lines)
+    return report, f"{_stamp(first.book)}\nTwo-Way ANOVA ({SS_TYPES[ss_type]}) → " \
+                   f"[{first.book.name}]{report.name}\n" + "\n".join(lines)
 
 
 # ====================================================================== nonparametric
