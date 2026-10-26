@@ -105,7 +105,11 @@ jobs:
           RSSTATCHEM_SELFTEST_CDK: bundled     # CDK logP must work with the bundled Java
         run: |
           dist/RS-StatChem.app/Contents/MacOS/RS-StatChem --selftest
-          dist/RS-StatChem.app/Contents/MacOS/RS-StatChem --check-update --update-url=https://api.github.com/repos/cli/cli/releases/latest
+          # HTTPS from the packaged app (certifi bundle): any HTTP answer proves TLS works; the
+          # shared runners often hit GitHub's anonymous API rate limit (HTTP 403/429)
+          out="$(dist/RS-StatChem.app/Contents/MacOS/RS-StatChem --check-update --update-url=https://api.github.com/repos/cli/cli/releases/latest)" && code=0 || code=$?
+          echo "$out"
+          if [ "$code" -ne 0 ] && ! grep -q "GitHub answered HTTP" <<<"$out"; then exit "$code"; fi
 
       - name: Smoke-test the packaged app (Windows)
         if: runner.os == 'Windows'
