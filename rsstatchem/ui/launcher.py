@@ -9,7 +9,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 
-from rsstatchem import APP_NAME, __version__
+from rsstatchem import APP_NAME, COPYRIGHT, __version__
 from rsstatchem.paths import resource
 from rsstatchem.ui.modules import MODULES, module_for_path, open_module, open_path
 
@@ -113,6 +113,7 @@ class LauncherWindow(QWidget):
     QLabel#tileStyle {{ color: {R}; font-size: 9pt; font-weight: bold; }}
     QLabel#tileText {{ color: #555555; font-size: 9.5pt; }}
     QLabel#tileKey {{ color: #B0B0B0; font-size: 9pt; }}
+    QLabel#copyright {{ color: #8A8A8A; font-size: 9pt; }}
     QListWidget {{ border: 1px solid #E0E0E0; border-radius: 6px; background: #FFFFFF; }}
     QListWidget::item {{ padding: 4px 6px; }}
     """
@@ -178,6 +179,10 @@ class LauncherWindow(QWidget):
         layout.addSpacing(8)
         layout.addLayout(bottom_head)
         layout.addWidget(self.recent)
+        copyright_label = QLabel(f"Copyright {COPYRIGHT}")
+        copyright_label.setObjectName("copyright")
+        copyright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(copyright_label)
         self._fill_recent()
 
     def _fill_recent(self) -> None:

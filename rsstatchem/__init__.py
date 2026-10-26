@@ -3,4 +3,5 @@
 APP_NAME = "RS-StatChem"
 APP_ORG = "RS Education"
 APP_ID = "id.rseducation.rsstatchem"
+COPYRIGHT = "© 2026 Roni Saputra, M.Si"
 __version__ = "0.7.0"

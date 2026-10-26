@@ -20,7 +20,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer  # noq
 from PySide6.QtGui import QIcon, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QSplashScreen  # noqa: E402
 
-from rsstatchem import APP_ID, APP_NAME, APP_ORG, __version__  # noqa: E402
+from rsstatchem import APP_ID, APP_NAME, APP_ORG, COPYRIGHT, __version__  # noqa: E402
 from rsstatchem.core.dataset import Dataset  # noqa: E402
 from rsstatchem.core.output import Section  # noqa: E402
 
@@ -232,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     if not os.environ.get("RSSTATCHEM_NO_SPLASH"):
         pixmap = QPixmap(str(resource("logo_small.png")))
         splash = QSplashScreen(pixmap)
-        splash.showMessage(f"Version {__version__}  ·  loading…",
+        splash.showMessage(f"Version {__version__}  ·  {COPYRIGHT}  ·  loading…",
                            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
                            Qt.GlobalColor.darkGray)
         splash.show()

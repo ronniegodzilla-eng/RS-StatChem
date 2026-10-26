@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
-from rsstatchem import APP_NAME, __version__
+from rsstatchem import APP_NAME, COPYRIGHT, __version__
 from rsstatchem.paths import resource, user_data_dir
 
 
@@ -32,7 +32,8 @@ class AboutDialog(QDialog):
             f"Python {platform.python_version()} ({platform.machine()}) · Qt/PySide6 "
             f"{pyside_version}<br>pandas {pandas.__version__} · NumPy {numpy.__version__} · "
             f"SciPy {scipy.__version__} · statsmodels {statsmodels.__version__}<br><br>"
-            f"<span style='color:#666'>Settings folder: {user_data_dir()}</span><br>"
+            f"<span style='color:#666'>Settings folder: {user_data_dir()}</span><br><br>"
+            f"<b>Copyright {COPYRIGHT}</b><br>"
             "<span style='color:#666'>For personal, non-commercial use.</span>")
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)

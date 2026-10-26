@@ -97,4 +97,4 @@ packaging/     spec PyInstaller dan README versi portable
 Lapisan `core/` sengaja dipisahkan dari UI, supaya kelak bisa dipakai ulang untuk versi web
 atau API tanpa menulis ulang analisisnya.
 
-Untuk penggunaan pribadi/non-komersial.
+Copyright © 2026 Roni Saputra, M.Si. Untuk penggunaan pribadi/non-komersial.
