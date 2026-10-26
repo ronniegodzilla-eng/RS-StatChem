@@ -7,7 +7,11 @@ redo restore the exact document state.
 
 Tool ids: ``select``, ``lasso``, ``rotate``, ``eraser``, ``bond:<kind>``, ``chain``,
 ``ring:<template>``, ``atom:<symbol>``, ``label``, ``charge+``, ``charge-``, ``radical``,
-``map``, ``arrow:<kind>``, ``plus``, ``text``, ``bracket``, ``template``.
+``map``, ``arrow:<kind>``, ``plus``, ``text``, ``bracket``, ``template``, ``pen`` (Bezier
+curves: click = corner point, drag = smooth point with handles, click the first point to
+close, double-click / Enter / Esc to finish; drag anchors and handles of a selected curve to
+edit it), ``orbital:<kind>[:<fill>]`` (click or drag on an atom / in space) and ``fragment``
+(ChemDraw's Mass Fragmentation tool: drag a line across bonds).
 """
 from __future__ import annotations
 
@@ -23,10 +27,15 @@ from PySide6.QtWidgets import (QGraphicsLineItem, QGraphicsPathItem, QGraphicsRe
 from rsstatchem.core.chem import molecule as mo
 from rsstatchem.core.chem_draw import abbrev, convert, ops
 from rsstatchem.core.chem_draw import geometry as geo
-from rsstatchem.core.chem_draw.model import Document
+from rsstatchem.core.chem_draw.model import _STORES, Document
 from rsstatchem.ui.chem_editor.render import SELECT_COLOR, BuildInfo, Builder
 
 __all__ = ["ChemCanvas", "SnapshotCommand"]
+
+_STORE_NAMES = tuple(_STORES.values())
+ORBITAL_MENU = [("s Orbital", "s"), ("p Orbital", "p"), ("Single Lobe", "lobe"),
+                ("Hybrid Orbital", "hybrid"), ("d(xy) Orbital", "dxy"),
+                ("d(z²) Orbital", "dz2")]
 
 _HOTKEY_ELEMENTS = {"c": "C", "n": "N", "o": "O", "s": "S", "p": "P", "f": "F", "i": "I",
                     "h": "H", "l": "Cl", "b": "Br", "B": "B", "k": "K"}
@@ -122,6 +131,10 @@ class ChemCanvas(QGraphicsView):
         self._editor = None
         self._edit_target = None
         self._rot = None
+        self._pen = None                    # id of the curve the Pen tool is drawing
+        self._handle = None
+        self.curve_style: dict = {}         # Curves menu style used for new curves
+        self.orbital_fill = "shaded"
         self.scale(1.6, 1.6)
         self.rebuild()
 
@@ -167,7 +180,7 @@ class ChemCanvas(QGraphicsView):
         new = Document.from_dict(data)
         d = self.doc
         d.style, d.meta, d._next = new.style, new.meta, new._next
-        for kind in ("atoms", "bonds", "arrows", "pluses", "texts", "brackets"):
+        for kind in _STORE_NAMES:
             setattr(d, kind, getattr(new, kind))
         self._prune_selection()
         self.rebuild()
@@ -224,6 +237,8 @@ class ChemCanvas(QGraphicsView):
             item = QGraphicsRectItem(box.adjusted(-1, -1, 1, 1))
             item.setPen(red)
             self._add(item, 9, self._overlay)
+        for cid in self._edit_curves():
+            self._curve_handles(self.doc.curves[cid])
         if len(self.selection) > 1:
             r = self._selection_rect()
             if r is not None:
@@ -231,6 +246,49 @@ class ChemCanvas(QGraphicsView):
                 pen = QPen(QColor(SELECT_COLOR), 1.0 / self.zoom(), Qt.PenStyle.DashLine)
                 item.setPen(pen)
                 self._add(item, 9, self._overlay)
+
+    def _edit_curves(self) -> list[int]:
+        """Curves whose anchors and handles are shown (and can be dragged)."""
+        ids = [i for k, i in self.selection if k == "curve" and i in self.doc.curves]
+        if self._pen is not None and self._pen in self.doc.curves and self._pen not in ids:
+            ids.append(self._pen)
+        return ids
+
+    def _curve_handles(self, c) -> None:
+        z = self.zoom()
+        r = 2.6 / z
+        pen = QPen(QColor(SELECT_COLOR), 1.0 / z)
+        for k in range(1, len(c.points), 3):
+            ax, ay = c.points[k]
+            for j in (k - 1, k + 1):
+                hx, hy = c.points[j]
+                if abs(hx - ax) + abs(hy - ay) < 1e-6:
+                    continue
+                ln = QGraphicsLineItem(ax, ay, hx, hy)
+                ln.setPen(pen)
+                self._add(ln, 30, self._overlay)
+                path = QPainterPath()
+                path.addEllipse(QPointF(hx, hy), r, r)
+                dot = QGraphicsPathItem(path)
+                dot.setPen(pen)
+                dot.setBrush(QBrush(QColor("#FFFFFF")))
+                self._add(dot, 31, self._overlay)
+            box = QGraphicsRectItem(ax - r, ay - r, 2 * r, 2 * r)
+            box.setBrush(QBrush(QColor(SELECT_COLOR)))
+            box.setPen(QPen(Qt.PenStyle.NoPen))
+            self._add(box, 31, self._overlay)
+
+    def _curve_handle(self, p: QPointF):
+        """(curve id, point index) of an anchor / handle of an edited curve under p."""
+        tol = max(2.5, 6 / self.zoom())
+        best, best_d = None, tol
+        for cid in self._edit_curves():
+            for k, (x, y) in enumerate(self.doc.curves[cid].points):
+                d = math.hypot(p.x() - x, p.y() - y)
+                # anchors win over handles lying on top of them
+                if d < best_d or (best is not None and d <= best_d and k % 3 == 1):
+                    best, best_d = (cid, k), d
+        return best
 
     def _selection_rect(self) -> QRectF | None:
         keys = self.doc.with_bonds(self.selection)
@@ -248,6 +306,10 @@ class ChemCanvas(QGraphicsView):
             elif k == "arrow" and i in self.doc.arrows:
                 ar = self.doc.arrows[i]
                 rects.append(QRectF(QPointF(ar.x1, ar.y1), QPointF(ar.x2, ar.y2)).normalized())
+            elif k == "curve" and i in self.info.curve_boxes:
+                rects.append(self.info.curve_boxes[i])
+            elif k == "orbital" and i in self.info.orbital_boxes:
+                rects.append(self.info.orbital_boxes[i])
         if not rects:
             return None
         r = rects[0]
@@ -289,9 +351,20 @@ class ChemCanvas(QGraphicsView):
                 h.setBrush(QBrush(QColor(SELECT_COLOR)))
                 h.setPen(QPen(Qt.PenStyle.NoPen))
                 self._add(h, z + 8, self._overlay)
+        elif kind == "curve":
+            pts = geo.curve_path_points(obj)
+            path = QPainterPath(QPointF(*pts[0]))
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            item = QGraphicsPathItem(path)
+            p = QPen(brush, bl * 0.25)
+            p.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            item.setPen(p)
         else:
             box = {"text": self.info.text_boxes, "plus": self.info.plus_boxes,
-                   "bracket": self.info.bracket_boxes}[kind].get(i)
+                   "bracket": self.info.bracket_boxes,
+                   "orbital": self.info.orbital_boxes}[kind].get(i)
             if box is None:
                 return
             item = QGraphicsRectItem(box.adjusted(-2, -2, 2, 2))
@@ -317,6 +390,7 @@ class ChemCanvas(QGraphicsView):
 
     # --- tools ---------------------------------------------------------------------------
     def set_tool(self, tool: str) -> None:
+        self.finish_curve()
         self.tool = tool
         self._cancel_drag()
         cursor = Qt.CursorShape.ArrowCursor if tool in ("select", "lasso") else \
@@ -328,7 +402,8 @@ class ChemCanvas(QGraphicsView):
         x, y = p.x(), p.y()
         z = self.zoom()
         bl = self.bl
-        kinds = kinds or ("atom", "bond", "arrow", "text", "plus", "bracket")
+        kinds = kinds or ("atom", "bond", "arrow", "text", "plus", "bracket", "curve",
+                          "orbital")
         if "atom" in kinds:
             a = self.doc.atom_at(x, y, max(bl * 0.3, 7 / z))
             if a is not None:
@@ -361,6 +436,14 @@ class ChemCanvas(QGraphicsView):
                 for xx in (br.x1, br.x2):
                     if abs(x - xx) < tol * 1.5 and br.y1 - tol <= y <= br.y2 + tol:
                         return ("bracket", bid)
+        if "curve" in kinds:
+            c = self.doc.curve_at(x, y, max(bl * 0.2, 5 / z))
+            if c is not None:
+                return ("curve", c.id)
+        if "orbital" in kinds:
+            o = self.doc.orbital_at(x, y, max(1.5, 3 / z))
+            if o is not None:
+                return ("orbital", o.id)
         return None
 
     # --- mouse ---------------------------------------------------------------------------
@@ -414,6 +497,9 @@ class ChemCanvas(QGraphicsView):
             self._clear(self._preview)
 
     def mouseDoubleClickEvent(self, e) -> None:  # noqa: N802
+        if self.tool == "pen":
+            self.finish_curve()
+            return
         p = self.mapToScene(e.position().toPoint())
         h = self.hit(p)
         if h is None:
@@ -453,6 +539,7 @@ class ChemCanvas(QGraphicsView):
         t = self.tool
         x, y = p.x(), p.y()
         kind, i = h if h else (None, None)
+        kind_ = kind
         if t in ("select", "lasso", "rotate"):
             if h is None:
                 if not (mods & Qt.KeyboardModifier.ShiftModifier):
@@ -550,6 +637,17 @@ class ChemCanvas(QGraphicsView):
             return
         if t == "template" and h is None and self.template_smiles:
             self.insert_text(self.template_smiles, x, y, "Insert Template")
+            return
+        if t == "pen":
+            self.pen_click(x, y, h)
+            return
+        if t.startswith("orbital:"):
+            kind, fill = self._orbital_tool()
+            if h is not None and h[0] == "orbital":
+                self.edit("Change Orbital", lambda: self._set_orbital(h[1], kind, fill))
+                return
+            cx, cy = (self.doc.atoms[i].x, self.doc.atoms[i].y) if kind_ == "atom" else (x, y)
+            self.edit("Add Orbital", lambda: self.doc.add_orbital(cx, cy, kind, fill=fill))
 
     def erase(self, keys) -> None:
         """ChemDraw eraser: delete objects; carbons left without bonds disappear too."""
@@ -571,6 +669,31 @@ class ChemCanvas(QGraphicsView):
         t = self.tool
         h = self._press_hit
         self.begin()
+        if t in ("select", "lasso", "pen"):
+            ch = self._curve_handle(p)
+            if ch is not None:
+                self._mode, self._handle = "curve-handle", ch
+                c = self.doc.curves[ch[0]]
+                k = ch[1] - ch[1] % 3 + 1
+                a, hi, ho = c.points[k], c.points[k - 1], c.points[k + 1]
+                v1 = (hi[0] - a[0], hi[1] - a[1])
+                v2 = (ho[0] - a[0], ho[1] - a[1])
+                cross = v1[0] * v2[1] - v1[1] * v2[0]
+                dot = v1[0] * v2[0] + v1[1] * v2[1]
+                n1, n2 = math.hypot(*v1), math.hypot(*v2)
+                self._smooth = n1 > 1e-6 and n2 > 1e-6 and dot < 0 and \
+                    abs(cross) < 0.05 * n1 * n2
+                return
+        if t == "pen":
+            self._mode = "pen"
+            self._pen_drag_start(p)
+            return
+        if t.startswith("orbital:"):
+            self._mode = "orbital"
+            return
+        if t == "fragment":
+            self._mode = "fragment"
+            return
         if t in ("select", "lasso"):
             end = self._arrow_handle(p)
             if end is not None:
@@ -638,6 +761,20 @@ class ChemCanvas(QGraphicsView):
             d = p - self._last
             self.doc.move(self.doc.with_bonds(self.selection), d.x(), d.y())
             self.rebuild()
+        elif m == "curve-handle":
+            self._move_curve_point(p, free)
+            self.rebuild()
+        elif m == "pen":
+            self._pen_drag_move(p)
+            self.rebuild()
+        elif m == "orbital":
+            self._orbital_preview(p)
+        elif m == "fragment":
+            self._preview_line([(self._press.x(), self._press.y()), (p.x(), p.y())])
+            frags = self._fragment_result(p)
+            if frags:
+                self.status_message.emit("Fragments: " + "  |  ".join(
+                    f"{f.formula} {f.mass:.4f}" for f in frags))
         elif m == "arrow-handle":
             ar = self.doc.arrows[self._handle[0]]
             if self._handle[1] == "tail":
@@ -700,7 +837,7 @@ class ChemCanvas(QGraphicsView):
 
     def set_state_quiet(self, data: dict) -> None:
         new = Document.from_dict(data)
-        for kind in ("atoms", "bonds", "arrows", "pluses", "texts", "brackets"):
+        for kind in _STORE_NAMES:
             setattr(self.doc, kind, getattr(new, kind))
 
     def _arrow_end(self, p: QPointF, free: bool) -> tuple[float, float]:
@@ -745,6 +882,17 @@ class ChemCanvas(QGraphicsView):
             self.commit("Move")
         elif m == "arrow-handle":
             self.commit("Edit Arrow")
+        elif m == "curve-handle":
+            self.commit("Edit Curve")
+        elif m == "pen":
+            self._pen_drag_move(p)
+            self.commit("Pen")
+        elif m == "orbital":
+            self._orbital_drag_end(p)
+            self.commit("Add Orbital")
+        elif m == "fragment":
+            self._fragment_end(p)
+            self.commit("Mass Fragmentation")
         elif m in ("marquee", "lasso"):
             self._before = None
             self._select_region(p, m, mods)
@@ -836,6 +984,12 @@ class ChemCanvas(QGraphicsView):
         for br in doc.brackets.values():
             if inside(br.x1, br.y1) and inside(br.x2, br.y2):
                 keys.add(("bracket", br.id))
+        for c in doc.curves.values():
+            if c.points and all(inside(x, y) for x, y in c.anchors()):
+                keys.add(("curve", c.id))
+        for o in doc.orbitals.values():
+            if inside(o.x, o.y):
+                keys.add(("orbital", o.id))
         keys = doc.group_members(keys)
         if mods & Qt.KeyboardModifier.ShiftModifier:
             keys |= self.selection
@@ -873,8 +1027,14 @@ class ChemCanvas(QGraphicsView):
                 self.edit("Delete", lambda: self.erase([h]))
             return
         if key == Qt.Key.Key_Escape:
+            if self._pen is not None:
+                self.finish_curve()
+                return
             self._cancel_drag()
             self.select_keys(set())
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._pen is not None:
+            self.finish_curve()
             return
         if key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down) and \
                 self.selection:
@@ -929,7 +1089,8 @@ class ChemCanvas(QGraphicsView):
                           lambda: setattr(self.doc.bonds[i], "double_pos", pos))
                 return True
             tools = {"1": "single", "2": "double", "3": "triple", "w": "wedge", "h": "hash",
-                     "y": "wavy", "a": "aromatic", "b": "bold", "d": "dashed"}
+                     "y": "wavy", "a": "aromatic", "b": "bold", "d": "dashed",
+                     "o": "hollow", "v": "dative"}
             if text in tools:
                 tool = tools[text]
 
@@ -959,7 +1120,8 @@ class ChemCanvas(QGraphicsView):
         elif kind == "bond":
             b = self.doc.bonds[i]
             name = {1: "single", 2: "double", 3: "triple", 1.5: "aromatic"}.get(b.order, "")
-            self.status_message.emit(f"Bond: {name} {b.style}".strip())
+            style = {"hash": "hashed wedge", "hollow": "hollow wedge"}.get(b.style, b.style)
+            self.status_message.emit(f"Bond: {name} {style}".strip())
         else:
             self.status_message.emit(kind.capitalize())
 
@@ -1080,7 +1242,9 @@ class ChemCanvas(QGraphicsView):
             for text, tool in (("Single", "single"), ("Double", "double"),
                                ("Triple", "triple"), ("Aromatic (dashed)", "aromatic"),
                                ("Wedge", "wedge"), ("Hashed Wedge", "hash"),
-                               ("Wavy", "wavy"), ("Bold", "bold"), ("Dashed", "dashed")):
+                               ("Hollow Wedge", "hollow"), ("Hashed", "hashed"),
+                               ("Dative", "dative"), ("Wavy", "wavy"), ("Bold", "bold"),
+                               ("Dashed", "dashed")):
                 def set_bond(_=False, tool=tool):
                     def fn():
                         b = self.doc.bonds[i]
@@ -1101,6 +1265,24 @@ class ChemCanvas(QGraphicsView):
                                                             pos)))
             menu.addSeparator()
             menu.addAction("Delete", lambda: self.edit("Delete", lambda: self.erase([h])))
+        elif h is not None and h[0] == "curve":
+            i = h[1]
+            self.add_curve_menu(menu.addMenu("Curve Style"), [i])
+            menu.addSeparator()
+            menu.addAction("Delete", lambda: self.edit("Delete", lambda: self.erase([h])))
+        elif h is not None and h[0] == "orbital":
+            i = h[1]
+            sub = menu.addMenu("Orbital Type")
+            for text, k in ORBITAL_MENU:
+                sub.addAction(text, lambda k=k: self.edit(
+                    "Change Orbital", lambda: self._set_orbital(i, k, None)))
+            sub = menu.addMenu("Fill")
+            for text, f in (("Unshaded", "plain"), ("Shaded", "shaded"), ("Filled", "filled"),
+                            ("Phased (alternate lobes filled)", "phase")):
+                sub.addAction(text, lambda f=f: self.edit(
+                    "Change Orbital", lambda: self._set_orbital(i, None, f)))
+            menu.addSeparator()
+            menu.addAction("Delete", lambda: self.edit("Delete", lambda: self.erase([h])))
         elif h is not None and h[0] == "arrow":
             i = h[1]
             menu.addAction("Arrow Properties...", lambda: self.arrow_properties(i))
@@ -1116,6 +1298,225 @@ class ChemCanvas(QGraphicsView):
                 if isinstance(act, QAction):
                     menu.addAction(act)
         return menu
+
+    # --- Pen tool / curves ----------------------------------------------------------------
+    def pen_click(self, x: float, y: float, h=None) -> None:
+        """Pen click: corner point (or close the curve on its first point, or finish on a
+        repeated click); a click on another curve selects it for editing."""
+        c = self.doc.curves.get(self._pen) if self._pen is not None else None
+        if c is None:
+            if h is not None and h[0] == "curve":
+                self.select_keys({h})
+                return
+            self.select_keys(set())
+            cid = self.edit("Pen", lambda: self.doc.add_curve(
+                [(x, y)] * 3, **self.curve_style).id)
+            self._pen = cid
+            self.update_overlays()
+            return
+        anchors = c.anchors()
+        tol = max(3.0, 6 / self.zoom())
+        if math.hypot(x - anchors[-1][0], y - anchors[-1][1]) <= tol:
+            self.finish_curve()                       # second click of a double-click
+            return
+        if len(anchors) >= 3 and math.hypot(x - anchors[0][0], y - anchors[0][1]) <= tol:
+            self.edit("Close Curve", lambda: setattr(c, "closed", True))
+            self.finish_curve()
+            return
+        self.edit("Pen", lambda: c.points.extend([[x, y], [x, y], [x, y]]))
+        self.update_overlays()
+
+    def _pen_drag_start(self, p: QPointF) -> None:
+        """Press-and-drag with the Pen: a new smooth point whose handles follow the mouse."""
+        x, y = p.x(), p.y()
+        c = self.doc.curves.get(self._pen) if self._pen is not None else None
+        if c is None:
+            self.select_keys(set())
+            c = self.doc.add_curve([(x, y)] * 3, **self.curve_style)
+            self._pen = c.id
+        else:
+            a0 = c.anchors()[0]
+            if len(c.anchors()) >= 3 and math.hypot(x - a0[0], y - a0[1]) <= \
+                    max(3.0, 6 / self.zoom()):
+                c.closed = True                    # drag on the first point: close smoothly
+                self._pen_k = 1
+                return
+            c.points.extend([[x, y], [x, y], [x, y]])
+        self._pen_k = len(c.points) - 2
+
+    def _pen_drag_move(self, p: QPointF) -> None:
+        c = self.doc.curves.get(self._pen)
+        if c is None:
+            return
+        k = self._pen_k
+        ax, ay = c.points[k]
+        c.points[k + 1] = [p.x(), p.y()]
+        c.points[k - 1] = [2 * ax - p.x(), 2 * ay - p.y()]
+
+    def finish_curve(self) -> None:
+        """End the curve being drawn (a curve with a single point is removed)."""
+        cid, self._pen = self._pen, None
+        c = self.doc.curves.get(cid) if cid is not None else None
+        if c is not None and len(c.anchors()) < 2:
+            self.edit("Pen", lambda: self.doc.remove([("curve", cid)]))
+        elif c is not None:
+            self.select_keys({("curve", cid)})
+            return
+        self.update_overlays()
+
+    def _move_curve_point(self, p: QPointF, free: bool) -> None:
+        cid, k = self._handle
+        c = self.doc.curves[cid]
+        x, y = p.x(), p.y()
+        if k % 3 == 1:                                # anchor: handles move with it
+            dx, dy = x - c.points[k][0], y - c.points[k][1]
+            for j in (k - 1, k, k + 1):
+                c.points[j] = [c.points[j][0] + dx, c.points[j][1] + dy]
+            return
+        c.points[k] = [x, y]
+        a = k - k % 3 + 1
+        other = a + (a - k)
+        if getattr(self, "_smooth", False) and not free:   # keep a smooth point smooth
+            ax, ay = c.points[a]
+            ox, oy = c.points[other]
+            L = math.hypot(ox - ax, oy - ay)
+            d = math.hypot(x - ax, y - ay) or 1.0
+            c.points[other] = [ax - (x - ax) / d * L, ay - (y - ay) / d * L]
+
+    def set_curve_style(self, cids, **kw) -> None:
+        """Curves menu: apply flags to curves (and remember them for new curves). Arrowheads
+        exclude closed / filled / shaded / doubled, as in ChemDraw."""
+        style = dict(self.curve_style)
+        style.update(kw)
+        if kw.get("closed") or kw.get("filled") or kw.get("shaded") or kw.get("doubled"):
+            style["arrow_start"] = style["arrow_end"] = ""
+        if kw.get("arrow_start") or kw.get("arrow_end"):
+            for f in ("closed", "filled", "shaded", "doubled"):
+                style[f] = False
+        if kw.get("filled") or kw.get("shaded"):
+            style["closed"] = True
+            style["dashed"] = False
+        if kw.get("dashed"):
+            style["filled"] = style["shaded"] = style["doubled"] = False
+        if kw.get("filled"):
+            style["shaded"] = False
+        if kw.get("shaded"):
+            style["filled"] = False
+        self.curve_style = {k: v for k, v in style.items() if v}
+        cids = [i for i in cids if i in self.doc.curves]
+        if not cids:
+            return
+
+        def fn():
+            for i in cids:
+                c = self.doc.curves[i]
+                for k, v in style.items():
+                    setattr(c, k, v)
+        self.edit("Curve Style", fn)
+
+    def add_curve_menu(self, menu: QMenu, cids=None) -> None:
+        """ChemDraw's Curves menu items (applied to ``cids``, or the selected curves)."""
+        def target():
+            return cids if cids is not None else [i for k, i in self.selection
+                                                  if k == "curve"]
+
+        def first():
+            ids = target()
+            return self.doc.curves.get(ids[0]) if ids else None
+        cur = first()
+        st = self.curve_style if cur is None else {
+            f: getattr(cur, f) for f in ("closed", "dashed", "bold", "doubled", "filled",
+                                         "shaded", "arrow_start", "arrow_end")}
+        plain = menu.addAction("Plain")
+        plain.triggered.connect(lambda: self.set_curve_style(
+            target(), arrow_start="", arrow_end="", dashed=False, bold=False, doubled=False,
+            filled=False, shaded=False, closed=False))
+        menu.addSeparator()
+        for text, kw, on in (
+                ("Arrow at Start", {"arrow_start": "full"}, st.get("arrow_start") == "full"),
+                ("Arrow at End", {"arrow_end": "full"}, st.get("arrow_end") == "full"),
+                ("Arrow at Both Ends", {"arrow_start": "full", "arrow_end": "full"},
+                 st.get("arrow_start") == "full" and st.get("arrow_end") == "full"),
+                ("Half Arrow at Start", {"arrow_start": "half"},
+                 st.get("arrow_start") == "half"),
+                ("Half Arrow at End", {"arrow_end": "half"}, st.get("arrow_end") == "half"),
+                ("No Arrowheads", {"arrow_start": "", "arrow_end": ""},
+                 not st.get("arrow_start") and not st.get("arrow_end"))):
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(bool(on))
+            act.triggered.connect(lambda _=False, kw=kw: self.set_curve_style(target(), **kw))
+        menu.addSeparator()
+        for text, flag in (("Dashed", "dashed"), ("Bold", "bold"), ("Doubled", "doubled"),
+                           ("Closed", "closed"), ("Filled", "filled"), ("Shaded", "shaded")):
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(bool(st.get(flag)))
+            act.triggered.connect(lambda checked, f=flag: self.set_curve_style(
+                target(), **{f: checked}))
+
+    # --- orbitals -------------------------------------------------------------------------
+    def _orbital_tool(self) -> tuple[str, str]:
+        parts = self.tool.split(":")
+        kind = parts[1] if len(parts) > 1 else "p"
+        fill = parts[2] if len(parts) > 2 else self.orbital_fill
+        return kind, fill
+
+    def _set_orbital(self, oid: int, kind, fill) -> None:
+        o = self.doc.orbitals[oid]
+        if kind:
+            o.kind = kind
+        if fill:
+            o.fill = fill
+
+    def _orbital_center(self) -> tuple[float, float]:
+        h = self._press_hit
+        if h and h[0] == "atom":
+            a = self.doc.atoms[h[1]]
+            return a.x, a.y
+        return self._press.x(), self._press.y()
+
+    def _orbital_geometry(self, p: QPointF) -> tuple[float, float, float, float]:
+        cx, cy = self._orbital_center()
+        L = math.hypot(p.x() - cx, p.y() - cy)
+        ang = math.atan2(p.y() - cy, p.x() - cx) if L > 1e-6 else -math.pi / 2
+        if self.tool and not (getattr(self, "_mods", None) and
+                              self._mods & Qt.KeyboardModifier.ShiftModifier):
+            ang = geo.snap_angle(ang, 15)
+        return cx, cy, max(L, self.bl * 0.3), ang
+
+    def _orbital_preview(self, p: QPointF) -> None:
+        from rsstatchem.core.chem_draw.model import Orbital
+        cx, cy, L, ang = self._orbital_geometry(p)
+        kind, fill = self._orbital_tool()
+        o = Orbital(0, cx, cy, kind, fill, L, ang)
+        self._clear(self._preview)
+        pen = QPen(QColor(SELECT_COLOR), max(self.doc.style.line_width, 1 / self.zoom()))
+        for pts, _f in geo.orbital_outline(o, self.bl):
+            path = QPainterPath(QPointF(*pts[0]))
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            path.closeSubpath()
+            item = QGraphicsPathItem(path)
+            item.setPen(pen)
+            self._add(item, 20, self._preview)
+
+    def _orbital_drag_end(self, p: QPointF) -> None:
+        cx, cy, L, ang = self._orbital_geometry(p)
+        kind, fill = self._orbital_tool()
+        self.doc.add_orbital(cx, cy, kind, fill=fill, size=L, angle=ang)
+
+    # --- Mass Fragmentation tool ---------------------------------------------------------
+    def _fragment_result(self, p: QPointF):
+        from rsstatchem.core.chem_draw import fragment
+        try:
+            return fragment.cleave(self.doc, self._press.x(), self._press.y(), p.x(), p.y())
+        except Exception:  # noqa: BLE001 - feedback only
+            return []
+
+    def _fragment_end(self, p: QPointF) -> None:
+        from rsstatchem.core.chem_draw import fragment
+        fragment.add_fragmentation(self.doc, self._press.x(), self._press.y(), p.x(), p.y())
 
     # --- view / insertion ------------------------------------------------------------------
     def set_zoom(self, z: float) -> None:
@@ -1195,7 +1596,7 @@ class ChemCanvas(QGraphicsView):
     def event(self, e) -> bool:
         if e.type() == QEvent.Type.ShortcutOverride and self.hover is not None and \
                 self._editor is None and e.text() and \
-                e.text() in "cnospfihlbBk+-=.12345678wyadrc/":
+                e.text() in "cnospfihlbBk+-=.12345678wyadrcov/":
             e.accept()
             return True
         return super().event(e)

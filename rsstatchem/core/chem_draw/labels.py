@@ -25,7 +25,8 @@ MINUS = "−"
 
 
 def bond_sum(doc: Document, aid: int) -> int:
-    orders = [b.order for b in doc.bonds_of(aid)]
+    # a dative bond adds nothing to its donor (begin atom), as in RDKit
+    orders = [b.order for b in doc.bonds_of(aid) if not (b.style == "dative" and b.a == aid)]
     arom = sum(1 for o in orders if o == 1.5)
     total = sum(int(o) for o in orders if o != 1.5) + arom + (1 if arom >= 2 else 0)
     return total

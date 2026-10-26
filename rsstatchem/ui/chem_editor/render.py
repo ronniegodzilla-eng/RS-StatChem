@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QPainterPath, QPen,
-                           QPolygonF, QTransform)
+                           QPolygonF, QRadialGradient, QTransform)
 from PySide6.QtWidgets import (QGraphicsLineItem, QGraphicsPathItem, QGraphicsPolygonItem,
                                QGraphicsScene)
 
@@ -102,6 +102,8 @@ class BuildInfo:
     plus_boxes: dict = field(default_factory=dict)
     bracket_boxes: dict = field(default_factory=dict)
     arrow_text: dict = field(default_factory=dict)     # arrow id -> [QRectF]
+    curve_boxes: dict = field(default_factory=dict)    # curve id -> QRectF
+    orbital_boxes: dict = field(default_factory=dict)  # orbital id -> QRectF
 
 
 class Builder:
@@ -275,6 +277,22 @@ class Builder:
             for prim in geo.arrow_primitives(ar, st):
                 self._prim(scene, prim, _color(ar, pen_color), z)
             info.arrow_text[ar.id] = self._arrow_text(scene, ar, z)
+        for c in doc.curves.values():
+            z = z0 + 3 + c.z
+            items = [self._prim(scene, prim, _color(c, pen_color), z)
+                     for prim in geo.curve_primitives(c, st)]
+            r = QRectF()
+            for it in items:
+                r = r.united(it.sceneBoundingRect())
+            info.curve_boxes[c.id] = r
+        for o in doc.orbitals.values():
+            z = z0 + 0.5 + o.z                       # behind bonds and labels
+            items = [self._prim(scene, prim, _color(o, pen_color), z)
+                     for prim in geo.orbital_primitives(o, st)]
+            r = QRectF()
+            for it in items:
+                r = r.united(it.sceneBoundingRect())
+            info.orbital_boxes[o.id] = r
         for p in doc.pluses.values():
             h = st.caption_size * 0.36
             w = max(st.line_width, 0.6)
@@ -374,6 +392,37 @@ class Builder:
                 pen.setDashPattern([2.2, 2.0])
             item = QGraphicsLineItem(x1, y1, x2, y2)
             item.setPen(pen)
+        elif kind == "shape":
+            _, pts, w, dashed, fill, closed = prim
+            path = QPainterPath(QPointF(*pts[0]))
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            if closed:
+                path.closeSubpath()
+            item = QGraphicsPathItem(path)
+            pen = QPen(color, w)
+            pen.setCapStyle(Qt.PenCapStyle.FlatCap if dashed else Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            if dashed:
+                pen.setDashPattern([3.0, 2.4])
+            item.setPen(pen)
+            if fill == "solid":
+                item.setBrush(QBrush(color))
+            elif fill == "white":
+                item.setBrush(QBrush(QColor("#FFFFFF")))
+            elif fill == "shade":
+                r = path.boundingRect()
+                g = QRadialGradient(r.center().x() - r.width() * 0.18,
+                                    r.center().y() - r.height() * 0.18,
+                                    max(r.width(), r.height()) * 0.75)
+                base = QColor(color)
+                if base.lightness() < 40:            # black: a gray shading, as ChemDraw
+                    base = QColor("#8A8A8A")
+                g.setColorAt(0.0, QColor("#FFFFFF"))
+                g.setColorAt(1.0, base)
+                item.setBrush(QBrush(g))
+            else:
+                item.setBrush(Qt.BrushStyle.NoBrush)
         elif kind == "poly":
             item = QGraphicsPolygonItem(QPolygonF([QPointF(x, y) for x, y in prim[1]]))
             item.setBrush(QBrush(color))

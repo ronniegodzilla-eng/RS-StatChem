@@ -175,7 +175,8 @@ class ChemicalPropertiesWindow(_ValueWindow):
                 mol, msg = None, "Select one molecule to see its properties."
         self.rows = chemical_properties(mol)
         by_name = {p.name: p for p in self.rows}
-        missing = set()
+        missing: dict = {}
+        used = set()
         for name in self.NAMES:
             p = by_name.get(name)
             if p is None:
@@ -185,19 +186,30 @@ class ChemicalPropertiesWindow(_ValueWindow):
             text = p.text()
             if name == "Boiling Point" and p.value is not None:
                 text += f" ({p.value - 273.15:.2f} °C)"
-            self.set_value(name, text)
+            rich = html.escape(text)
+            if p.short and p.value is not None:
+                text += f" [{p.short}]"
+                sep = "<br>" if len(rich) > 16 else " "     # long values: tag on its own line
+                rich += f"{sep}<span style='color:#7A7A7A;'>[{html.escape(p.short)}]</span>"
+            self.set_value(name, text, rich)
             self.labels[name].setToolTip(p.method + (f"\nNot available: {p.note}"
                                                      if p.note else ""))
             self.checks[name].setToolTip(p.method)
             if p.note:
-                missing.add(p.note)
+                missing.setdefault(p.note, []).append(name)
+            elif p.short and name not in ("LogP", "MR", "tPSA", "LogS"):
+                used.add(p.short)
         notes = []
         if msg:
             notes.append(msg)
         if self.rows:
-            notes.append("All values are estimates: boiling/melting point, critical data and "
-                         "energies by Joback group contribution; LogP and MR by Crippen "
-                         "(RDKit); tPSA by Ertl; LogS by ESOL. Not ChemDraw's CLogP/CMR.")
+            gc = ", ".join(m for m in ("Joback", "Stein-Brown", "Marrero-Gani") if m in used)
+            notes.append("All values are estimates (method in brackets): boiling/melting "
+                         f"point, critical data and energies by group contribution "
+                         f"({gc or 'Joback'}; Joback first, published fallbacks when it "
+                         "lacks a group); LogP and MR by Crippen (RDKit); tPSA by Ertl; "
+                         "LogS by ESOL. Not ChemDraw's CLogP/CMR.")
         if missing:
-            notes.append("Joback values n/a: " + "; ".join(sorted(missing)) + ".")
+            for why, props in missing.items():
+                notes.append(f"n/a ({', '.join(props)}): {why}.")
         self.note.setText("\n".join(notes))

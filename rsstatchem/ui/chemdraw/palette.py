@@ -7,8 +7,8 @@ fly-out puts it on the button. The Templates button opens the template library m
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QGridLayout, QHBoxLayout, QMenu, QToolBar,
-                               QToolButton, QWidget, QWidgetAction)
+from PySide6.QtWidgets import (QButtonGroup, QGridLayout, QMenu, QToolBar, QToolButton,
+                               QWidget, QWidgetAction)
 
 from rsstatchem.core.chem_draw import templates
 from rsstatchem.ui.chemdraw.icons import cd_icon
@@ -31,7 +31,8 @@ PALETTE: list[list[tuple[str, str]]] = [
      ("arrow:retro", "Retrosynthetic Arrow"), ("arrow:resonance", "Resonance Arrow"),
      ("arrow:curved", "Curved Arrow (electron pair)"),
      ("arrow:fishhook", "Fishhook Arrow (single electron)"), ("arrow:line", "Line")],
-    [("bond:dashed", "Dashed Bond")],
+    [("bond:dashed", "Dashed Bond"), ("bond:hashed", "Hashed Bond"),
+     ("bond:dative", "Dative Bond (arrow from donor to acceptor)")],
     [("plus", "Plus sign (reaction)")],
     [("bond:hash", "Hashed Wedged Bond (stereo, down)")],
     [("bracket:square", "Square Brackets (drag, or click with a selection)"),
@@ -39,7 +40,8 @@ PALETTE: list[list[tuple[str, str]]] = [
     [("bond:bold", "Bold Bond")],
     [("charge+", "Positive Charge"), ("charge-", "Negative Charge"),
      ("radical", "Radical"), ("map", "Atom-to-Atom Map Number")],
-    [("bond:wedge", "Wedged Bond (stereo, up)")],
+    [("bond:wedge", "Wedged Bond (stereo, up)"),
+     ("bond:hollow", "Hollow Wedged Bond (stereo, up)")],
     [("periodic", "Periodic Table...")],
     [("bond:wavy", "Wavy Bond")],
     [("template", "Templates: choose a template, then click in the document")],
@@ -58,9 +60,26 @@ PALETTE: list[list[tuple[str, str]]] = [
     [("ring:cyclopentadiene", "Cyclopentadiene Ring")],
     [("ring:chair1", "Cyclohexane Chair 1")],
     [("ring:chair2", "Cyclohexane Chair 2")],
+    [("pen", "Pen: click for corner points, drag for smooth points, click the first point to "
+             "close; double-click or Esc to finish. Style from the Curves menu")],
+    [("orbital:p:shaded", "p Orbital, shaded (click an atom, or drag to size and turn)"),
+     ("orbital:s:shaded", "s Orbital, shaded"), ("orbital:lobe:shaded", "Single Lobe, shaded"),
+     ("orbital:hybrid:shaded", "Hybrid Orbital, shaded"),
+     ("orbital:dxy:shaded", "d(xy) Orbital, shaded"),
+     ("orbital:dz2:shaded", "d(z²) Orbital, shaded"),
+     ("orbital:p:phase", "p Orbital, phased (one lobe filled)"),
+     ("orbital:s:plain", "s Orbital, unshaded"), ("orbital:lobe:filled", "Single Lobe, filled"),
+     ("orbital:hybrid:phase", "Hybrid Orbital, phased"),
+     ("orbital:dxy:phase", "d(xy) Orbital, phased"),
+     ("orbital:dz2:phase", "d(z²) Orbital, phased"),
+     ("orbital:p:plain", "p Orbital, unshaded")],
+    [("fragment", "Mass Fragmentation Tool: drag a line across bonds to see the fragment "
+                  "formulas and masses")],
+    [("perspective", "Structure Perspective: rotate the selected molecule in 3D...")],
 ]
 TOOL_TIPS = {tid: tip for slot in PALETTE for tid, tip in slot}
-_ACTIONS = {"periodic"}                 # buttons that run a command instead of a tool
+_ACTIONS = {"periodic", "perspective"}
+FLYOUT_COLUMNS = 6                 # buttons that run a command instead of a tool
 
 
 class MainToolbar(QToolBar):
@@ -124,10 +143,10 @@ class MainToolbar(QToolBar):
         menu.setObjectName("chemdraw_flyout")
         strip = QWidget()
         strip.setObjectName("chemdraw_flyout_strip")
-        row = QHBoxLayout(strip)
+        row = QGridLayout(strip)       # a strip; long palettes (orbitals) wrap into rows
         row.setContentsMargins(3, 3, 3, 3)
         row.setSpacing(1)
-        for tid, tip in slot:
+        for n, (tid, tip) in enumerate(slot):
             b = QToolButton()
             b.setObjectName("chemdraw_tool")
             b.setIcon(cd_icon(tid))
@@ -137,7 +156,7 @@ class MainToolbar(QToolBar):
             b.setToolTip(tip)
             b.setProperty("tool", tid)
             b.clicked.connect(lambda _=False, i=k, t=tid, m=menu: (m.close(), self.pick(i, t)))
-            row.addWidget(b)
+            row.addWidget(b, n // FLYOUT_COLUMNS, n % FLYOUT_COLUMNS)
         wa = QWidgetAction(menu)
         wa.setDefaultWidget(strip)
         menu.addAction(wa)

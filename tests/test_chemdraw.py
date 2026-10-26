@@ -103,7 +103,7 @@ def test_open_module_contract_and_close(ctx, qapp, monkeypatch):
     assert isinstance(w, ChemDrawWindow) and w.isVisible() and w.ctx is ctx
     assert w in ctx.windows and ctx.settings.value("last_module") == "chem"
     titles = [a.text().replace("&", "") for a in w.menuBar().actions()]
-    assert titles == ["File", "Edit", "View", "Object", "Structure", "Text", "Colors",
+    assert titles == ["File", "Edit", "View", "Object", "Structure", "Text", "Curves", "Colors",
                       "Window", "Help"]
     assert w.doc.style.name == "ACS Document 1996" and w.doc.style.bond_length == 14.4
     structure = _texts(_menu(w, "Structure"))
@@ -262,8 +262,12 @@ def test_analysis_window_caffeine_and_paste(win):
     assert "Chemical Formula: C8H10N4O2" in caption and "m/z" not in caption
     win.properties.refresh()
     props = win.properties.values()
-    assert props["Boiling Point"] == "n/a"           # no Joback group for ring N-CH3: honest
-    assert props["LogP"] not in ("", "n/a") and props["tPSA"].endswith("Å²")
+    # no Joback group for the ring N-CH3: published fallbacks, each labelled with its method
+    assert props["Boiling Point"].startswith("673.97 K") and "[Stein-Brown]" in \
+        props["Boiling Point"]
+    assert props["Melting Point"].endswith("[Marrero-Gani]")
+    assert props["Critical Temp."] == "n/a"          # no method covers every group: honest
+    assert props["LogP"] not in ("", "n/a") and props["tPSA"] == "61.82 Å² [Ertl]"
     assert "estimates" in win.properties.note.text()
 
 
@@ -303,6 +307,7 @@ def test_name_lookup_offline_network(win, monkeypatch):
     def no_network(*a, **k):
         raise urllib.error.URLError("network is unreachable")
     monkeypatch.setattr(urllib.request, "urlopen", no_network)
+    win.use_opsin = False          # this test is about the PubChem path (OPSIN: own test)
     win.online_lookup = False
     assert not win.convert_name_to_structure("some unknown compound")
     assert "offline name list" in win.last_message
@@ -316,7 +321,7 @@ def test_name_lookup_offline_network(win, monkeypatch):
     # a structure that is not in the offline list gets its name from (fake) PubChem
     win.lookup.fetch = lambda url: (
         b'{"PropertyTable":{"Properties":[{"CID":1,"IUPACName":"decan-1-ol","Title":"x"}]}}')
-    win.load_text("CCCCCCCCCCO")
+    win.load_text("CC(F)(Cl)C(Br)CCCC#N")       # in neither offline list nor database
     assert win.convert_structure_to_name() == []          # not offline: asked in background
     QThreadPool.globalInstance().waitForDone(5000)
     for _ in range(5):

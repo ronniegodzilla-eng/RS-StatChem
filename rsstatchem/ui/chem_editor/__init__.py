@@ -106,3 +106,28 @@ def selftest() -> None:
     convert.insert_text(rx, "CC(=O)O.OCC>>CC(=O)OCC.O", 0.0, 0.0)
     check(analysis.balance_check(rx).balanced, "esterification balance")
     check(convert.reaction_smiles(rx) == "CC(=O)O.CCO>>CCOC(C)=O.O", "reaction split")
+    _selftest_names(check)
+
+
+def _selftest_names(check) -> None:
+    """Offline structure <-> name: the bundled name database and OPSIN. A packaged build sets
+    RSSTATCHEM_SELFTEST_OPSIN=bundled (CI) so the bundled Java runtime must be used; else
+    OPSIN is checked whenever a bundled runtime is present."""
+    import os
+
+    from rsstatchem.core.chem import molecule as mo
+    from rsstatchem.core.chem_draw import names
+
+    check(names.name_db_size() > 10000, "offline name database missing")
+    hit = names.db_name(mo.mol_from_text("Cn1cnc2c1c(=O)n(C)c(=O)n2C"))
+    check(hit is not None and hit.common == "Caffeine", "name database lookup")
+    mode = os.environ.get("RSSTATCHEM_SELFTEST_OPSIN", "").lower()
+    if not mode and not names.opsin_available(allow_system=False):
+        return
+    check(names.opsin_jar() is not None, "OPSIN jar is not bundled")
+    if mode == "bundled":
+        check(names.find_java(allow_system=False) is not None, "bundled Java runtime missing")
+    res = names.opsin_structure("2-acetoxybenzoic acid", timeout=120)
+    check(mo.to_inchikey(mo.mol_from_text(res.smiles)) == "BSYNRYMUTXBXSQ-UHFFFAOYSA-N",
+          "OPSIN name -> structure (2-acetoxybenzoic acid -> aspirin)")
+    print(f"selftest ok: OPSIN offline name -> structure ({names.find_java()})")

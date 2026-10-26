@@ -9,3 +9,6 @@ dist/
 .DS_Store
 UserData/
 .ruff_cache/
+# OPSIN jar + jlink Java runtime: fetched / built for packaging, never committed
+rsstatchem/resources/opsin/
+build-jre/

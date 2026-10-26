@@ -19,10 +19,26 @@ APP_MODULES = sorted(
     ".".join(path.relative_to(ROOT).with_suffix("").parts).removesuffix(".__init__")
     for path in (ROOT / "rsstatchem").rglob("*.py"))
 
+
+def resource_datas():
+    """Every resource file (icons, the offline name database, the OPSIN jar fetched by
+    scripts/fetch_opsin.py) except a local Java runtime in resources/opsin/jre: the CI
+    workflow copies the jlink runtime into the finished bundle so PyInstaller never
+    rewrites or re-signs the Java binaries."""
+    out = []
+    for path in sorted(RES.rglob("*")):
+        rel = path.relative_to(RES)
+        if not path.is_file() or rel.parts[:2] == ("opsin", "jre") or \
+                path.name in (".DS_Store",) or path.suffix == ".part":
+            continue
+        out.append((str(path), str(Path("rsstatchem/resources") / rel.parent)))
+    return out
+
+
 a = Analysis(
     [str(ROOT / "run.py")],
     pathex=[str(ROOT)],
-    datas=[(str(RES), "rsstatchem/resources")],
+    datas=resource_datas(),
     hiddenimports=["pyreadstat._readstat_parser", "pyreadstat._readstat_writer",
                    "pyreadstat.worker", "mpl_toolkits.mplot3d",
                    "matplotlib.backends.backend_qtagg", "matplotlib.backends.backend_pdf",

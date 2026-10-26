@@ -141,11 +141,16 @@ def to_specs(doc: Document, atom_ids=None, expand: bool = True):
         if b.a not in idset or b.b not in idset:
             continue
         stereo = ""
+        order = b.order
         if b.order == 1 and b.style in ("wedge", "hash", "wavy"):
             stereo = b.style
+        elif b.order == 1 and b.style == "hollow":     # hollow wedge: also "up"
+            stereo = "wedge"
         elif b.order == 2 and b.style == "either":
             stereo = "either"
-        bonds.append(mo.BondSpec(index[b.a], index[b.b], b.order, stereo))
+        if b.style == "dative":
+            order = 0                                   # RDKit dative bond (a -> b)
+        bonds.append(mo.BondSpec(index[b.a], index[b.b], order, stereo))
     return specs, bonds, origin
 
 
@@ -282,7 +287,10 @@ def insert_mol(doc: Document, mol: Chem.Mol, x: float, y: float,
         # "either" double bond becomes a crossed bond
         if stereo == "either" and (b.order != 2 or idx not in explicit_any):
             stereo = ""
-        nb = doc.add_bond(ids[b.begin], ids[b.end], b.order, stereo)
+        if b.order == 0:
+            nb = doc.add_bond(ids[b.begin], ids[b.end], 1, "dative")
+        else:
+            nb = doc.add_bond(ids[b.begin], ids[b.end], b.order, stereo)
         keys.append(("bond", nb.id))
     for a, aid in zip(atoms, ids):
         if a.explicit_h is not None and a.symbol != "*":

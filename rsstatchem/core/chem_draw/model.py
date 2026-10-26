@@ -1,7 +1,8 @@
 """Drawing document of the structure / reaction editor (the ChemDraw document model).
 
 A :class:`Document` holds atoms and bonds (any number of molecules), reaction arrows (also
-curved electron-pushing arrows), "+" signs, free text boxes and brackets. Coordinates are in
+curved electron-pushing arrows), "+" signs, free text boxes, brackets, Bezier curves (the Pen
+tool, ChemDraw's Curves menu) and orbitals. Coordinates are in
 points with y pointing down (screen / scene convention). Every object has an integer id that
 is unique within the document; objects are addressed by keys ``(kind, id)`` with kind in
 :data:`KINDS`.
@@ -14,19 +15,25 @@ from __future__ import annotations
 import json
 import math
 from collections import deque
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 from rsstatchem.core.chem_draw.style import Style
 
-__all__ = ["Atom", "Bond", "Arrow", "Plus", "TextBox", "Bracket", "Document", "KINDS",
-           "FORMAT", "VERSION", "save_rsc", "load_rsc", "ARROW_KINDS", "BOND_STYLES"]
+__all__ = ["Atom", "Bond", "Arrow", "Plus", "TextBox", "Bracket", "Curve", "Orbital",
+           "Document", "KINDS", "FORMAT", "VERSION", "save_rsc", "load_rsc", "ARROW_KINDS",
+           "BOND_STYLES", "ORBITAL_KINDS", "ORBITAL_FILLS", "OBJECT_KINDS"]
 
 FORMAT = "rs-statchem-drawing"
 VERSION = 1
-KINDS = ("atom", "bond", "arrow", "plus", "text", "bracket")
+KINDS = ("atom", "bond", "arrow", "plus", "text", "bracket", "curve", "orbital")
+OBJECT_KINDS = ("arrow", "plus", "text", "bracket", "curve", "orbital")   # not atoms/bonds
 ARROW_KINDS = ("forward", "equilibrium", "retro", "resonance", "curved", "fishhook", "line")
 REACTION_ARROWS = ("forward", "equilibrium", "retro", "resonance")
-BOND_STYLES = ("", "wedge", "hash", "wavy", "bold", "dashed", "either")
+# hollow = hollow wedged, hashed = plain (non-wedged) hashed bond, dative = arrow a -> b
+BOND_STYLES = ("", "wedge", "hash", "wavy", "bold", "dashed", "either", "hollow", "hashed",
+               "dative")
+ORBITAL_KINDS = ("s", "p", "lobe", "hybrid", "dxy", "dz2")
+ORBITAL_FILLS = ("plain", "shaded", "filled", "phase")
 
 
 @dataclass
@@ -116,10 +123,49 @@ class Bracket:
     color: str = ""
 
 
+@dataclass
+class Curve:
+    """Cubic Bezier curve drawn with the Pen tool. ``points`` holds three points per anchor
+    in ChemDraw's CurvePoints order: [control in, anchor, control out, control in, anchor,
+    ...] (the first "in" and last "out" handles of an open curve are unused)."""
+    id: int
+    points: list = field(default_factory=list)     # [[x, y], ...], 3 per anchor
+    closed: bool = False
+    dashed: bool = False
+    bold: bool = False
+    doubled: bool = False
+    filled: bool = False
+    shaded: bool = False
+    arrow_start: str = ""           # "" | "full" | "half"
+    arrow_end: str = ""
+    z: float = 0.0
+    group: int = 0
+    color: str = ""
+
+    def anchors(self) -> list[list[float]]:
+        return [self.points[k] for k in range(1, len(self.points), 3)]
+
+
+@dataclass
+class Orbital:
+    """Atomic / hybrid orbital centred on (x, y); ``angle`` (radians, screen y down) is the
+    direction of the main lobe."""
+    id: int
+    x: float
+    y: float
+    kind: str = "p"                 # see ORBITAL_KINDS
+    fill: str = "shaded"            # see ORBITAL_FILLS (phase = alternate filled lobes)
+    size: float = 0.0               # lobe length in pt; 0 = the style's bond length
+    angle: float = -math.pi / 2     # up
+    z: float = 0.0
+    group: int = 0
+    color: str = ""
+
+
 _CLASSES = {"atom": Atom, "bond": Bond, "arrow": Arrow, "plus": Plus, "text": TextBox,
-            "bracket": Bracket}
+            "bracket": Bracket, "curve": Curve, "orbital": Orbital}
 _STORES = {"atom": "atoms", "bond": "bonds", "arrow": "arrows", "plus": "pluses",
-           "text": "texts", "bracket": "brackets"}
+           "text": "texts", "bracket": "brackets", "curve": "curves", "orbital": "orbitals"}
 
 
 def _from_dict(cls, data: dict):
@@ -138,6 +184,8 @@ class Document:
         self.pluses: dict[int, Plus] = {}
         self.texts: dict[int, TextBox] = {}
         self.brackets: dict[int, Bracket] = {}
+        self.curves: dict[int, Curve] = {}
+        self.orbitals: dict[int, Orbital] = {}
         self.meta: dict = {}
         self._next = 1
 
@@ -199,6 +247,17 @@ class Document:
                     label)
         self.brackets[b.id] = b
         return b
+
+    def add_curve(self, points, **kw) -> Curve:
+        """Curve from ``points`` (3 per anchor, see :class:`Curve`)."""
+        c = Curve(self.new_id(), [[float(x), float(y)] for x, y in points], **kw)
+        self.curves[c.id] = c
+        return c
+
+    def add_orbital(self, x: float, y: float, kind: str = "p", **kw) -> Orbital:
+        o = Orbital(self.new_id(), float(x), float(y), kind, **kw)
+        self.orbitals[o.id] = o
+        return o
 
     # --- graph queries -----------------------------------------------------------------
     def bonds_of(self, aid: int) -> list[Bond]:
@@ -330,6 +389,32 @@ class Document:
                     best, best_d = ar, d
         return best
 
+    def curve_at(self, x: float, y: float, tol: float) -> Curve | None:
+        from rsstatchem.core.chem_draw.geometry import curve_path_points
+        best, best_d = None, tol
+        for c in self.curves.values():
+            pts = curve_path_points(c)
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+                d, _ = point_segment(x, y, x1, y1, x2, y2)
+                if d <= best_d:
+                    best, best_d = c, d
+            if c.closed and (c.filled or c.shaded) and _inside(x, y, pts) and best is None:
+                best = c
+        return best
+
+    def orbital_at(self, x: float, y: float, tol: float) -> Orbital | None:
+        from rsstatchem.core.chem_draw.geometry import orbital_outline
+        best, best_d = None, None
+        for o in self.orbitals.values():
+            for lobe, _fill in orbital_outline(o, self.style.bond_length):
+                if _inside(x, y, lobe) or min(math.hypot(x - px, y - py)
+                                              for px, py in lobe) <= tol:
+                    d = math.hypot(x - o.x, y - o.y)
+                    if best_d is None or d < best_d:
+                        best, best_d = o, d
+                    break
+        return best
+
     # --- edits ---------------------------------------------------------------------------
     def remove(self, keys) -> None:
         keys = list(keys)
@@ -387,17 +472,19 @@ class Document:
                 continue
             if k in ("arrow", "bracket"):
                 pts += [(o, "x1", "y1"), (o, "x2", "y2")]
-            elif k in ("plus", "text"):
+            elif k in ("plus", "text", "orbital"):
                 pts.append((o, "x", "y"))
+            elif k == "curve":
+                pts += [(p, 0, 1) for p in o.points]
         return pts
 
     def move(self, keys, dx: float, dy: float) -> None:
         for o, xa, ya in self._points(keys):
-            setattr(o, xa, getattr(o, xa) + dx)
-            setattr(o, ya, getattr(o, ya) + dy)
+            _set(o, xa, _get(o, xa) + dx)
+            _set(o, ya, _get(o, ya) + dy)
 
     def center(self, keys) -> tuple[float, float]:
-        pts = [(getattr(o, xa), getattr(o, ya)) for o, xa, ya in self._points(keys)]
+        pts = [(_get(o, xa), _get(o, ya)) for o, xa, ya in self._points(keys)]
         if not pts:
             return 0.0, 0.0
         xs, ys = zip(*pts)
@@ -410,24 +497,29 @@ class Document:
             cx, cy = self.center(keys)
         c, s = math.cos(angle), math.sin(angle)
         for o, xa, ya in self._points(keys):
-            x, y = getattr(o, xa) - cx, getattr(o, ya) - cy
-            setattr(o, xa, cx + c * x - s * y)
-            setattr(o, ya, cy + s * x + c * y)
+            x, y = _get(o, xa) - cx, _get(o, ya) - cy
+            _set(o, xa, cx + c * x - s * y)
+            _set(o, ya, cy + s * x + c * y)
         for k, i in keys:
             if k == "bracket" and i in self.brackets:
                 self._normalize_bracket(self.brackets[i])
+            elif k == "orbital" and i in self.orbitals:
+                self.orbitals[i].angle += angle
 
     def flip(self, keys, horizontal: bool = True) -> None:
         """Mirror left-right (``horizontal``) or top-bottom around the selection centre."""
         cx, cy = self.center(keys)
         for o, xa, ya in self._points(keys):
             if horizontal:
-                setattr(o, xa, 2 * cx - getattr(o, xa))
+                _set(o, xa, 2 * cx - _get(o, xa))
             else:
-                setattr(o, ya, 2 * cy - getattr(o, ya))
+                _set(o, ya, 2 * cy - _get(o, ya))
         for k, i in keys:
             if k == "arrow" and i in self.arrows:
                 self.arrows[i].bend = -self.arrows[i].bend
+            if k == "orbital" and i in self.orbitals:
+                o = self.orbitals[i]
+                o.angle = (math.pi - o.angle) if horizontal else -o.angle
             if k == "bracket" and i in self.brackets:
                 self._normalize_bracket(self.brackets[i])
 
@@ -438,10 +530,13 @@ class Document:
 
     def scale(self, factor: float, cx: float = 0.0, cy: float = 0.0) -> None:
         for o, xa, ya in self._points(self.keys()):
-            setattr(o, xa, cx + (getattr(o, xa) - cx) * factor)
-            setattr(o, ya, cy + (getattr(o, ya) - cy) * factor)
+            _set(o, xa, cx + (_get(o, xa) - cx) * factor)
+            _set(o, ya, cy + (_get(o, ya) - cy) * factor)
         for ar in self.arrows.values():
             ar.bend *= factor
+        for o in self.orbitals.values():
+            if o.size:
+                o.size *= factor
 
     def merge_atoms(self, drop: int, keep: int) -> None:
         """Fuse atom ``drop`` into ``keep`` (bonds are re-attached; duplicates dropped)."""
@@ -476,7 +571,12 @@ class Document:
 
     def bbox(self, keys=None) -> tuple[float, float, float, float] | None:
         keys = self.keys() if keys is None else keys
-        pts = [(getattr(o, xa), getattr(o, ya)) for o, xa, ya in self._points(keys)]
+        pts = [(_get(o, xa), _get(o, ya)) for o, xa, ya in self._points(keys)]
+        for k, i in keys:                               # orbitals extend around the centre
+            o = self.orbitals.get(i) if k == "orbital" else None
+            if o is not None:
+                r = o.size or self.style.bond_length
+                pts += [(o.x - r, o.y - r), (o.x + r, o.y + r)]
         if not pts:
             return None
         xs, ys = zip(*pts)
@@ -500,7 +600,7 @@ class Document:
         return out
 
     def top_z(self) -> float:
-        zs = [o.z for k in ("arrow", "plus", "text", "bracket") for o in self.store(k).values()]
+        zs = [o.z for k in OBJECT_KINDS for o in self.store(k).values()]
         return max(zs + [0.0])
 
     # --- (de)serialisation ---------------------------------------------------------------
@@ -562,7 +662,7 @@ class Document:
                 nb = self.add_bond(amap[b.a], amap[b.b], b.order, b.style,
                                    double_pos=b.double_pos, color=b.color)
                 new_keys.append(("bond", nb.id))
-        for k in ("arrow", "plus", "text", "bracket"):
+        for k in OBJECT_KINDS:
             for o in other.store(k).values():
                 d = asdict(o)
                 d["id"] = self.new_id()
@@ -571,6 +671,8 @@ class Document:
                     if xa in d:
                         d[xa] += dx
                         d[ya] += dy
+                if "points" in d:
+                    d["points"] = [[px + dx, py + dy] for px, py in d["points"]]
                 no = _from_dict(_CLASSES[k], d)
                 self.store(k)[no.id] = no
                 new_keys.append((k, no.id))
@@ -582,6 +684,29 @@ class Document:
     @classmethod
     def from_json(cls, text: str) -> "Document":
         return cls.from_dict(json.loads(text))
+
+
+def _get(o, a):
+    return o[a] if isinstance(o, list) else getattr(o, a)
+
+
+def _set(o, a, v) -> None:
+    if isinstance(o, list):
+        o[a] = v
+    else:
+        setattr(o, a, v)
+
+
+def _inside(x: float, y: float, poly) -> bool:
+    """Point in polygon (even-odd rule)."""
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / ((y2 - y1) or 1e-12):
+            inside = not inside
+    return inside
 
 
 def point_segment(px, py, x1, y1, x2, y2) -> tuple[float, float]:
