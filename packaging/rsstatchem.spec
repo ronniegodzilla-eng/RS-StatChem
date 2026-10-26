@@ -8,8 +8,36 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parent
 RES = ROOT / "rsstatchem" / "resources"
-VERSION = re.search(r'__version__ = "([^"]+)"',
-                    (ROOT / "rsstatchem" / "__init__.py").read_text()).group(1)
+_INIT = (ROOT / "rsstatchem" / "__init__.py").read_text(encoding="utf-8")
+VERSION = re.search(r'__version__ = "([^"]+)"', _INIT).group(1)
+COPYRIGHT = re.search(r'COPYRIGHT = "([^"]+)"', _INIT).group(1)
+
+
+def windows_version_file() -> str | None:
+    """Version resource for RS-StatChem.exe (Properties > Details shows version and
+    copyright)."""
+    if sys.platform != "win32":
+        return None
+    nums = (tuple(int(n) for n in re.findall(r"\d+", VERSION)[:3]) + (0, 0, 0, 0))[:4]
+    fields = {"CompanyName": "RS Education", "FileDescription": "RS-StatChem",
+              "FileVersion": VERSION, "InternalName": "RS-StatChem",
+              "LegalCopyright": COPYRIGHT, "OriginalFilename": "RS-StatChem.exe",
+              "ProductName": "RS-StatChem", "ProductVersion": VERSION}
+    strings = ",\n".join(f"        StringStruct({k!r}, {v!r})" for k, v in fields.items())
+    text = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={nums}, prodvers={nums}, mask=0x3f, flags=0x0, OS=0x40004,
+                    fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [
+{strings}])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    path = Path(workpath) / "version_info.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return str(path)
 
 # Every module of the package, found from the files rather than by importing the package:
 # PyInstaller's collect_submodules() silently returns nothing when the project folder is not on
@@ -71,6 +99,7 @@ exe = EXE(
     icon=str(RES / ("icon.ico" if sys.platform == "win32" else "icon.icns")),
     argv_emulation=False,
     upx=False,
+    version=windows_version_file(),
 )
 
 coll = COLLECT(exe, a.binaries, a.datas, name="RS-StatChem", upx=False)
@@ -87,6 +116,7 @@ if sys.platform == "darwin":
             "CFBundleDisplayName": "RS-StatChem",
             "CFBundleShortVersionString": VERSION,
             "CFBundleVersion": VERSION,
+            "NSHumanReadableCopyright": COPYRIGHT,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "12.0",
             "NSRequiresAquaSystemAppearance": True,
@@ -102,6 +132,14 @@ if sys.platform == "darwin":
             }, {
                 "CFBundleTypeName": "RS-StatChem Chemical Drawing",
                 "CFBundleTypeExtensions": ["rsc"],
+                "CFBundleTypeRole": "Editor",
+            }, {
+                "CFBundleTypeName": "RS-StatChem Design (RSM)",
+                "CFBundleTypeExtensions": ["rsx"],
+                "CFBundleTypeRole": "Editor",
+            }, {
+                "CFBundleTypeName": "RS-StatChem Graph Project",
+                "CFBundleTypeExtensions": ["rsop"],
                 "CFBundleTypeRole": "Editor",
             }, {
                 "CFBundleTypeName": "SPSS Data",
