@@ -161,7 +161,8 @@ def _design_points(ax, pts, color=POINT, size=26):
         return
     pts = np.asarray(pts, float)
     uniq, counts = np.unique(np.round(pts, 8), axis=0, return_counts=True)
-    ax.scatter(uniq[:, 0], uniq[:, 1], s=size, color=color, edgecolor="#5a0b0b", zorder=5)
+    ax.scatter(uniq[:, 0], uniq[:, 1], s=size, color=color, edgecolor="#5a0b0b", zorder=5,
+               clip_on=False)
     for (x, y), c in zip(uniq, counts):
         if c > 1:
             ax.annotate(str(c), (x, y), xytext=(4, 4), textcoords="offset points", fontsize=7,
@@ -514,4 +515,47 @@ def main_effects_plot(names: list[str], labels: list[list[str]], means: list[lis
         ax.set_xlim(-0.4, len(m) - 0.6)
     axes[0].set_ylabel(ylabel, fontsize=8)
     fig.suptitle(title, fontsize=11, fontweight="bold")
+    return _png(fig)
+
+
+# ---------------------------------------------------------------------------- design tools
+def fds_plot(frac: np.ndarray, se: np.ndarray, title: str = "FDS Graph",
+             marks=(0.5, 0.8)) -> bytes:
+    """Fraction of design space: sorted prediction standard error (sigma units)."""
+    fig = _figure()
+    ax = fig.add_subplot()
+    if len(frac):
+        ax.plot(frac, se, color="#1f3fbf", linewidth=1.8)
+        for m in marks:
+            i = min(int(m * len(se)), len(se) - 1)
+            ax.axvline(m, color="#9e9e9e", linewidth=0.8, linestyle="--")
+            ax.annotate(f"{se[i]:.3f}", (m, se[i]), xytext=(4, -10), textcoords="offset points",
+                        fontsize=7, color="#333333")
+        ax.set_xlim(0, 1)
+    _style(ax, title, "Fraction of Design Space", "Std Error Mean")
+    return _png(fig)
+
+
+def scatter_plot(x: np.ndarray, y: np.ndarray, xlabel: str, ylabel: str, title: str = "",
+                 color=None, color_label: str = "") -> bytes:
+    """Graph Columns: one design column against another, optionally coloured by a third."""
+    fig = _figure()
+    ax = fig.add_subplot()
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    if color is not None:
+        c = np.asarray(color, float)
+        ok &= np.isfinite(c)
+        sc = ax.scatter(x[ok], y[ok], c=c[ok], cmap=DE_CMAP, s=36, edgecolor="#333333",
+                        linewidth=0.5, zorder=3)
+        cbar = fig.colorbar(sc, ax=ax, shrink=0.85)
+        cbar.ax.tick_params(labelsize=7)
+        cbar.set_label(color_label, fontsize=8)
+    else:
+        ax.scatter(x[ok], y[ok], s=36, color=POINT, edgecolor="#5a0b0b", zorder=3)
+    if ok.sum() >= 3 and np.ptp(x[ok]) > 0 and np.ptp(y[ok]) > 0:
+        r = float(np.corrcoef(x[ok], y[ok])[0, 1])
+        ax.text(0.99, 0.02, f"Correlation: {r:.3f}", transform=ax.transAxes, fontsize=8,
+                ha="right", va="bottom", color="#555555")
+    _style(ax, title or f"{ylabel} vs {xlabel}", xlabel, ylabel)
     return _png(fig)
