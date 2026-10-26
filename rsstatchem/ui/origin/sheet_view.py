@@ -172,6 +172,7 @@ class SheetView(QTableView):
         vh.setDefaultSectionSize(21)
         vh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         vh.setMinimumWidth(78)
+        vh.setHighlightSections(False)
         vh.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         vh.customContextMenuRequested.connect(self._row_menu)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

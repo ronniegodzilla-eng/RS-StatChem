@@ -65,6 +65,8 @@ QPushButton {{ background: #e1e1e1; border: 1px solid #adadad; border-radius: 0p
 QPushButton:hover {{ background: {HOVER}; border-color: #0078d7; }}
 QPushButton:default {{ border: 1px solid #0078d7; background: #e1e1e1; color: #000; }}
 QPushButton:default:hover {{ background: {HOVER}; }}
+QPushButton#menuButton {{ padding: 3px 24px 3px 10px; }}
+QPushButton#menuButton::menu-indicator {{ subcontrol-position: right center; right: 6px; }}
 QPushButton#arrow {{ min-width: 30px; max-width: 34px; padding: 3px 2px; }}
 QPushButton:disabled {{ color: #a0a0a0; background: #f4f4f4; border-color: #d0d0d0; }}
 QListWidget, QTreeWidget, QTextBrowser, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox,

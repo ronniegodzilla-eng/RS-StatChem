@@ -120,7 +120,7 @@ class SetValuesDialog(QDialog):
             ex_menu.addAction(f"{text}    — {desc}", lambda t=text: self.edit.setPlainText(t))
         ex_b.setMenu(ex_menu)
         for b in (func_b, col_b, ex_b):
-            b.setMinimumWidth(b.fontMetrics().horizontalAdvance(b.text()) + 44)
+            b.setObjectName("menuButton")
         top = QHBoxLayout()
         top.addWidget(QLabel("Row (i):  From"))
         top.addWidget(self.first)
@@ -476,8 +476,6 @@ class AddPlotDialog(QDialog):
             item = QListWidgetItem(ws.label(i) + (f"   {c.long_name}" if c.long_name else ""))
             item.setData(Qt.ItemDataRole.UserRole, i)
             self.columns.addItem(item)
-            if c.designation == "Y":
-                item.setSelected(False)
 
     def values(self) -> dict | None:
         if not self.entries:

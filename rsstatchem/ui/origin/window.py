@@ -102,6 +102,7 @@ class OriginMainWindow(QMainWindow):
                             | QMainWindow.DockOption.AnimatedDocks)
         self.resize(1360, 860)
         self.setWindowIcon(icon("e_graph"))
+        self.setAcceptDrops(True)
 
         # MDI title bars: Fusion paints the active one in the Highlight colour
         self._sub_palette = self.palette()
@@ -122,6 +123,12 @@ class OriginMainWindow(QMainWindow):
         self.explorer.set_project(self.project)
         self._activated(None)
         self._update_title()
+        state = self._setting("window_state")
+        if state is not None:   # docks / toolbars as the user left them
+            try:
+                self.restoreState(state)
+            except TypeError:
+                pass
 
     # ================================================================== docks
     def _build_docks(self) -> None:
@@ -2345,12 +2352,25 @@ class OriginMainWindow(QMainWindow):
         notes = Notes(self.project.unique_name("GettingStarted"), text)
         self.new_notes(notes)
 
+    # ================================================================== drag & drop
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        """Drop .rsop / .rsg files to open them, data files (CSV, TXT, Excel) to import."""
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                self.open_path(url.toLocalFile())
+        event.acceptProposedAction()
+
     # ================================================================== close
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self.confirm_discard():
             event.ignore()
             return
         self.closing_all = True
+        self._set_setting("window_state", self.saveState())
         event.accept()
         super().closeEvent(event)
         if self.ctx is not None:
