@@ -86,6 +86,10 @@ def summary_items(doc) -> list:
         rows.append(["Orthogonal Array", meta["taguchi"]])
     if meta.get("mixture"):
         rows.append(["Mixture Total", num(meta["mixture"]["total"])])
+    if meta.get("block_generators") and doc.n_blocks > 1:
+        rows.append(["Block Generators", ", ".join(meta["block_generators"])
+                     + (" (confounded with whole-plot interactions)"
+                        if meta.get("split_plot") else "")])
     if meta.get("min_run"):
         rows.append(["Min-Run Type", meta["min_run"]])
     sp = meta.get("split_plot")

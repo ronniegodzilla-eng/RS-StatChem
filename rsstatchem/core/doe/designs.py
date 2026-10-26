@@ -6,9 +6,12 @@ factorials, Plackett-Burman, central composite (circumscribed / inscribed / face
 rotatable, orthogonal, practical, spherical or custom alpha, blocks), Box-Behnken, 3-level
 factorials, D-optimal designs (point exchange from a candidate set), mixture designs (simplex
 lattice, simplex centroid, extreme vertices for constrained regions, D-optimal mixtures) and
-Taguchi orthogonal arrays, minimum-run resolution V and IV designs (exchange algorithms),
-foldovers, categoric factors in factorial / response surface / optimal designs and split-plot
-designs with hard-to-change factors (whole plots, restricted randomisation).
+Taguchi orthogonal arrays, minimum-run resolution V and IV designs for up to 50 factors
+(fast columnwise-pairwise / single-entry exchange on the inverse model matrix), foldovers,
+categoric factors in factorial / response surface / optimal designs and split-plot designs
+with hard-to-change numeric or categoric factors (whole plots, restricted randomisation,
+split-plot CCD and D-optimal designs, two-level split plots blocked by confounding whole-plot
+interactions).
 
 :func:`build_design` turns a wizard specification into a :class:`Dataset` with columns
 Std, Run, Block, Space Type, the factors in actual units and empty response columns; the design
@@ -22,6 +25,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from scipy.linalg import blas
 
 from rsstatchem.core.dataset import NOMINAL, ORDINAL, Dataset, Variable, sanitize_name
 
@@ -655,71 +659,112 @@ def mr4_runs(k: int, extra: bool = True) -> int:
     return 2 * k + (2 if extra else 0)
 
 
-def _ratio_replace(Minv: np.ndarray, f: np.ndarray, g: np.ndarray) -> np.ndarray:
-    """det(M - f f' + g g') / det(M) for rows f -> g (vectorised over the leading axis)."""
-    df = np.einsum("...i,ij,...j->...", f, Minv, f)
-    dg = np.einsum("...i,ij,...j->...", g, Minv, g)
-    dfg = np.einsum("...i,ij,...j->...", f, Minv, g)
-    return (1 + dg) * (1 - df) + dfg ** 2
+MR_MAX_FACTORS = 50  # Design-Expert screens and characterizes up to 50 factors
 
 
-def _replace_inverse(Minv: np.ndarray, f: np.ndarray, g: np.ndarray) -> np.ndarray:
-    """(M - f f' + g g')^-1 by the Woodbury identity."""
-    U = np.column_stack([g, f])
-    Cinv = np.diag([1.0, -1.0])
-    K = Cinv + U.T @ Minv @ U
-    return Minv - Minv @ U @ np.linalg.solve(K, U.T @ Minv)
+def _flip_support(k: int, extra: bool) -> list[np.ndarray]:
+    """For each factor c, the columns of the square MR5 model matrix (intercept, A..K, the
+    two-factor interactions and, when the run count is the number of terms + 1, the
+    interaction of the last three factors) whose sign flips when c is switched in a run."""
+    p = 1 + k + k * (k - 1) // 2
+    sup = [[1 + c] for c in range(k)]
+    for t, (i, j) in enumerate(itertools.combinations(range(k), 2)):
+        sup[i].append(1 + k + t)
+        sup[j].append(1 + k + t)
+    if extra:
+        for c in (k - 3, k - 2, k - 1):
+            sup[c].append(p)
+    return [np.array(s) for s in sup]
 
 
-def min_run_res5(k: int, rng: np.random.Generator, starts: int = 4,
-                 max_pass: int = 60) -> np.ndarray:
-    """Minimum-run equireplicated resolution V design (MR5) for ``k`` two-level factors.
+def _mr5_square(D: np.ndarray, extra: bool) -> np.ndarray:
+    F = two_fi_matrix(D)
+    if extra:
+        F = np.column_stack([F, D[:, -3] * D[:, -2] * D[:, -1]])
+    return F
 
-    No closed form exists, so (as Stat-Ease's construction intends) the runs maximise
-    det(X'X) of the two-factor-interaction model subject to equireplication — every column
-    has as many high as low settings — by an exchange algorithm that swaps a + and a - within a
-    column (each swap keeps the balance), several random balanced starts, deterministic for a
-    given seed."""
+
+def min_run_res5(k: int, rng: np.random.Generator, starts: int | None = None,
+                 max_pass: int = 40, candidates: int = 64, tol: float = 0.005) -> np.ndarray:
+    """Minimum-run equireplicated resolution V design (MR5) for ``k`` two-level factors
+    (6 to 50; Oehlert & Whitcomb 2002, Stat-Ease's "Min-Run Characterize").
+
+    The run count is the number of two-factor-interaction model terms raised to an even
+    number, so the model matrix F is square (with one extra column, the interaction of the
+    last three factors, when a run was added). The runs maximise |det F| — det(F'F) of the
+    2FI model itself in the square case and a lower bound of it otherwise — subject to
+    equireplication, by a columnwise-pairwise exchange (Li & Wu 1997): within a column a +
+    and a - are swapped, which keeps every factor balanced. All swaps of a column are scored
+    at once from the inverse G = F^-1: switching factor c in run i multiplies det F by
+    1 - 2 sum_s F[i,s] G[s,i] over the columns s that involve c, a swap of two runs by the
+    corresponding 2 x 2 determinant, and the best swap updates G by a rank-2 Woodbury step.
+    A random balanced start that is singular is handled through F + eps I. Passes stop when
+    the D-efficiency gains less than ``tol`` (relative) in a pass; the result is
+    deterministic for a given seed. 50 factors (1276 runs) take a few seconds."""
     if k < 2:
         raise ValueError("Min-Run Characterize needs at least 2 factors.")
+    if k > MR_MAX_FACTORS:
+        raise ValueError(f"Min-Run Characterize is available for up to {MR_MAX_FACTORS} "
+                         "factors.")
     n = mr5_runs(k)
     p = 1 + k + k * (k - 1) // 2
+    extra = n > p
+    if extra and k < 3:
+        raise ValueError("Min-Run Characterize needs at least 3 factors here.")
+    sup = _flip_support(k, extra)
+    if starts is None:
+        starts = 8 if n <= 64 else 4 if n <= 200 else 2 if n <= 500 else 1
+    dtype = np.float32 if n > 300 else np.float64   # halves the memory traffic of G
+    accept = 1 + (1e-5 if dtype is np.float32 else 1e-9)
+    eps = 1e-3
     best, best_ld = None, -np.inf
-    for _ in range(starts):
+    for _start in range(starts):
         D = np.column_stack([rng.permutation(np.repeat([1.0, -1.0], n // 2))
                              for _ in range(k)])
-        F = two_fi_matrix(D)
-        ridge = 1e-6 * n * np.eye(p)
+        F = np.asfortranarray(_mr5_square(D, extra))   # column blocks F[:, S] contiguous
+        Fe = F + eps * np.eye(n)
+        gemm = blas.sgemm if dtype is np.float32 else blas.dgemm
         for _pass in range(max_pass):
-            improved = False
-            for c in range(k):
-                Minv = np.linalg.inv(F.T @ F + ridge)
-                plus = np.flatnonzero(D[:, c] > 0)
-                for i in rng.permutation(plus):
-                    if D[i, c] < 0:
-                        continue
+            G = np.ascontiguousarray(np.linalg.inv(Fe), dtype=dtype)  # row blocks G[S]
+            gain, swaps = 0.0, 0
+            for c in rng.permutation(k):
+                S = sup[c]
+                for _rep in range(8):
+                    Fc, GS = F[:, S], G[S]
+                    w = 1 - 2 * np.einsum("ij,ji->i", Fc, GS)  # single-switch ratios
+                    plus = np.flatnonzero(D[:, c] > 0)
                     minus = np.flatnonzero(D[:, c] < 0)
-                    Di = D[i].copy()
-                    Di[c] = -Di[c]
-                    gi = two_fi_matrix(Di[None, :])[0]
-                    r1 = _ratio_replace(Minv, F[i], gi)
-                    if r1 <= 1e-12:
-                        continue
-                    M1inv = _replace_inverse(Minv, F[i], gi)
-                    Dj = D[minus].copy()
-                    Dj[:, c] = -Dj[:, c]
-                    Gj = two_fi_matrix(Dj)
-                    r2 = _ratio_replace(M1inv, F[minus], Gj)
-                    j = int(np.argmax(r2))
-                    if r1 * r2[j] > 1 + 1e-9:
-                        jj = minus[j]
-                        D[i, c], D[jj, c] = -1.0, 1.0
-                        F[i], F[jj] = gi, Gj[j]
-                        Minv = np.linalg.inv(F.T @ F + ridge)
-                        improved = True
-            if not improved:
+                    m = min(candidates, len(plus))
+                    if m < len(plus):
+                        P = plus[np.argpartition(-np.abs(w[plus]), m - 1)[:m]]
+                        Q = minus[np.argpartition(-np.abs(w[minus]), m - 1)[:m]]
+                    else:
+                        P, Q = plus, minus
+                    ratio = (np.outer(w[P], w[Q])
+                             - 4 * (Fc[P] @ GS[:, Q]) * (Fc[Q] @ GS[:, P]).T)
+                    idx = int(np.argmax(np.abs(ratio)))
+                    r = abs(float(ratio.flat[idx]))
+                    if r <= accept:
+                        break
+                    i, j = P[idx // m], Q[idx % m]
+                    VG = -2 * np.vstack([F[i, S] @ GS, F[j, S] @ GS])
+                    a, b, cc, d = 1 + VG[0, i], VG[0, j], VG[1, i], 1 + VG[1, j]
+                    det = a * d - b * cc
+                    Y = np.vstack([d * VG[0] - b * VG[1], a * VG[1] - cc * VG[0]]) / det
+                    # G -= G[:, [i, j]] @ Y in place, as G' -= Y' G[:, [i, j]]' (G' is
+                    # Fortran-ordered, so BLAS updates it without a copy)
+                    G = gemm(-1.0, Y.T.astype(dtype), G[:, [i, j]].T, 1.0, G.T,
+                             overwrite_c=True).T
+                    F[i, S], F[j, S] = -F[i, S], -F[j, S]
+                    Fe[i, S] = F[i, S] + eps * (S == i)
+                    Fe[j, S] = F[j, S] + eps * (S == j)
+                    D[i, c], D[j, c] = -1.0, 1.0
+                    swaps += 1
+                    gain += math.log(r)
+            if not swaps or 2 * gain / n < tol:
                 break
-        sign, ld = np.linalg.slogdet(F.T @ F)
+        F2 = two_fi_matrix(D)
+        sign, ld = np.linalg.slogdet(F2.T @ F2)
         if sign > 0 and ld > best_ld + 1e-9:
             best, best_ld = D.copy(), ld
     if best is None:
@@ -728,31 +773,32 @@ def min_run_res5(k: int, rng: np.random.Generator, starts: int = 4,
     return best
 
 
-def max_det_pm1(k: int, rng: np.random.Generator, starts: int = 6,
-                max_pass: int = 60) -> np.ndarray:
-    """A k x k matrix of +-1 with (locally) maximal |det| by coordinate exchange; for k a
-    multiple of 4 (and k <= 24 here) a Hadamard matrix is used directly."""
+def max_det_pm1(k: int, rng: np.random.Generator, starts: int = 6) -> np.ndarray:
+    """A k x k matrix of +-1 with (locally) maximal |det|: a Hadamard matrix when one can be
+    built, else greedy single-entry exchange — every switch scored at once as
+    1 - 2 X[i,c] G[c,i] from G = X^-1 and applied by a Sherman-Morrison update."""
     h = _hadamard(k) if k % 4 == 0 else None
     if h is not None:
         return h.copy()
+    eps = 1e-3
     best, best_ld = None, -np.inf
     for _ in range(starts):
         X = rng.choice([-1.0, 1.0], size=(k, k))
-        ridge = 1e-6 * np.eye(k)
-        for _pass in range(max_pass):
-            improved = False
-            Minv = np.linalg.inv(X.T @ X + ridge)
-            for i in range(k):
-                for c in range(k):
-                    g = X[i].copy()
-                    g[c] = -g[c]
-                    if _ratio_replace(Minv, X[i], g) > 1 + 1e-9:
-                        X[i] = g
-                        Minv = np.linalg.inv(X.T @ X + ridge)
-                        improved = True
-            if not improved:
+        Xe = X + eps * np.eye(k)
+        G = np.linalg.inv(Xe)
+        for flip in range(20 * k * k):
+            if flip and flip % (4 * k) == 0:
+                G = np.linalg.inv(Xe)  # refresh against round-off
+            R = np.abs(1 - 2 * X * G.T)
+            idx = int(np.argmax(R))
+            if R.flat[idx] <= 1 + 1e-9:
                 break
-        sign, ld = np.linalg.slogdet(X.T @ X)
+            i, c = divmod(idx, k)
+            v = -2 * X[i, c]
+            G -= np.outer(G[:, i], G[c, :]) * (v / (1 + v * G[c, i]))
+            X[i, c] = -X[i, c]
+            Xe[i, c] += v
+        sign, ld = np.linalg.slogdet(X)
         if sign != 0 and ld > best_ld + 1e-9:
             best, best_ld = X.copy(), ld
     if best is None:
@@ -768,13 +814,15 @@ def min_run_res4(k: int, rng: np.random.Generator, extra: bool = True) -> np.nda
     protects against a lost run); the pair keeps both the foldover property and balance."""
     if k < 3:
         raise ValueError("Min-Run Screen needs at least 3 factors.")
+    if k > MR_MAX_FACTORS:
+        raise ValueError(f"Min-Run Screen is available for up to {MR_MAX_FACTORS} factors.")
     X0 = max_det_pm1(k, rng)
     D = np.vstack([X0, -X0])
     if extra:
         Minv = np.linalg.inv(X0.T @ X0)
         if k <= 14:
             cand = full_factorial(k)
-            score = np.einsum("ij,jk,ik->i", cand, Minv, cand)
+            score = np.einsum("ij,ij->i", cand @ Minv, cand)
             x = cand[int(np.argmax(score))]
         else:
             x = rng.choice([-1.0, 1.0], size=k)
@@ -888,6 +936,50 @@ def assign_whole_plots(coded: np.ndarray, hard: list[int], groups_per_rep: int |
     return gid, words
 
 
+def split_plot_block_words(k: int, group: list[tuple[int, int]], hard: list[int],
+                           wp_words: list[int], n_blocks: int) -> list[int]:
+    """Block generators of a split-plot two-level factorial in 2^b blocks.
+
+    Blocks must hold whole plots intact, so they are confounded with whole-plot contrasts —
+    words spanned by the hard-to-change factors and the easy-to-change interactions that split
+    the whole plots, modulo the defining relation — chosen, as for completely randomised
+    designs, so that the words confounded with blocks (and their aliases) have the highest
+    order. Each word is reported by its shortest alias."""
+    b = int(round(math.log2(n_blocks))) if n_blocks > 1 else 0
+    if b == 0:
+        return []
+    if 2 ** b != n_blocks:
+        raise ValueError("The number of blocks of a two-level design must be a power of 2.")
+    full = [0] + [w for w, _ in group]
+    basis = [1 << h for h in hard] + list(wp_words)
+    span = {0}
+    for w in basis:
+        span |= {s ^ w for s in span}
+    reps = {}
+    for w in span - {0}:
+        cls = [w ^ g for g in full]
+        rep = min(cls, key=word_key)
+        reps[rep] = min(popcount(c) for c in cls)
+    if len(reps) + 1 < 2 ** b:
+        raise ValueError(f"{n_blocks} blocks need more whole plots: there are only "
+                         f"{len(reps) + 1} whole plots per replicate to place in blocks.")
+    cands = sorted(reps, key=lambda w: (-reps[w], word_key(w)))[:28]
+    best, best_score = None, None
+    for combo in itertools.combinations(cands, b):
+        sp = {0}
+        for w in combo:
+            sp |= {s ^ w for s in sp}
+        if len(sp) != 2 ** b:
+            continue
+        score = tuple(sorted(min(popcount(s ^ g) for g in full) for s in sp if s))
+        if best_score is None or score > best_score:
+            best, best_score = combo, score
+    if best is None or best_score[0] < 2:
+        raise ValueError(f"{n_blocks} blocks would confound blocks with a main effect of this "
+                         "split-plot design; use fewer blocks or more groups.")
+    return list(best)
+
+
 def split_plot_ccd(k: int, hard: list[int], alpha_type: str = "rotatable",
                    center_points: int = 1, custom_alpha: float | None = None,
                    generators: str = "") -> dict:
@@ -940,6 +1032,63 @@ def split_plot_ccd(k: int, hard: list[int], alpha_type: str = "rotatable",
         types.append(0)
     return {"coded": np.array(rows), "groups": np.array(groups), "types": np.array(types),
             "alpha": float(alpha)}
+
+
+def split_plot_ccd_categoric(k: int, hard: list[int], cat: list[int], nlev: list[int],
+                             alpha_type: str = "rotatable", center_points: int = 1,
+                             custom_alpha: float | None = None) -> dict:
+    """Split-plot central composite design with categoric factors (``cat``; codes are level
+    indices). The numeric factors form a split-plot CCD (:func:`split_plot_ccd`) when some of
+    them are hard to change and others easy; when all numeric factors are hard to change,
+    every CCD point is its own whole plot; when none is, the whole CCD is run within each
+    whole plot. The whole plots are then repeated for every combination of the hard-to-change
+    categoric levels (a new group each), and every run is repeated within its group for each
+    combination of the easy-to-change categoric levels — the same crossing Design-Expert
+    uses for response surface designs with categoric factors. (Stat-Ease offers categoric
+    factors in split-plot designs through the optimal builder only.)"""
+    num = [j for j in range(k) if j not in cat]
+    kn = len(num)
+    if kn < 2:
+        raise ValueError("A split-plot central composite design needs at least 2 numeric "
+                         "factors; use Optimal (custom) or Multilevel Categoric otherwise.")
+    nhard = [num.index(j) for j in hard if j in num]
+    cat_hard = [j for j in cat if j in hard]
+    cat_easy = [j for j in cat if j not in hard]
+    if nhard and len(nhard) < kn:
+        res = split_plot_ccd(kn, nhard, alpha_type, center_points, custom_alpha)
+        nc, ng, nt, alpha = res["coded"], res["groups"], res["types"], res["alpha"]
+    else:
+        if not cat_easy and nhard:
+            raise ValueError("A split-plot design needs at least one easy-to-change factor.")
+        res = central_composite(kn, alpha_type, "face" if alpha_type == "face"
+                                else "circumscribed", center_points,
+                                custom_alpha=custom_alpha)
+        nc, nt, alpha = res["coded"], res["types"], res["alpha"]
+        ng = np.arange(len(nc)) if nhard else np.zeros(len(nc), dtype=int)
+    n_wp = int(ng.max()) + 1
+    hard_combos = _level_combos([nlev[j] for j in cat_hard])
+    easy_combos = _level_combos([nlev[j] for j in cat_easy])
+    rows, groups, types = [], [], []
+    for hi, hc in enumerate(hard_combos):
+        for g in range(n_wp):
+            for r in np.flatnonzero(ng == g):
+                for ec in easy_combos:
+                    x = np.zeros(k)
+                    x[num] = nc[r]
+                    x[cat_hard] = hc
+                    x[cat_easy] = ec
+                    rows.append(x)
+                    groups.append(hi * n_wp + g)
+                    types.append(int(nt[r]))
+    # whole-plot error df of one replicate: groups - 1 - whole-plot fixed-effect df (the
+    # hard categoric main effects and interactions, the hard numeric terms of a quadratic)
+    n_groups = len(hard_combos) * n_wp
+    wp_terms = len(hard_combos) - 1
+    if nhard:
+        h = len(nhard)
+        wp_terms += len(hard_combos) * (2 * h + h * (h - 1) // 2)
+    return {"coded": np.array(rows), "groups": np.array(groups), "types": np.array(types),
+            "alpha": float(alpha), "whole_plot_df": n_groups - 1 - wp_terms}
 
 
 def d_optimal_split_plot(levels: list[np.ndarray], hard: list[int], terms_matrix,
@@ -1168,10 +1317,7 @@ def build_design(spec: dict) -> DesignResult:
         coded, group = fractional_factorial(k, gens) if p or gens else (full_factorial(k), [])
         p = len(parse_generators(gens, k)) if gens else 0
         nb = int(opt.get("blocks", 1))
-        if hard and nb > 1:
-            raise ValueError("Split-plot factorials are blocked by replicate (tick 'one block "
-                             "per replicate') rather than by confounding.")
-        words = block_words(k, group, nb, n_base=k - p) if nb > 1 else []
+        words = block_words(k, group, nb, n_base=k - p) if nb > 1 and not hard else []
         blocks = assign_blocks(coded, words)
         types = np.ones(len(coded), dtype=int)
         meta.update({"generators": [g.strip() for g in gens.split(",")] if gens else [],
@@ -1182,7 +1328,11 @@ def build_design(spec: dict) -> DesignResult:
                      "block_generators": [word_str(w) for w in words]})
         if hard:
             gid, wp_words = assign_whole_plots(coded, hard, opt.get("groups"))
-            order = np.argsort(gid, kind="stable")
+            if nb > 1:  # blocks confounded with whole-plot interactions
+                words = split_plot_block_words(k, group, hard, wp_words, nb)
+                blocks = assign_blocks(coded, words)
+                meta["block_generators"] = [word_str(w) for w in words]
+            order = np.lexsort((gid, blocks))
             coded, gid, types, blocks = coded[order], gid[order], types[order], blocks[order]
             meta["whole_plot_words"] = [word_str(w) for w in wp_words]
             groups = gid
@@ -1215,7 +1365,7 @@ def build_design(spec: dict) -> DesignResult:
         meta["pb_runs"] = pb_runs(k)
     elif design in ("mr5", "mr4"):
         if design == "mr5":
-            raw = min_run_res5(k, rng, starts=4 if k <= 8 else 2)
+            raw = min_run_res5(k, rng)
             meta.update({"resolution": 5, "min_run": "MR5",
                          "alias_note": "Minimum-run equireplicated resolution V: all main "
                                        "effects and two-factor interactions are estimable "
@@ -1237,19 +1387,20 @@ def build_design(spec: dict) -> DesignResult:
             types = np.concatenate([types, np.zeros(len(rows), dtype=int)])
             meta["center_points"] = c
     elif design == "ccd" and hard:
-        if cat:
-            raise ValueError("A split-plot central composite design needs numeric factors; "
-                             "use Optimal (custom) for categoric ones.")
         alpha_type = "face" if opt.get("ccd_type") == "face" else opt.get("alpha_type",
                                                                           "rotatable")
-        res = split_plot_ccd(k, hard, alpha_type, int(opt.get("center_points", 1) or 0),
-                             opt.get("alpha"))
+        res = split_plot_ccd_categoric(k, hard, cat, nlev, alpha_type,
+                                       int(opt.get("center_points", 1) or 0), opt.get("alpha"))
         coded, groups, types = res["coded"], res["groups"], res["types"]
         blocks = np.ones(len(coded), dtype=int)
         coded, blocks, types, groups = _replicate_groups(coded, blocks, types, groups, reps,
                                                          block_reps)
         meta.update({"alpha": res["alpha"], "alpha_type": alpha_type,
-                     "ccd_type": "split-plot", "factorial_points": 2 ** k})
+                     "ccd_type": "split-plot", "factorial_points": 2 ** len(num)})
+        if res["whole_plot_df"] < 1 and reps < 2:
+            notes.append("Each hard-to-change categoric level is a single group, so the "
+                         "whole-plot error has no degrees of freedom: replicate the design "
+                         "(2 or more replicates) to test the hard-to-change factors.")
     elif design == "ccd":
         kn = len(num)
         res = central_composite(kn, opt.get("alpha_type", "rotatable"),
@@ -1485,12 +1636,13 @@ def _standard_run_order(blocks: np.ndarray, groups: np.ndarray | None) -> np.nda
 
 def _replicate_groups(coded, blocks, types, groups, reps: int, block_reps: bool = False):
     """Replicates of a design; whole plots are replicated as new groups and, optionally,
-    each replicate becomes a block."""
+    each replicate becomes a block (within which any confounded blocks are kept)."""
     if reps <= 1:
         return coded, blocks, types, groups
     n_g = int(groups.max()) + 1 if groups is not None else 0
+    nb = int(blocks.max())
     cb = [coded] * reps
-    bb = [np.full(len(blocks), r + 1) if block_reps else blocks for r in range(reps)]
+    bb = [blocks + r * nb if block_reps else blocks for r in range(reps)]
     gg = [groups + r * n_g for r in range(reps)] if groups is not None else None
     return (np.vstack(cb), np.concatenate(bb), np.concatenate([types] * reps),
             np.concatenate(gg) if gg is not None else None)

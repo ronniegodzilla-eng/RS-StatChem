@@ -341,10 +341,14 @@ def variance_components_table(fit) -> Table:
     return Table("Variance Components", ["Source", "Variance", "Std. Error", "95% CI Low",
                                          "95% CI High", "% of Total"], rows,
                  footnotes=["Group = whole-plot (restriction on randomisation) variance; "
-                            "standard errors from the inverse REML information; Wald "
-                            "intervals on the log scale, so they stay positive. AICc / BIC "
-                            "use the maximum likelihood (k = coefficients + 2 variances) for "
-                            "comparing models."])
+                            "standard errors from the inverse REML information.",
+                            "95% CI: profile-likelihood intervals — the variances whose "
+                            "restricted likelihood-ratio statistic (the other variance "
+                            "re-estimated) stays below the chi-square(1) quantile 3.84; the "
+                            "group variance is bounded below by 0, so the interval never "
+                            "goes negative.",
+                            "AICc / BIC use the maximum likelihood (k = coefficients + 2 "
+                            "variances) for comparing models."])
 
 
 def reml_fit_statistics_table(fit) -> tuple[Table, list[str]]:
@@ -520,7 +524,22 @@ def selection_table(spec, steps: list) -> Table:
 
 
 # ---------------------------------------------------------------------------- effects
+def effects_table(eff: list[dict], title: str = "Effects List") -> Table:
+    rows = [[e["name"], num(e["effect"]), num(e["ss"]), f"{e['contribution']:.2f} %",
+             fval(e.get("t"))] for e in sorted(eff, key=lambda e: -abs(e["effect"]))]
+    return Table(title, ["Term", "Standardized Effect", "Sum of Squares", "% Contribution",
+                         "t-Value (Lenth)"], rows,
+                 footnotes=[f"Lenth's PSE = {num(eff[0]['pse'])}; t-value limit = "
+                            f"{eff[0]['t_limit']:.3f}; Bonferroni limit = "
+                            f"{eff[0]['bonferroni']:.3f}."] if eff else [])
+
+
+SPLIT_EFFECTS = (("sub", "Subplot Effects"), ("whole", "Whole-plot Effects"))
+
+
 def effects_section(a: Analysis, half_normal: bool = True, pareto: bool = True) -> Section:
+    if a.space.split_plot and a.obs.groups is not None:
+        return split_effects_section(a, half_normal, pareto)
     eff = model.factorial_effects(a.space, a.obs, transform=a.fit.transform)
     sec = Section(f"Effects: {a.fit.response_name}")
     sec.log(f"DOE EFFECTS RESPONSE={a.spec.response}")
@@ -538,6 +557,31 @@ def effects_section(a: Analysis, half_normal: bool = True, pareto: bool = True) 
         sec.image("Pareto Chart", plots.pareto_chart(eff, f"Pareto Chart: "
                                                           f"{a.fit.response_name}"))
     return sec
+
+
+def split_effects_section(a: Analysis, half_normal: bool = True, pareto: bool = True
+                          ) -> Section:
+    """Split-plot factorial: subplot and whole-plot effects in separate lists and half-normal
+    plots, each with its own error line (Stat-Ease's split-plot tutorial)."""
+    eff = model.split_plot_effects(a.space, a.obs, transform=a.fit.transform)
+    sec = Section(f"Effects: {a.fit.response_name}")
+    sec.log(f"DOE SPLIT-PLOT EFFECTS RESPONSE={a.spec.response}")
+    for key, title in SPLIT_EFFECTS:
+        sec.table(effects_table(eff[key], title))
+        if half_normal and eff[key]:
+            sec.image(f"Half-Normal Plot ({title})", plots.half_normal_plot(
+                eff[key], f"Half-Normal Plot, {title}: {a.fit.response_name}"))
+        if pareto and eff[key]:
+            sec.image(f"Pareto Chart ({title})", plots.pareto_chart(
+                eff[key], f"Pareto Chart, {title}: {a.fit.response_name}"))
+    sec.note("", SPLIT_EFFECTS_NOTE)
+    return sec
+
+
+SPLIT_EFFECTS_NOTE = ("Whole-plot effects (contrasts constant within every group) are estimated "
+                      "against the between-group variation and subplot effects against the "
+                      "within-group variation, so each set has its own half-normal plot and "
+                      "error line; test the chosen model on the ANOVA (REML).")
 
 
 # ---------------------------------------------------------------------------- diagnostics

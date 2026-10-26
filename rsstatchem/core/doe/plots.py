@@ -535,32 +535,54 @@ def desirability_bars(names: list[str], values: list[float], D: float) -> bytes:
 
 
 # ---------------------------------------------------------------------------- effects
-def half_normal_plot(effects: list[dict], title: str = "Half-Normal Plot") -> bytes:
+def half_normal_plot(effects: list[dict], title: str = "Half-Normal Plot",
+                     selected: set[str] | None = None) -> bytes:
+    return _png(half_normal_figure(effects, title, selected))
+
+
+def half_normal_figure(effects: list[dict], title: str = "Half-Normal Plot",
+                       selected: set[str] | None = None) -> Figure:
+    """Half-normal probability plot of |effects|. The highlighted (red, labelled) effects
+    are ``selected`` — the terms chosen for the model — or, without a selection, those whose
+    Lenth t-value exceeds the t limit; the error line is fitted through the others. The
+    figure's ``effect_points`` lists (|effect|, quantile, name) for picking points."""
     fig = _figure()
     ax = fig.add_subplot()
+    fig.effect_points = []
+    if not effects:
+        ax.text(0.5, 0.5, "No effects to plot", ha="center", va="center",
+                transform=ax.transAxes, color="#666666")
+        _style(ax, title, "|Standardized Effect|", "Half-Normal % Probability")
+        fig.tight_layout()
+        return fig
     abs_e = np.array([abs(e["effect"]) for e in effects])
     order = np.argsort(abs_e)
     m = len(abs_e)
     q = stats.norm.ppf(0.5 + 0.5 * (np.arange(1, m + 1) - 0.5) / m)
-    big = {e["name"] for e in effects if e.get("t", 0) > e.get("t_limit", np.inf)}
+    big = (set(selected) if selected is not None else
+           {e["name"] for e in effects if e.get("t", 0) > e.get("t_limit", np.inf)})
     for rank, i in enumerate(order):
         e = effects[i]
         sig = e["name"] in big
+        fig.effect_points.append((float(abs_e[i]), float(q[rank]), e["name"]))
         ax.scatter(abs_e[i], q[rank], s=30, color=POINT if sig else "#1f3fbf",
                    edgecolor="#333333", zorder=3)
         if sig or rank >= m - 3:
             ax.annotate(e["name"], (abs_e[i], q[rank]), xytext=(4, 2),
                         textcoords="offset points", fontsize=8)
-    small = order[: max(m - len(big), 1)]
+    ranks = [r for r, i in enumerate(order) if effects[i]["name"] not in big]
+    small = order[ranks] if ranks else order[:1]
+    qs = q[ranks] if ranks else q[:1]
     if len(small) > 1 and abs_e[small].max() > 0:
-        slope = np.sum(abs_e[small] * q[: len(small)]) / np.sum(q[: len(small)] ** 2)
+        slope = np.sum(abs_e[small] * qs) / np.sum(qs ** 2)
         qq = np.array([0, q.max()])
         ax.plot(qq * slope, qq, color=LINE, linewidth=1)
     ax.set_ylim(-0.05, q.max() * 1.08 if m else 1)
     ticks = [0, 10, 20, 30, 50, 70, 80, 90, 95, 99]
     ax.set_yticks(stats.norm.ppf(0.5 + np.array(ticks) / 200), [str(t) for t in ticks])
     _style(ax, title, "|Standardized Effect|", "Half-Normal % Probability")
-    return _png(fig)
+    fig.tight_layout()
+    return fig
 
 
 def pareto_chart(effects: list[dict], title: str = "Pareto Chart") -> bytes:

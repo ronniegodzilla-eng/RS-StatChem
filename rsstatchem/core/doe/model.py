@@ -11,7 +11,9 @@ hierarchy, 2-level factorial effects (half-normal / Pareto with Lenth's PSE) and
 diagnostics (externally studentized residuals, leverage, Cook's distance, DFFITS, DFBETAS).
 Auto Select chooses terms forward, backward or stepwise by p-value (alpha in / out), AICc or
 BIC. Split-plot designs (hard-to-change factors, whole plots in a Group column) are analysed
-by REML with Kenward-Roger F tests (:class:`SplitPlotFit`).
+by REML with Kenward-Roger F tests and profile-likelihood variance intervals
+(:class:`SplitPlotFit`); split-plot factorials split their effects into whole-plot and subplot
+sets (:func:`split_plot_effects`).
 """
 from __future__ import annotations
 
@@ -625,7 +627,7 @@ class Fit:
         self.ms_res = self.ss_res / self.df_res
         self.mean = float(self.z.mean())
         self.ss_cor = float(np.sum((self.z - self.mean) ** 2))
-        self.h = np.einsum("ij,jk,ik->i", X, self.XtX_inv, X)
+        self.h = np.einsum("ij,ij->i", X @ self.XtX_inv, X)
         self._anova = None
 
     # ------------------------------------------------------------------ helpers
@@ -803,7 +805,7 @@ class Fit:
     def predict_coded(self, coded: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Prediction on the transformed scale and the variance factor x'(X'X)^-1 x."""
         R = self.row(coded)
-        return R @ self.beta, np.einsum("ij,jk,ik->i", R, self.XtX_inv, R)
+        return R @ self.beta, np.einsum("ij,ij->i", R @ self.XtX_inv, R)
 
     def predict(self, actual: np.ndarray) -> np.ndarray:
         """Back-transformed prediction (median on the original scale) at actual settings."""
@@ -996,7 +998,7 @@ class SplitPlotFit(Fit):
         self._Xw = np.linalg.solve(L, X)
         self._ew = np.linalg.solve(L, self.z) - self._Xw @ beta
         self._XtXw_inv = np.linalg.inv(self._Xw.T @ self._Xw)
-        self.h = np.einsum("ij,jk,ik->i", self._Xw, self._XtXw_inv, self._Xw)
+        self.h = np.einsum("ij,ij->i", self._Xw @ self._XtXw_inv, self._Xw)
         self._anova = None
 
     # ------------------------------------------------------------------ Kenward-Roger
@@ -1098,26 +1100,95 @@ class SplitPlotFit(Fit):
         adj = 1 - (1 - r2) * (self.n - 1) / (self.n - self.p) if self.n > self.p else \
             float("nan")
         prng = float(self.fitted.max() - self.fitted.min())
-        avg_var = float(np.mean(np.einsum("ij,jk,ik->i", self.mat.X, self.Phi_A, self.mat.X)))
+        avg_var = float(np.mean(np.einsum("ij,ij->i", self.mat.X @ self.Phi_A, self.mat.X)))
         return {"std_dev": sd, "mean": self.mean,
                 "cv": 100 * sd / abs(self.mean) if self.mean else float("nan"),
                 "r2": r2, "adj_r2": adj, "pred_r2": float("nan"), "press": None,
                 "adeq": prng / math.sqrt(avg_var) if avg_var > 0 else float("nan")}
 
-    def variance_components(self) -> list[dict]:
+    # ------------------------------------------------------------------ variance intervals
+    def reml_loglik(self, s2: float, s2_wp: float) -> float:
+        """Restricted log-likelihood (additive constant dropped) at residual variance ``s2``
+        and group variance ``s2_wp``, from the n x p and groups x p cross products only
+        (V = s2 (I + eta Z Z'), eta = s2_wp / s2; Patterson & Thompson 1971)."""
+        if not hasattr(self, "_xp"):
+            X, z, Z = self.mat.X, self.z, self.Z
+            self._xp = (X.T @ X, Z.T @ X, X.T @ z, Z.T @ z, float(z @ z))
+        XtX, ZtX, Xtz, Ztz, ztz = self._xp
+        eta = s2_wp / s2
+        c = eta / (1 + eta * self.m)
+        A = XtX - ZtX.T @ (c[:, None] * ZtX)
+        b = Xtz - ZtX.T @ (c * Ztz)
+        sign, ld_a = np.linalg.slogdet(A)
+        q = ztz - float(np.sum(c * Ztz ** 2)) - float(b @ np.linalg.solve(A, b))
+        return -0.5 * ((self.n - self.p) * math.log(s2) + float(np.sum(np.log1p(eta * self.m)))
+                       + ld_a + q / s2)
+
+    def _profile_loglik(self, which: str, value: float) -> float:
+        """Profile restricted log-likelihood with one variance fixed at ``value`` and the other
+        maximised (bounded search on the log scale; the group variance may be 0)."""
+        if which == "Group":
+            def neg(u):
+                return -self.reml_loglik(math.exp(u), value)
+
+            c0 = math.log(self.s2)
+            res = optimize.minimize_scalar(neg, bounds=(c0 - 12, c0 + 12), method="bounded",
+                                           options={"xatol": 1e-9})
+            return -float(res.fun)
+        s2 = max(value, 1e-300)
+        at_zero = self.reml_loglik(s2, 0.0)
+
+        def neg(u):
+            return -self.reml_loglik(s2, math.exp(u))
+
+        c0 = math.log(max(self.s2_wp, 1e-3 * self.s2, 1e-300))
+        res = optimize.minimize_scalar(neg, bounds=(c0 - 20, c0 + 12), method="bounded",
+                                       options={"xatol": 1e-9})
+        return max(-float(res.fun), at_zero)
+
+    def profile_interval(self, which: str, level: float = 0.95) -> tuple[float, float]:
+        """Profile-likelihood interval of the ``Group`` (whole-plot) or ``Residual``
+        variance: the values whose restricted likelihood-ratio statistic
+        2 (l_max - l_profile) stays below the chi-square(1) quantile (3.84 for 95 %). The
+        group variance is bounded below by 0 (lower limit 0 when 0 is inside the region)."""
+        est = self.s2_wp if which == "Group" else self.s2
+        crit = float(stats.chi2.ppf(level, 1))
+        l_max = self.reml_loglik(self.s2, self.s2_wp)
+
+        def g(v):
+            return 2 * (l_max - self._profile_loglik(which, v)) - crit
+
+        if est > 0 and g(0.0 if which == "Group" else est * 1e-12) > 0:
+            low = optimize.brentq(g, 0.0 if which == "Group" else est * 1e-12, est,
+                                  xtol=1e-12 * max(est, 1e-300), rtol=1e-10)
+        else:
+            low = 0.0
+        below, hi = est, max(est, 0.05 * (self.s2 + self.s2_wp), 1e-12)
+        for _ in range(200):
+            hi *= 2.0
+            if g(hi) > 0:
+                break
+            below = hi
+        else:
+            return float(low), math.inf
+        high = optimize.brentq(g, below, hi, xtol=1e-12 * hi, rtol=1e-10)
+        return float(low), float(high)
+
+    def variance_components(self, level: float = 0.95) -> list[dict]:
         """Group (whole-plot) and residual variances with standard errors from the inverse
-        REML information and 95 % intervals. The interval is a Wald interval for log(variance)
-        (delta method), so it stays positive, unlike v ± 1.96·se."""
+        REML information and profile-likelihood intervals (:meth:`profile_interval`), which
+        are never negative and, unlike Wald intervals, follow the skewness of the
+        likelihood."""
         out = []
-        q = stats.norm.ppf(0.975)
         total = self.s2 + self.s2_wp
         for name, v, i in (("Group", self.s2_wp, 0), ("Residual", self.s2, 1)):
             se = math.sqrt(max(self.W[i, i], 0.0))
-            if v > 0:
-                factor = math.exp(q * se / v)
-                low, high = v / factor, v * factor
-            else:  # boundary estimate: no log-scale interval
-                low, high = 0.0, q * se
+            try:
+                low, high = self.profile_interval(name, level)
+            except (ValueError, np.linalg.LinAlgError, ArithmeticError):
+                q = stats.norm.ppf(0.5 + level / 2)  # fall back to a log-scale Wald interval
+                f = math.exp(q * se / v) if v > 0 else math.nan
+                low, high = (v / f, v * f) if v > 0 else (0.0, q * se)
             out.append({"source": name, "variance": v, "se": se, "low": low,
                         "high": high, "percent": 100 * v / total if total else 0.0})
         return out
@@ -1156,7 +1227,7 @@ def case_statistics(X: np.ndarray, resid: np.ndarray, XtX_inv: np.ndarray, s2: f
     fit (Belsley, Kuh & Welsch). ``DFBETAS[i, j]`` is the change of coefficient j when run i
     is left out, in units of its standard error estimated without run i."""
     n, p = X.shape
-    h = np.einsum("ij,jk,ik->i", X, XtX_inv, X)
+    h = np.einsum("ij,ij->i", X @ XtX_inv, X)
     hc = np.clip(h, 0, 1 - 1e-12)
     s = math.sqrt(max(s2, 0.0))
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -1207,8 +1278,13 @@ def mixture_actual_equation(fit: Fit) -> list[tuple[float, str]] | None:
 
 # ---------------------------------------------------------------------------- model building
 def drop_aliased(space: Space, obs: Observations, terms: list[Term]) -> tuple[list, list]:
+    """Terms that can be estimated (in model order) and those aliased with earlier ones."""
+    ordered = sort_terms(terms)
+    X = build_matrix(space, obs.coded, ordered, obs.blocks).X
+    if X.shape[1] <= X.shape[0] and np.linalg.matrix_rank(X) == X.shape[1]:
+        return ordered, []  # full rank: nothing aliased (and no term-by-term checks)
     kept, dropped = [], []
-    for t in sort_terms(terms):
+    for t in ordered:
         mat = build_matrix(space, obs.coded, kept + [t], obs.blocks)
         if np.linalg.matrix_rank(mat.X) < mat.X.shape[1]:
             dropped.append(t)
@@ -1556,6 +1632,14 @@ def factorial_effects(space: Space, obs: Observations, max_order: int | None = N
         ss = b ** 2 * float(col @ col)
         effects.append({"term": t, "name": term_name(t), "effect": 2 * b, "coef": b,
                         "ss": ss, "contribution": 100 * ss / ss_tot if ss_tot else 0.0})
+    for e, (t, s) in zip(effects, [g for g in mat.groups if g[0]]):
+        e["column"] = mat.X[:, s][:, 0]
+    return lenth(effects)
+
+
+def lenth(effects: list[dict]) -> list[dict]:
+    """Lenth's (1989) pseudo standard error, t-values and the t / Bonferroni limits (m/3 df)
+    of a set of effects (updated in place)."""
     abs_e = np.abs([e["effect"] for e in effects])
     m = len(abs_e)
     if m:
@@ -1570,6 +1654,32 @@ def factorial_effects(space: Space, obs: Observations, max_order: int | None = N
         for e in effects:
             e["pse"], e["t_limit"], e["bonferroni"] = pse, t_lim, bonf
     return effects
+
+
+def split_plot_effects(space: Space, obs: Observations, max_order: int | None = None,
+                       transform: Transform | None = None) -> dict:
+    """Effects of a two-level split-plot factorial, separated as in Stat-Ease's split-plot
+    tutorial: whole-plot effects (contrasts constant within every group — the hard-to-change
+    factors, their interactions and the easy-to-change interactions that split the whole
+    plots) and subplot effects (all others). Each set gets its own Lenth PSE and half-normal
+    plot, because whole-plot effects are estimated against the larger between-group
+    variation. Returns {"whole": [...], "sub": [...]}."""
+    if obs.groups is None:
+        raise ValueError("Whole-plot and subplot effects need the Group column.")
+    eff = factorial_effects(space, obs, max_order, transform)
+    gidx = np.unique(obs.groups, return_inverse=True)[1]
+    lo = np.full(gidx.max() + 1, np.inf)
+    hi = np.full(gidx.max() + 1, -np.inf)
+    whole, sub = [], []
+    for e in eff:
+        col = e["column"]
+        np.minimum.at(lo, gidx, col)
+        np.maximum.at(hi, gidx, col)
+        is_whole = bool(np.all(hi - lo < 1e-9))
+        lo[:], hi[:] = np.inf, -np.inf
+        e["whole_plot"] = is_whole
+        (whole if is_whole else sub).append(dict(e))
+    return {"whole": lenth(whole), "sub": lenth(sub)}
 
 
 def is_two_level(space: Space, obs: Observations) -> bool:

@@ -52,7 +52,7 @@ DESCRIPTIONS = {
 LIMITS = {"factorial": (2, 15), "general": (1, 6), "pb": (2, 31), "taguchi": (1, 13),
           "ccd": (2, 10), "bbd": (3, 7), "threelevel": (1, 5), "dopt": (1, 8),
           "lattice": (2, 8), "centroid": (2, 8), "ev": (2, 8), "mixdopt": (2, 8),
-          "mr5": (6, 12), "mr4": (5, 30)}
+          "mr5": (6, 50), "mr4": (5, 50)}
 DEFAULT_K = {"factorial": 3, "general": 2, "pb": 7, "taguchi": 4, "ccd": 2, "bbd": 3,
              "threelevel": 2, "dopt": 3, "lattice": 3, "centroid": 3, "ev": 3, "mixdopt": 3,
              "mr5": 6, "mr4": 8}

@@ -7,6 +7,7 @@ model terms); changing them on one tab updates the others. All numbers come from
 """
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -43,14 +44,24 @@ class AnalysisView(QWidget):
         self.annotate = True
         self.show_points = True
         self.strip = TabStrip(TABS)
-        if doc.space().split_plot:  # Design-Expert labels the REML analysis this way
+        sp = doc.space()
+        if sp.split_plot:  # Design-Expert labels the REML analysis this way
             self.strip.buttons[3].setText("ANOVA (REML)")
+        # split-plot two-level factorials select effects on subplot / whole-plot half-normal
+        # plots (Stat-Ease's split-plot tutorial) instead of a Fit Summary
+        self.effects_mode = bool(sp.split_plot and doc.meta.get("design") == "factorial"
+                                 and not any(sp.categoric))
+        if self.effects_mode:
+            self.strip.buttons[1].setText("Effects")
+            self.strip.buttons[1].setIcon(icons.icon("half_normal")
+                                          if "half_normal" in icons.NAMES
+                                          else icons.icon("fitsummary"))
         self.title = QLabel()
         self.title.setStyleSheet(f"color:{style.BLUE}; font-weight:600; padding: 0 8px;")
         self.strip.extra.addWidget(self.title)
         self.stack = QStackedWidget()
         self.transform_page = TransformPage(self)
-        self.fit_page = FitSummaryPage(self)
+        self.fit_page = EffectsPage(self) if self.effects_mode else FitSummaryPage(self)
         self.model_page = ModelPage(self)
         self.anova_page = AnovaPage(self)
         self.diag_page = DiagnosticsPage(self)
@@ -117,7 +128,8 @@ class AnalysisView(QWidget):
     def set_annotate(self, on: bool) -> None:
         self.annotate = on
         for p in (self.fit_page, self.anova_page):
-            p.report.set_annotate(on)
+            if p.report is not None:
+                p.report.set_annotate(on)
 
     def set_show_points(self, on: bool) -> None:
         self.show_points = on
@@ -144,7 +156,8 @@ class AnalysisView(QWidget):
         self.refresh()
 
     def set_tab(self, name: str) -> None:
-        i = [t[1] for t in TABS].index(name)
+        texts = self.strip.labels()
+        i = texts.index(name) if name in texts else [t[1] for t in TABS].index(name)
         self.strip.set_current(i)
 
     def current_graph(self) -> GraphView | None:
@@ -313,8 +326,11 @@ def fit_summary_items(a: model.Analysis) -> list:
                                          "Adjusted R²", "Predicted R²", ""], rows)]
     if a.space.split_plot:
         items.append(Text("", "Split-plot design: the Fit Summary is an ordinary least-squares "
-                              "guide; the chosen model is analysed by REML on the ANOVA (REML) "
-                              "tab.", style="warning"))
+                              "guide that ignores the groups (Stat-Ease documents no "
+                              "split-plot Fit Summary: choose the model on the Model tab, e.g. "
+                              "Auto Select by AICc, which uses the maximum likelihood); the "
+                              "chosen model is analysed by REML on the ANOVA (REML) tab.",
+                          style="warning"))
     items.append(annotation(
         f"The {fs.suggested} model is suggested: the highest-order polynomial whose added "
         "terms are significant (sequential p < 0.05), that is not aliased, with insignificant "
@@ -389,6 +405,171 @@ class FitSummaryPage(QWidget):
         spec.model, spec.terms, spec.reduction = "suggested", None, "none"
         self.view.set_spec(spec)
         self.view.set_tab("ANOVA")
+
+
+# ---------------------------------------------------------------------------- Effects
+EFFECT_SETS = (("sub", "Subplot Effects"), ("whole", "Whole-plot Effects"))
+
+
+class EffectsPage(QWidget):
+    """Effects of a split-plot two-level factorial on two half-normal plots — subplot effects
+    and whole-plot effects (contrasts constant within every group), each with its own error
+    line, as in Stat-Ease's split-plot tutorial. Click an effect on the plot or in the list
+    to select it for the model (red) or return it to error (blue); the selected model is
+    tested on the ANOVA (REML) tab."""
+
+    def __init__(self, view: AnalysisView):
+        super().__init__()
+        self.view = view
+        self.report = None
+        self.kind = "sub"
+        self.effects: dict = {"sub": [], "whole": []}
+        self.terms: list = []
+        self.rows: list = []
+        self.label = QLabel()
+        self.label.setWordWrap(True)
+        self.buttons = {}
+        group = QButtonGroup(self)
+        bar = QHBoxLayout()
+        bar.addWidget(self.label, 1)
+        for key, text in EFFECT_SETS:
+            rb = QRadioButton(text)
+            group.addButton(rb)
+            self.buttons[key] = rb
+            bar.addWidget(rb)
+        self.buttons["sub"].setChecked(True)
+        for key, rb in self.buttons.items():
+            rb.toggled.connect(lambda on, k=key: on and self.set_kind(k))
+        clear = QPushButton("Clear Selection")
+        clear.setToolTip("Return every effect to error (intercept-only model)")
+        clear.clicked.connect(self.clear)
+        bar.addWidget(clear)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["", "Term", "Effect", "% Contribution",
+                                              "t-Value (Lenth)"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setColumnWidth(0, 36)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.cellClicked.connect(self._clicked)
+        self.graph = GraphView()
+        split = QSplitter()
+        split.addWidget(self.table)
+        split.addWidget(self.graph)
+        split.setSizes([380, 620])
+        self.note = hint("Click an effect — on the half-normal plot or M / e in the list — to "
+                         "put it in the model (red, M) or leave it for error (blue, e). "
+                         "Whole-plot effects are estimated against the between-group "
+                         "variation and subplot effects against the within-group variation, "
+                         "so each set is judged on its own plot; check the selected model on "
+                         "the ANOVA (REML) tab.")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.addLayout(bar)
+        lay.addWidget(split, 1)
+        lay.addWidget(self.note)
+
+    def set_kind(self, kind: str) -> None:
+        self.kind = kind
+        if not self.buttons[kind].isChecked():
+            self.buttons[kind].setChecked(True)
+        self.render()
+
+    def refresh(self) -> None:
+        try:
+            a = self.view.analysis()
+            self.effects = model.split_plot_effects(a.space, a.obs,
+                                                    transform=a.fit.transform)
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.effects = {"sub": [], "whole": []}
+            self.table.setRowCount(0)
+            self.graph.set_message(f"Effects not available: {exc}")
+            return
+        self.terms = list(a.fit.terms)
+        label = a.fit.transform.label(a.fit.response_name)
+        nw, ns = len(self.effects["whole"]), len(self.effects["sub"])
+        self.label.setText(f"<b>Response {self.view.index + 1}: {label}</b> — {ns} subplot "
+                           f"and {nw} whole-plot effects; model: "
+                           f"{report.model_label(a.space, self.terms)}")
+        self.render()
+
+    def render(self) -> None:
+        eff = self.effects.get(self.kind, [])
+        tset = set(self.terms)
+        selected = {e["name"] for e in eff if e["term"] in tset}
+        title = dict(EFFECT_SETS)[self.kind]
+        from rsstatchem.core.doe import plots
+
+        name = self.view.response_title
+        fig = plots.half_normal_figure(eff, f"Half-Normal Plot, {title}: {name}", selected)
+        self.graph.set_figure(fig, f"half_normal_{self.kind}")
+        if self.graph.canvas is not None:
+            self.graph.canvas.mpl_connect("button_press_event", self._pick)
+        self.rows = sorted(eff, key=lambda e: -abs(e["effect"]))
+        self.table.setRowCount(len(self.rows))
+        for r, e in enumerate(self.rows):
+            sel = e["term"] in tset
+            it = QTableWidgetItem("M" if sel else "e")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            if sel:
+                it.setBackground(QBrush(QColor("#FFCDD2")))
+                it.setForeground(QBrush(QColor("#B71C1C")))
+            else:
+                it.setForeground(QBrush(QColor("#1f3fbf")))
+            self.table.setItem(r, 0, it)
+            self.table.setItem(r, 1, QTableWidgetItem(e["name"]))
+            self.table.setItem(r, 2, QTableWidgetItem(num(e["effect"])))
+            self.table.setItem(r, 3, QTableWidgetItem(f"{e['contribution']:.2f} %"))
+            self.table.setItem(r, 4, QTableWidgetItem(fval(e.get("t"))))
+
+    def _pick(self, event) -> None:
+        fig = self.graph.figure
+        if event.button != 1 or event.inaxes is None or fig is None:
+            return
+        pts = getattr(fig, "effect_points", [])
+        if not pts:
+            return
+        xy = event.inaxes.transData.transform(np.array([[x, y] for x, y, _ in pts]))
+        d = np.hypot(xy[:, 0] - event.x, xy[:, 1] - event.y)
+        i = int(np.argmin(d))
+        if d[i] <= 12:
+            self.toggle_name(pts[i][2])
+
+    def _clicked(self, row: int, col: int) -> None:
+        if col in (0, 1) and 0 <= row < len(self.rows):
+            self.toggle(self.rows[row]["term"])
+
+    def toggle_name(self, name: str) -> None:
+        e = next((e for e in self.effects.get(self.kind, []) if e["name"] == name), None)
+        if e is not None:
+            self.toggle(e["term"])
+
+    def clear(self) -> None:
+        spec = self.view.spec()
+        spec.model, spec.reduction, spec.terms = "manual", "none", []
+        self.view.set_spec(spec)
+
+    def toggle(self, term) -> None:
+        """Add an effect to the model (with its lower-order parents when the model is kept
+        hierarchical) or return it to error."""
+        terms = list(self.terms)
+        if term in terms:
+            terms.remove(term)
+        else:
+            terms.append(term)
+            if self.view.spec().hierarchy:
+                for r in range(1, len(term)):
+                    for sub in itertools.combinations(term, r):
+                        if sub not in terms:
+                            terms.append(sub)
+        spec = self.view.spec()
+        spec.model, spec.reduction = "manual", "none"
+        spec.terms = [term_key(t) for t in model.sort_terms(terms)]
+        self.view.set_spec(spec)
 
 
 # ---------------------------------------------------------------------------- Model
