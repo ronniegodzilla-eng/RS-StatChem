@@ -341,9 +341,10 @@ def variance_components_table(fit) -> Table:
     return Table("Variance Components", ["Source", "Variance", "Std. Error", "95% CI Low",
                                          "95% CI High", "% of Total"], rows,
                  footnotes=["Group = whole-plot (restriction on randomisation) variance; "
-                            "standard errors from the inverse REML information (Wald "
-                            "intervals). AICc / BIC use the maximum likelihood (k = "
-                            "coefficients + 2 variances) for comparing models."])
+                            "standard errors from the inverse REML information; Wald "
+                            "intervals on the log scale, so they stay positive. AICc / BIC "
+                            "use the maximum likelihood (k = coefficients + 2 variances) for "
+                            "comparing models."])
 
 
 def reml_fit_statistics_table(fit) -> tuple[Table, list[str]]:

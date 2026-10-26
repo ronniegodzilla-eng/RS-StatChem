@@ -1106,14 +1106,20 @@ class SplitPlotFit(Fit):
 
     def variance_components(self) -> list[dict]:
         """Group (whole-plot) and residual variances with standard errors from the inverse
-        REML information and Wald 95 % intervals."""
+        REML information and 95 % intervals. The interval is a Wald interval for log(variance)
+        (delta method), so it stays positive, unlike v ± 1.96·se."""
         out = []
         q = stats.norm.ppf(0.975)
         total = self.s2 + self.s2_wp
         for name, v, i in (("Group", self.s2_wp, 0), ("Residual", self.s2, 1)):
             se = math.sqrt(max(self.W[i, i], 0.0))
-            out.append({"source": name, "variance": v, "se": se, "low": v - q * se,
-                        "high": v + q * se, "percent": 100 * v / total if total else 0.0})
+            if v > 0:
+                factor = math.exp(q * se / v)
+                low, high = v / factor, v * factor
+            else:  # boundary estimate: no log-scale interval
+                low, high = 0.0, q * se
+            out.append({"source": name, "variance": v, "se": se, "low": low,
+                        "high": high, "percent": 100 * v / total if total else 0.0})
         return out
 
     def coefficients(self, level: float = 0.95) -> list[dict]:
