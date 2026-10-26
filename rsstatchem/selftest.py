@@ -81,6 +81,20 @@ def run() -> int:
             print(f"selftest FAILED: {module}\n{error}")
         else:
             print(f"selftest ok: {module}")
+    # the module windows import lazily, so a packaged build could miss them unnoticed
+    import importlib
+
+    from rsstatchem.ui.modules import MODULES
+
+    window_modules = ["rsstatchem.ui.launcher", "rsstatchem.ui.dx.window",
+                      "rsstatchem.ui.origin.window", "rsstatchem.ui.chemdraw.window"]
+    for name in [m.opener.split(":")[0] for m in MODULES] + window_modules:
+        try:
+            importlib.import_module(name)
+            print(f"selftest ok: {name}")
+        except Exception:  # noqa: BLE001
+            failures += 1
+            print(f"selftest FAILED: {name}\n{traceback.format_exc()}")
     if failures:
         return 1
     print("RS-StatChem selftest OK")
