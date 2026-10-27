@@ -1,5 +1,5 @@
 """Analyze > Regression (Binary Logistic, Multinomial Logistic, Ordinal, Curve Estimation),
-Analyze > Compare Means > Means and Analyze > ROC Curve dialogs, laid out like SPSS.
+Analyze > Compare Means > Means and Analyze > Classify > ROC Curve dialogs, laid out like SPSS.
 
 ``MENUS`` also carries the Analyze > Classify entries from :mod:`rsstatchem.ui.dialogs.classify`
 so the integrator can merge one dictionary; ``selftest()`` exercises all of the core code.
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidgetItem, QPushButton, QRadioButton,
-                               QVBoxLayout)
+                               QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+                               QRadioButton, QVBoxLayout, QAbstractItemView)
 
 from rsstatchem.core.dataset import NUMERIC, format_code
 from rsstatchem.core.stats import curvefit_spss, logistic, means, roc
@@ -331,10 +331,106 @@ class BinaryLogisticDialog(VariablePickerDialog):
             correlations=o["correlations"])
 
 
+# ============================================================================ term builder
+class TermBuilderDialog(QDialog):
+    """SPSS "Build Term(s)" pattern: Factors & Covariates list, a term type and target lists
+    (e.g. Forced Entry Terms / Stepwise Terms, Location, Scale, GENLIN Model)."""
+
+    TYPES = ("Interaction", "Main effects", "All 2-way", "All 3-way", "All 4-way",
+             "All 5-way")
+
+    def __init__(self, title: str, names: list[str], lists: list[tuple[str, str, list[str]]],
+                 parent=None, top=None, bottom=None):
+        import itertools  # noqa: F401  (used in _build)
+
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.source = QListWidget()
+        self.source.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        for n in names:
+            self.source.addItem(n)
+        self.kind = QComboBox()
+        self.kind.addItems(self.TYPES)
+        self.targets: dict[str, QListWidget] = {}
+        body = QHBoxLayout()
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Factors && Covariates:"))
+        left.addWidget(self.source)
+        body.addLayout(left, 1)
+        mid_right = QVBoxLayout()
+        for key, label, terms in lists:
+            row = QHBoxLayout()
+            arrow = QPushButton("▶")
+            arrow.setObjectName("arrow")
+            lw = QListWidget()
+            lw.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            for t in terms:
+                lw.addItem(t.replace("*", " * "))
+            lw.itemDoubleClicked.connect(lambda item, w=lw: w.takeItem(w.row(item)))
+            arrow.clicked.connect(lambda _=False, w=lw: self._add(w))
+            col = QVBoxLayout()
+            col.addWidget(QLabel(label))
+            col.addWidget(lw)
+            row.addWidget(arrow)
+            row.addLayout(col, 1)
+            mid_right.addLayout(row, 1)
+            self.targets[key] = lw
+        body.addLayout(mid_right, 1)
+        lay = QVBoxLayout(self)
+        if top is not None:
+            lay.addLayout(top)
+        form = QFormLayout()
+        form.addRow("Build Term(s) — Type:", self.kind)
+        lay.addLayout(form)
+        lay.addLayout(body, 1)
+        hint = QLabel("Double-click a term to remove it.")
+        hint.setStyleSheet("color:#666")
+        lay.addWidget(hint)
+        if bottom is not None:
+            lay.addLayout(bottom)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self.resize(560, 380)
+
+    def build(self, names: list[str]) -> list[str]:
+        import itertools
+
+        kind = self.kind.currentText()
+        if not names:
+            return []
+        if kind == "Interaction":
+            return ["*".join(names)]
+        if kind == "Main effects":
+            return list(names)
+        size = int(kind.split()[1][0])
+        return ["*".join(c) for c in itertools.combinations(names, size)]
+
+    def _add(self, widget: QListWidget) -> None:
+        names = [i.text() for i in self.source.selectedItems()]
+        have = {widget.item(i).text() for i in range(widget.count())}
+        for t in self.build(names):
+            text = t.replace("*", " * ")
+            if text not in have:
+                widget.addItem(text)
+
+    def terms(self, key: str) -> list[str]:
+        w = self.targets[key]
+        return [w.item(i).text().replace(" * ", "*") for i in range(w.count())]
+
+
 # ============================================================================ multinomial
 class MultinomialDialog(VariablePickerDialog):
     DEFAULTS = {"reference": "last", "custom": "", "classification": True, "gof": True,
-                "lr_tests": True, "level": 95.0, "save": []}
+                "lr_tests": True, "level": 95.0, "save": [], "model": "main", "terms": [],
+                "stepwise_terms": [], "step_method": "forward_entry", "pseudo": True,
+                "step_summary": True, "fitting_info": True, "info_criteria": False,
+                "cell_probs": False, "monotonicity": False, "estimates": True,
+                "correlations": False, "covariances": False, "max_iter": 100,
+                "p_converge": 1e-6, "scale": "none", "p_entry": 0.05, "p_removal": 0.10}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Multinomial Logistic Regression", parent)
@@ -342,7 +438,10 @@ class MultinomialDialog(VariablePickerDialog):
         self.add_target("factors", "Factor(s):", required=False)
         self.add_target("covs", "Covariate(s):", accepts=is_numeric, required=False)
         self.ref_button = self.add_option_button("Reference Category...", self._reference)
+        self.add_option_button("Model...", self._model)
         self.add_option_button("Statistics...", self._statistics)
+        self.add_option_button("Criteria...", self._criteria)
+        self.add_option_button("Options...", self._options)
         self.add_option_button("Save...", self._save)
         self.finish()
 
@@ -366,8 +465,6 @@ class MultinomialDialog(VariablePickerDialog):
         box.addLayout(form)
         dep = self.selected_one("dep")
         if dep and self.ds.var(dep).value_labels:
-            from PySide6.QtWidgets import QLabel
-
             hint = QLabel(", ".join(f"{format_code(k)} = {v}"
                                     for k, v in self.ds.var(dep).value_labels.items()))
             hint.setWordWrap(True)
@@ -379,44 +476,122 @@ class MultinomialDialog(VariablePickerDialog):
             self.opts["custom"] = edit.text().strip()
             self.targets_changed()
 
+    def _model(self) -> None:
+        names = self.selected("factors") + self.selected("covs")
+        top = QHBoxLayout()
+        group = QButtonGroup(self)
+        radios = {}
+        for key, text in (("main", "Main effects"), ("full", "Full factorial"),
+                          ("custom", "Custom/Stepwise")):
+            rb = QRadioButton(text)
+            rb.setChecked(self.opts["model"] == key)
+            group.addButton(rb)
+            top.addWidget(rb)
+            radios[key] = rb
+        bottom = QFormLayout()
+        method = QComboBox()
+        for key, text in logistic.STEP_METHODS.items():
+            method.addItem(text, key)
+        method.setCurrentIndex(max(method.findData(self.opts["step_method"]), 0))
+        bottom.addRow("Stepwise Method:", method)
+        dlg = TermBuilderDialog("Multinomial Logistic Regression: Model", names, [
+            ("forced", "Forced Entry Terms:", self.opts["terms"]),
+            ("stepwise", "Stepwise Terms:", self.opts["stepwise_terms"])], self, top, bottom)
+        if dlg.exec():
+            self.opts["model"] = next(k for k, rb in radios.items() if rb.isChecked())
+            self.opts["terms"] = dlg.terms("forced")
+            self.opts["stepwise_terms"] = dlg.terms("stepwise")
+            self.opts["step_method"] = method.currentData()
+
     def _statistics(self) -> None:
         dlg = SubDialog("Multinomial Logistic Regression: Statistics", self)
         box = dlg.group("Model")
-        dlg.check(box, "gof", "Goodness-of-fit", self.opts["gof"])
-        dlg.check(box, "classification", "Classification table", self.opts["classification"])
+        for key, text in (("pseudo", "Pseudo R-square"), ("step_summary", "Step summary"),
+                          ("fitting_info", "Model fitting information"),
+                          ("info_criteria", "Information criteria"),
+                          ("cell_probs", "Cell probabilities"),
+                          ("classification", "Classification table"),
+                          ("gof", "Goodness-of-fit"),
+                          ("monotonicity", "Monotonicity measures")):
+            dlg.check(box, key, text, self.opts[key])
         box = dlg.group("Parameters")
-        dlg.check(box, "lr_tests", "Likelihood ratio tests", self.opts["lr_tests"])
+        for key, text in (("estimates", "Estimates"), ("lr_tests", "Likelihood ratio tests"),
+                          ("correlations", "Asymptotic correlations"),
+                          ("covariances", "Asymptotic covariances")):
+            dlg.check(box, key, text, self.opts[key])
         dlg.number(box, "level", "Confidence interval (%):", self.opts["level"], 50, 99.99, 2)
+        values = dlg.run()
+        if values:
+            self.opts.update(values)
+
+    def _criteria(self) -> None:
+        dlg = SubDialog("Multinomial Logistic Regression: Convergence Criteria", self,
+                        columns=1)
+        box = dlg.group("Iterations")
+        dlg.number(box, "max_iter", "Maximum iterations:", self.opts["max_iter"], 1, 1000, 0)
+        dlg.number(box, "p_converge", "Parameter convergence:", self.opts["p_converge"],
+                   1e-10, 0.01, 10)
+        values = dlg.run()
+        if values:
+            values["max_iter"] = int(values["max_iter"])
+            self.opts.update(values)
+
+    def _options(self) -> None:
+        dlg = SubDialog("Multinomial Logistic Regression: Options", self, columns=1)
+        dlg.radio(dlg.group("Dispersion Scale"), "scale", [
+            ("none", "None"), ("pearson", "Pearson"), ("deviance", "Deviance")],
+            self.opts["scale"])
+        box = dlg.group("Stepwise Options")
+        dlg.number(box, "p_entry", "Entry Probability:", self.opts["p_entry"], 0.0001, 1, 4)
+        dlg.number(box, "p_removal", "Removal Probability:", self.opts["p_removal"], 0.0001,
+                   1, 4)
         values = dlg.run()
         if values:
             self.opts.update(values)
 
     def _save(self) -> None:
         _multi(self, "Multinomial Logistic Regression: Save", "save", [
-            ("Saved Variables", [("est", "Estimated response probability (first category)"),
+            ("Saved Variables", [("est", "Estimated response probabilities"),
                                  ("pre", "Predicted category"),
-                                 ("max", "Predicted category probability")])], columns=1)
+                                 ("max", "Predicted category probability"),
+                                 ("acp", "Actual category probability")])], columns=1)
 
     def validate(self):
         if not self.selected("factors") and not self.selected("covs"):
             return "Specify at least one factor or covariate."
         if self.opts["reference"] == "custom" and not self.opts["custom"]:
             return "Enter the value of the custom reference category."
+        names = set(self.selected("factors") + self.selected("covs"))
+        for t in self.opts["terms"] + self.opts["stepwise_terms"]:
+            if not set(t.split("*")) <= names:
+                return f"The model term {t} uses a variable that is no longer selected."
         return None
 
     def compute(self):
         o = self.opts
         ref = o["custom"] if o["reference"] == "custom" else o["reference"]
-        return logistic.multinomial(self.ds, self.selected_one("dep"), self.selected("factors"),
-                                    self.selected("covs"), ref, self.level(),
-                                    o["classification"], o["gof"], o["lr_tests"],
-                                    tuple(o["save"]))
+        custom = o["model"] == "custom"
+        return logistic.multinomial(
+            self.ds, self.selected_one("dep"), self.selected("factors"), self.selected("covs"),
+            ref, self.level(), o["classification"], o["gof"], o["lr_tests"],
+            tuple(o["save"]), model=o["model"], terms=o["terms"] if custom else None,
+            stepwise_terms=o["stepwise_terms"] if custom else (),
+            step_method=o["step_method"], p_entry=o["p_entry"], p_removal=o["p_removal"],
+            pseudo=o["pseudo"], step_summary=o["step_summary"],
+            fitting_info=o["fitting_info"], info_criteria=o["info_criteria"],
+            cell_probs=o["cell_probs"], monotonicity=o["monotonicity"],
+            estimates=o["estimates"], correlations=o["correlations"],
+            covariances=o["covariances"], max_iter=int(o["max_iter"]),
+            p_converge=o["p_converge"], scale=o["scale"])
 
 
 # ============================================================================ ordinal
 class OrdinalDialog(VariablePickerDialog):
     DEFAULTS = {"link": "logit", "gof": True, "parallel": False, "classification": False,
-                "level": 95.0, "save": []}
+                "level": 95.0, "save": [], "location": [], "scale_terms": [],
+                "summary": True, "estimates": True, "correlations": False,
+                "covariances": False, "cell_info": False, "iteration_history": False,
+                "max_iter": 100}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Ordinal Regression", parent)
@@ -425,57 +600,87 @@ class OrdinalDialog(VariablePickerDialog):
         self.add_target("covs", "Covariate(s):", accepts=is_numeric, required=False)
         self.add_option_button("Options...", self._options)
         self.add_option_button("Output...", self._output)
+        self.add_option_button("Location...", lambda: self._terms("location", "Location"))
+        self.add_option_button("Scale...", lambda: self._terms("scale_terms", "Scale"))
         self.finish()
+
+    def _terms(self, key: str, what: str) -> None:
+        names = self.selected("factors") + self.selected("covs")
+        dlg = TermBuilderDialog(f"Ordinal Regression: {what}", names,
+                                [(key, f"{what} Model:", self.opts[key])], self)
+        if dlg.exec():
+            self.opts[key] = dlg.terms(key)
 
     def _options(self) -> None:
         dlg = SubDialog("Ordinal Regression: Options", self, columns=1)
+        box = dlg.group("Iterations")
+        dlg.number(box, "max_iter", "Maximum iterations:", self.opts["max_iter"], 1, 1000, 0)
         box = dlg.group("Link")
         dlg.radio(box, "link", list(logistic.LINKS.items()), self.opts["link"])
         dlg.number(dlg.group("Confidence interval"), "level", "Confidence interval (%):",
                    self.opts["level"], 50, 99.99, 2)
         values = dlg.run()
         if values:
+            values["max_iter"] = int(values["max_iter"])
             self.opts.update(values)
 
     def _output(self) -> None:
         dlg = SubDialog("Ordinal Regression: Output", self)
         box = dlg.group("Display")
-        dlg.check(box, "gof", "Goodness of fit statistics", self.opts["gof"])
-        dlg.check(box, "parallel", "Test of parallel lines", self.opts["parallel"])
-        dlg.check(box, "classification", "Classification table (predicted vs actual)",
-                  self.opts["classification"])
+        for key, text in (("iteration_history", "Print iteration history"),
+                          ("gof", "Goodness of fit statistics"),
+                          ("summary", "Summary statistics"),
+                          ("estimates", "Parameter estimates"),
+                          ("correlations", "Asymptotic correlation of parameter estimates"),
+                          ("covariances", "Asymptotic covariance of parameter estimates"),
+                          ("cell_info", "Cell information"),
+                          ("parallel", "Test of parallel lines"),
+                          ("classification", "Classification table (predicted vs actual)")):
+            dlg.check(box, key, text, self.opts[key])
         box = dlg.group("Saved Variables")
-        for key, text in (("est", "Estimated response probability (first category)"),
+        for key, text in (("est", "Estimated response probabilities"),
                           ("pre", "Predicted category"),
-                          ("max", "Predicted category probability")):
+                          ("max", "Predicted category probability"),
+                          ("acp", "Actual category probability")):
             dlg.check(box, f"save::{key}", text, key in self.opts["save"])
         values = dlg.run()
         if values:
-            self.opts["save"] = [k for k in ("est", "pre", "max") if values.pop(f"save::{k}")]
+            self.opts["save"] = [k for k in ("est", "pre", "max", "acp")
+                                 if values.pop(f"save::{k}")]
             self.opts.update(values)
 
     def validate(self):
         if not self.selected("factors") and not self.selected("covs"):
             return "Specify at least one factor or covariate."
+        names = set(self.selected("factors") + self.selected("covs"))
+        for t in self.opts["location"] + self.opts["scale_terms"]:
+            if not set(t.split("*")) <= names:
+                return f"The model term {t} uses a variable that is no longer selected."
         return None
 
     def compute(self):
         o = self.opts
-        return logistic.ordinal(self.ds, self.selected_one("dep"), self.selected("factors"),
-                                self.selected("covs"), o["link"], self.level(), o["gof"],
-                                o["parallel"], o["classification"], tuple(o["save"]))
+        return logistic.ordinal(
+            self.ds, self.selected_one("dep"), self.selected("factors"), self.selected("covs"),
+            o["link"], self.level(), o["gof"], o["parallel"], o["classification"],
+            tuple(o["save"]), location=o["location"] or None,
+            scale_terms=o["scale_terms"], summary=o["summary"], estimates=o["estimates"],
+            correlations=o["correlations"], covariances=o["covariances"],
+            cell_info=o["cell_info"], iteration_history=o["iteration_history"],
+            max_iter=int(o["max_iter"]))
 
 
 # ============================================================================ curve estimation
 class CurveEstimationDialog(VariablePickerDialog):
     DEFAULTS = {"models": ["linear"], "constant": True, "plot": True, "anova": False,
-                "use_time": False, "upper": ""}
+                "use_time": False, "upper": "", "save": [], "save_level": 95.0}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Curve Estimation", parent)
         self.add_target("deps", "Dependent(s):", accepts=is_numeric)
         self.add_target("ind", "Independent Variable:", accepts=is_numeric, single=True,
                         required=False)
+        self.add_option_button("Save...", self._save)
         row = QHBoxLayout()
         self.var_radio = QRadioButton("Variable")
         self.time_radio = QRadioButton("Time")
@@ -509,6 +714,15 @@ class CurveEstimationDialog(VariablePickerDialog):
         self.options_layout.addWidget(_check(self, "anova", "Display ANOVA table"))
         self.finish()
 
+    def _save(self) -> None:
+        def extra(dlg):
+            dlg.number(dlg.group("Prediction intervals"), "save_level",
+                       "Confidence Interval (%):", self.opts["save_level"], 50, 99.99, 2)
+
+        _multi(self, "Curve Estimation: Save", "save", [
+            ("Save Variables", [("pred", "Predicted values"), ("resid", "Residuals"),
+                                ("cin", "Prediction intervals")])], extra)
+
     def _models_changed(self) -> None:
         self.opts["models"] = [k for k, cb in self._model_checks.items() if cb.isChecked()]
 
@@ -531,20 +745,74 @@ class CurveEstimationDialog(VariablePickerDialog):
         upper = float(o["upper"]) if o["upper"] else None
         return curvefit_spss.curve_estimation(
             self.ds, self.selected("deps"), None if o["use_time"] else self.selected_one("ind"),
-            tuple(o["models"]), o["constant"], o["plot"], upper, o["anova"])
+            tuple(o["models"]), o["constant"], o["plot"], upper, o["anova"],
+            save=tuple(o["save"]), level=o["save_level"] / 100)
 
 
 # ============================================================================ means
 class MeansDialog(VariablePickerDialog):
-    DEFAULTS = {"statistics": list(means.DEFAULT), "anova": False, "linearity": False}
+    """Means with unlimited layers (Layer n of m, Previous / Next) as in SPSS."""
+
+    DEFAULTS = {"statistics": list(means.DEFAULT), "anova": False, "linearity": False,
+                "layers": [[]]}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Means", parent)
         self.add_target("deps", "Dependent List:", accepts=is_numeric)
-        self.add_target("layer1", "Layer 1 — Independent List:", required=False)
-        self.add_target("layer2", "Layer 2 — Independent List:", required=False)
+        header = QHBoxLayout()
+        self.layer_label = QLabel()
+        self.prev_button = QPushButton("Previous")
+        self.next_button = QPushButton("Next")
+        self.prev_button.clicked.connect(lambda: self._go(-1))
+        self.next_button.clicked.connect(lambda: self._go(1))
+        header.addWidget(self.layer_label)
+        header.addStretch()
+        header.addWidget(self.prev_button)
+        header.addWidget(self.next_button)
+        self._targets_column.addLayout(header)
+        self.add_target("layer", "Independent List:", required=False)
         self.add_option_button("Options...", self._options)
+        self._layers = [[n for n in names if ds.has_name(n)]
+                        for names in self.opts.get("layers") or [[]]] or [[]]
+        self._li = 0
         self.finish()
+        self._load()
+
+    def _layer_target(self):
+        return next(t for t in self._targets if t.key == "layer")
+
+    def _load(self) -> None:
+        target = self._layer_target()
+        self._move_back(target, all_items=True)
+        for name in self._layers[self._li]:
+            self._take(name, target)
+        self._update_arrows()
+
+    def _go(self, step: int) -> None:
+        self._layers[self._li] = self.selected("layer")
+        target = self._li + step
+        if target < 0:
+            return
+        if target == len(self._layers):
+            if not self._layers[self._li]:
+                return
+            self._layers.append([])
+        while len(self._layers) - 1 > target and not self._layers[-1]:
+            self._layers.pop()
+        self._li = target
+        self._load()
+
+    def targets_changed(self) -> None:
+        if not hasattr(self, "_layers"):
+            return
+        total = max(len(self._layers), self._li + 1)
+        self.layer_label.setText(f"Layer {self._li + 1} of {total}")
+        self.prev_button.setEnabled(self._li > 0)
+        self.next_button.setEnabled(self._layer_target().widget.count() > 0)
+
+    def layers(self) -> list[list[str]]:
+        self._layers[self._li] = self.selected("layer")
+        return [lay for lay in self._layers if lay]
 
     def _options(self) -> None:
         dlg = SubDialog("Means: Options", self)
@@ -560,10 +828,13 @@ class MeansDialog(VariablePickerDialog):
             self.opts["anova"] = values["anova"] or values["linearity"]
             self.opts["linearity"] = values["linearity"]
 
+    def validate(self):
+        self.opts["layers"] = self.layers() or [[]]
+        return None
+
     def compute(self):
         o = self.opts
-        return means.means(self.ds, self.selected("deps"),
-                           [self.selected("layer1"), self.selected("layer2")],
+        return means.means(self.ds, self.selected("deps"), self.layers(),
                            tuple(o["statistics"]), o["anova"], o["linearity"])
 
 
@@ -654,8 +925,8 @@ def _menus() -> dict[str, list]:
                                ("Curve Estimation...", CurveEstimationDialog)],
         "Analyze/Classify": [("K-Means Cluster...", KMeansDialog),
                              ("Hierarchical Cluster...", HierarchicalDialog),
-                             ("Discriminant...", DiscriminantDialog)],
-        "Analyze": [("ROC Curve...", RocDialog)],
+                             ("Discriminant...", DiscriminantDialog), None,
+                             ("ROC Curve...", RocDialog)],
     }
 
 

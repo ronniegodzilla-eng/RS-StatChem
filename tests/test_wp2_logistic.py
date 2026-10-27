@@ -110,3 +110,87 @@ def test_conditional_forward_selects_signal(data):
     assert any(r[1] == "x1" for r in vie.rows)
     res = logistic.binary_logistic(data, "y", ["x1", "x2"], method="bstep_cond")
     assert tables(res.section, "Model if Term Removed")
+
+
+@pytest.fixture
+def mdata():
+    rng = np.random.default_rng(8)
+    n = 400
+    x = rng.normal(size=n)
+    g = rng.integers(1, 3, n).astype(float)
+    h = rng.integers(1, 3, n).astype(float)
+    u = np.column_stack([np.zeros(n), 0.8 * x + 0.5 * (g == 1), -0.6 * x + 0.7 * (g == 1)
+                         * (h == 1)])
+    p = np.exp(u) / np.exp(u).sum(axis=1, keepdims=True)
+    y = np.array([rng.choice(3, p=pi) for pi in p]) + 1.0
+    s = np.exp(0.5 * (g == 2))
+    o = np.digitize((0.9 * x + 0.4 * (h == 1)) + rng.logistic(size=n) * s, [-1, 0.5]) + 1.0
+    return Dataset(pd.DataFrame({"y": y, "x": x, "g": g, "h": h, "o": o, "noise":
+                                 rng.normal(size=n)}))
+
+
+def test_multinomial_custom_interaction_ic_and_saves(mdata):
+    res = logistic.multinomial(mdata, "y", ["g", "h"], ["x"], model="custom",
+                               terms=["x", "g", "h", "g*h"], info_criteria=True,
+                               correlations=True, covariances=True, cell_probs=True,
+                               save=("est", "pre", "max", "acp"))
+    df = mdata.df
+    X = pd.DataFrame({"x": df.x, "g1": (df.g == 1) * 1.0, "h1": (df.h == 1) * 1.0})
+    X["gh"] = X.g1 * X.h1
+    yr = (df.y - 1).astype(int).map({0: 1, 1: 2, 2: 0})
+    ref = sm.MNLogit(yr, sm.add_constant(X)).fit(disp=0)
+    pe = tables(res.section, "Parameter Estimates")[0]
+    row = next(r for r in pe.rows if r[1] == "[g=1] * [h=1]")
+    assert math.isclose(num(row[2]), ref.params.iloc[4, 0], abs_tol=2e-3)
+    assert math.isclose(num(row[3]), ref.bse.iloc[4, 0], abs_tol=2e-3)
+    assert any(r[1] == "[g=2] * [h=1]" and r[2].startswith("0") for r in pe.rows)
+    mfi = tables(res.section, "Model Fitting Information")[0]
+    k = 2 * 5
+    m2 = num(mfi.rows[1][3])
+    assert math.isclose(num(mfi.rows[1][1]), m2 + 2 * k, abs_tol=2e-3)
+    assert tables(res.section, "Asymptotic Correlation Matrix")
+    assert tables(res.section, "Observed and Predicted Frequencies")
+    est = np.column_stack([res.saved[f"EST{j}"][1] for j in (1, 2, 3)])
+    assert np.allclose(est.sum(axis=1), 1)
+    acp = res.saved["ACP"][1].to_numpy()
+    assert np.allclose(acp, est[np.arange(len(df)), (df.y - 1).astype(int)])
+
+
+def test_multinomial_stepwise_and_scale(mdata):
+    res = logistic.multinomial(mdata, "y", ["g"], ["x", "noise"], model="custom",
+                               terms=["g"], stepwise_terms=["x", "noise"],
+                               step_method="forward_entry")
+    steps = tables(res.section, "Step Summary")[0]
+    assert [r[2] for r in steps.rows[1:]] == ["x"]
+    res2 = logistic.multinomial(mdata, "y", ["g"], ["x"], scale="pearson")
+    res1 = logistic.multinomial(mdata, "y", ["g"], ["x"])
+    s1 = num(tables(res1.section, "Parameter Estimates")[0].rows[1][3])
+    s2 = num(tables(res2.section, "Parameter Estimates")[0].rows[1][3])
+    gof = tables(res1.section, "Goodness-of-Fit")[0]
+    phi = num(gof.rows[0][1]) / num(gof.rows[0][2])
+    assert math.isclose(s2, s1 * math.sqrt(phi), rel_tol=2e-2)
+
+
+def test_ordinal_scale_model_and_custom_location(mdata):
+    from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+    base = logistic.ordinal(mdata, "o", ["h"], ["x"], iteration_history=True)
+    df = mdata.df
+    exog = pd.DataFrame({"x": df.x, "h1": (df.h == 1) * 1.})
+    om = OrderedModel((df.o - 1).astype(int), exog, distr="logit").fit(
+        method="bfgs", disp=0, maxiter=5000)
+    pe = tables(base.section, "Parameter Estimates")[0]
+    assert math.isclose(num(next(r for r in pe.rows if r[1] == "x")[2]), om.params["x"],
+                        abs_tol=2e-3)
+    assert tables(base.section, "Iteration History")
+    sc = logistic.ordinal(mdata, "o", ["h", "g"], ["x"], location=["x", "h"],
+                          scale_terms=["g"], cell_info=True, correlations=True,
+                          save=("est", "pre", "max", "acp"))
+    pe = tables(sc.section, "Parameter Estimates")[0]
+    scale_row = next(r for r in pe.rows if r[0] == "Scale")
+    assert scale_row[1] == "[g=1]" and num(scale_row[2]) < 0   # g = 2 is more dispersed
+    mfi = tables(sc.section, "Model Fitting Information")[0]
+    assert mfi.rows[1][3] == "3"
+    assert tables(sc.section, "Cell Information")
+    est = np.column_stack([sc.saved[f"EST{j}"][1] for j in (1, 2, 3)])
+    assert np.allclose(est.sum(axis=1), 1)
