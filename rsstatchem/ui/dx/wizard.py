@@ -64,7 +64,9 @@ HELP = {
     "mr5": "Min-Run Characterize: a minimum-run equireplicated resolution V design (MR5), 6 "
            "to 50 factors. All main effects and two-factor interactions can be estimated with "
            "about as many runs as model terms (an even number, each factor balanced). Built "
-           "by a fast columnwise-pairwise exchange; losing a run reduces it to resolution IV.",
+           "by a fast columnwise-pairwise exchange started from runs of a regular resolution V "
+           "fraction (about a second for 50 factors); losing a run reduces it to resolution "
+           "IV.",
     "mr4": "Min-Run Screen: a minimum-run resolution IV design (MR4) in 2 x factors runs, 5 to "
            "50 factors — the foldover of a main-effects design, so main effects are clear of "
            "two-factor interactions. The 2 extra runs (default) protect against a botched "

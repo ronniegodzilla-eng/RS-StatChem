@@ -61,21 +61,64 @@ def test_mr5_forty_factors_quickly():
     D = designs.min_run_res5(40, np.random.default_rng(1))
     elapsed = time.perf_counter() - t
     check_mr5(D, 40)
-    assert D.shape == (822, 40) and d_eff(D) > 0.5
-    assert elapsed < 30  # ~1 s on a laptop; loose for busy CI machines
+    assert D.shape == (822, 40) and d_eff(D) > 0.53   # 0.532 before the faster exchange
+    assert elapsed < 30  # ~0.3 s on a laptop; loose for busy CI machines
+
+
+def test_mr5_fifty_factors_efficient_and_fast():
+    """50 factors (1276 runs): the orthogonal-array start and the pending low-rank updates
+    give a higher D-efficiency than the former random start (0.51) in a fraction of the
+    time (~0.5 s idle instead of ~2-3 s); the bound is loose for loaded machines."""
+    t = time.perf_counter()
+    D = designs.min_run_res5(50, np.random.default_rng(1))
+    elapsed = time.perf_counter() - t
+    check_mr5(D, 50)
+    assert d_eff(D) >= 0.515
+    assert elapsed < 20
 
 
 @HEAVY
-def test_mr5_fifty_factors_under_a_few_seconds():
-    t = time.perf_counter()
-    res = designs.build_design({"design": "mr5", "seed": 1,
-                                "factors": [{"name": f"X{i}"} for i in range(50)]})
-    elapsed = time.perf_counter() - t
+def test_mr5_fifty_factors_under_a_second():
+    spec = {"design": "mr5", "seed": 1, "factors": [{"name": f"X{i}"} for i in range(50)]}
+    times = []
+    for _ in range(3):   # the best of three is robust against a busy machine
+        t = time.perf_counter()
+        res = designs.build_design(spec)
+        times.append(time.perf_counter() - t)
     assert res.meta["runs"] == 1276 and res.meta["resolution"] == 5
     D = res.dataset.df[[f["column"] for f in res.meta["factors"]]].to_numpy(float)
     check_mr5(D, 50)
-    assert d_eff(D) > 0.48
-    assert elapsed < 10  # ~3 s on an idle laptop
+    assert d_eff(D) >= 0.515
+    assert min(times) < 1.0  # ~0.5 s on an idle laptop (was ~2-3 s)
+
+
+def test_mr5_orthogonal_array_start():
+    """The starting design: runs of a regular resolution V fraction (no defining word shorter
+    than five, so its 2FI model matrix is orthogonal), balanced, and keeping the extra
+    three-factor column unaliased."""
+    for k, n, runs in ((6, 22, 32), (17, 154, 256), (21, 232, 512), (29, 436, 1024),
+                       (38, 742, 2048), (50, 1276, 4096)):
+        assert designs.mr5_runs(k) == n
+        bits, cols = designs._res5_generators(k, n)
+        assert 1 << bits == runs and len(set(cols)) == k and 0 not in cols
+        # no 2, 3 or 4 columns sum to zero: the sums of pairs are distinct and no column
+        pairs = [a ^ b for a, b in itertools.combinations(cols, 2)]
+        assert len(set(pairs)) == len(pairs) and not set(pairs) & set(cols)
+        u = np.arange(runs)[:, None]
+        X = 1.0 - 2.0 * designs._parity(u & np.array(cols)[None, :])
+        F = designs.two_fi_matrix(X)
+        assert np.array_equal(F.T @ F, runs * np.eye(F.shape[1]))
+    rng = np.random.default_rng(3)
+    for k in (7, 12, 31):   # run counts with the extra run (and its 3FI column)
+        n = designs.mr5_runs(k)
+        assert n == 1 + k + k * (k - 1) // 2 + 1
+        D = designs._mr5_start(k, n, True, rng)
+        assert D.shape == (n, k) and np.all(D.sum(axis=0) == 0)
+        assert set(np.unique(D)) == {-1.0, 1.0}
+    # far better than random balanced runs for 50 factors (~0.43 against ~0.36)
+    D = designs._mr5_start(50, 1276, False, np.random.default_rng(0))
+    rand = np.column_stack([rng.permutation(np.repeat([1.0, -1.0], 638)) for _ in range(50)])
+    assert d_eff(D) > 0.41 > 0.38 > d_eff(rand)
 
 
 def test_mr5_limits_and_run_counts():
