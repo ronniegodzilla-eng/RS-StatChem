@@ -159,6 +159,52 @@ class RangeList(QWidget):
             self._append(t)
 
 
+class LevelCombo(QComboBox):
+    """Dropdown of the levels of a factor (Origin's Dunnett control): "(first level)" and
+    the levels read from the dialog's current input; the list is refreshed when the input
+    changes and whenever it is opened. A control stored as text (older reports) is selected
+    when it is one of the levels, and kept as typed while the levels cannot be read."""
+
+    FIRST = "(first level)"
+
+    def __init__(self, value: str = "", fallback: str = ""):
+        super().__init__()
+        self.refresher = None
+        self._fallback = str(fallback or "").strip()
+        self.addItem(self.FIRST, "")
+        value = str(value or "").strip()
+        if value:
+            self.addItem(value, value)
+            self.setCurrentIndex(1)
+
+    def showPopup(self) -> None:  # noqa: N802 - Qt override
+        if self.refresher is not None:
+            self.refresher()
+        super().showPopup()
+
+    def levels(self) -> list[str]:
+        return [self.itemData(i) for i in range(1, self.count())]
+
+    def set_levels(self, levels: list[str]) -> None:
+        levels = [str(v) for v in levels]
+        current = self.currentData() or ""
+        if levels == self.levels():
+            return
+        if not levels:   # input not readable: keep the stored choice
+            keep = [current] if current else []
+        else:
+            keep = levels
+            if current not in levels:
+                current = self._fallback if self._fallback in levels else ""
+        self.blockSignals(True)
+        self.clear()
+        self.addItem(self.FIRST, "")
+        for v in keep:
+            self.addItem(v, v)
+        self.setCurrentIndex(max(0, self.findData(current)))
+        self.blockSignals(False)
+
+
 class _PickBar(QWidget):
     """The rolled-up dialog while a range is selected in the worksheet (Origin's dialog
     shrinks to its range box with a ▸ button to come back)."""
@@ -201,7 +247,10 @@ class StatDialog(QDialog):
     ``groups``: ``[(group title, [field, ...]), ...]`` with fields
     ``(kind, key, label, default, extra)``; kinds: ``ranges``, ``range``, ``choice``
     (extra = {value: text}), ``checks`` (extra = {value: text}, default = selected values),
-    ``float`` (extra = (lo, hi, decimals)), ``int`` (extra = (lo, hi)), ``bool``, ``text``.
+    ``float`` (extra = (lo, hi, decimals)), ``int`` (extra = (lo, hi)), ``bool``, ``text``,
+    ``level`` (a :class:`LevelCombo` of factor levels; extra = {"source": key of
+    :func:`stat_tests.factor_levels`, "fallback": settings key of a control stored as
+    text}). The Dunnett options are enabled only while Dunnett is checked.
     A field may end with ``{"when": (key, value)}`` to show it only for that choice.
 
     A range picker's ▸ button rolls the dialog up (:meth:`start_pick`): the dialog shrinks
@@ -217,6 +266,7 @@ class StatDialog(QDialog):
         self.widgets: dict[str, QWidget] = {}
         self.kinds: dict[str, str] = {}
         self.rows: list[tuple[QWidget, QWidget | None, tuple | None]] = []
+        self.level_sources: dict[str, str] = {}
         self.picking = None          # the range picker being filled from the worksheet
         self._loop = None
         self._geometry = None
@@ -266,10 +316,75 @@ class StatDialog(QDialog):
         box.rejected.connect(self.reject)
         layout.addWidget(box)
         for w in self.widgets.values():
-            if isinstance(w, QComboBox):
+            if isinstance(w, QComboBox) and not isinstance(w, LevelCombo):
                 w.currentIndexChanged.connect(self._update_visibility)
+        # a control typed in an older report, kept for the factor that has that level
+        self.passthrough = {k: settings[k] for k in ("control",)
+                            if k in settings and k not in self.widgets}
+        self._level_timer = QTimer(self)
+        self._level_timer.setSingleShot(True)
+        self._level_timer.setInterval(200)
+        self._level_timer.timeout.connect(self.refresh_levels)
+        if self.level_sources:
+            for w in self.widgets.values():
+                self._watch_input(w)
+            for key in self.level_sources:
+                self.widgets[key].refresher = self.refresh_levels
+            self.refresh_levels()
+        means = self.widgets.get("means")
+        if means is not None and "dunnett" in getattr(means, "boxes", {}):
+            means.boxes["dunnett"].toggled.connect(self._update_dunnett)
+        self._update_dunnett()
         self._update_visibility()
         self.resize(500, 0)
+
+    # ------------------------------------------------------------------ factor levels
+    DUNNETT_KEYS = ("control", "control_a", "control_b", "dunnett_tail")
+
+    def _watch_input(self, w: QWidget) -> None:
+        """Refresh the level dropdowns (debounced) when an input that defines the levels
+        changes."""
+        start = self._level_timer.start
+        if isinstance(w, LevelCombo):
+            return
+        if isinstance(w, RangeEdit):
+            w.edit.textChanged.connect(start)
+        elif isinstance(w, RangeList):
+            model = w.list.model()
+            model.rowsInserted.connect(start)
+            model.rowsRemoved.connect(start)
+            model.dataChanged.connect(start)
+        elif isinstance(w, QComboBox):
+            w.currentIndexChanged.connect(start)
+        elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+            w.valueChanged.connect(start)
+        elif isinstance(w, QLineEdit):
+            w.textChanged.connect(start)
+
+    def _books(self) -> dict:
+        try:
+            return self.main.project.data_windows()
+        except AttributeError:
+            return {}
+
+    def refresh_levels(self) -> None:
+        """Fill the level dropdowns from the current input ranges."""
+        if not self.level_sources:
+            return
+        values, books = self.values(), self._books()
+        for key, source in self.level_sources.items():
+            self.widgets[key].set_levels(st.factor_levels(books, values, source))
+
+    def _update_dunnett(self) -> None:
+        means = self.widgets.get("means")
+        box = getattr(means, "boxes", {}).get("dunnett") if means is not None else None
+        on = box is None or box.isChecked()
+        for w, lab, _cond in self.rows:
+            key = next((k for k, v in self.widgets.items() if v is w), None)
+            if key in self.DUNNETT_KEYS:
+                w.setEnabled(on)
+                if lab is not None:
+                    lab.setEnabled(on)
 
     # ------------------------------------------------------------------ modality / pick
     def exec(self) -> int:  # noqa: A003 - same API as QDialog.exec
@@ -392,6 +507,10 @@ class StatDialog(QDialog):
         elif kind == "bool":
             w = QCheckBox()
             w.setChecked(bool(value))
+        elif kind == "level":
+            extra = extra or {}
+            w = LevelCombo(value, settings.get(extra.get("fallback", ""), ""))
+            self.level_sources[key] = extra.get("source", "")
         else:
             w = QLineEdit(str(value))
         self.widgets[key] = w
@@ -417,6 +536,7 @@ class StatDialog(QDialog):
 
     def values(self) -> dict:
         out = {"mode": self.mode.currentData()}
+        out.update(getattr(self, "passthrough", {}))
         for key, w in self.widgets.items():
             kind = self.kinds[key]
             if kind == "ranges":
@@ -425,6 +545,8 @@ class StatDialog(QDialog):
                 out[key] = w.text()
             elif kind == "choice":
                 out[key] = w.currentData()
+            elif kind == "level":
+                out[key] = w.currentData() or ""
             elif kind == "checks":
                 out[key] = [v for v, cb in w.boxes.items() if cb.isChecked()]
             elif kind in ("float", "int"):
@@ -448,8 +570,18 @@ def _alpha(default: float = 0.05):
     return ("float", "alpha", "Significance Level", default, (0.0001, 0.5, 4))
 
 
-def _control():
-    return ("text", "control", "Dunnett Control Level (blank = first)", "")
+DUNNETT_TAILS = {"two": "Mean <> control (two-tailed)",
+                 "lower": "Mean < control (lower-tailed)",
+                 "upper": "Mean > control (upper-tailed)"}
+
+
+def _dunnett(sources: list[tuple[str, str, str]]) -> list[tuple]:
+    """Origin's Dunnett options: the control level of each factor (a dropdown of its
+    levels) and the alternate hypothesis (two-sided, < control, > control)."""
+    fields = [("level", key, label, "", {"source": source, "fallback": "control"})
+              for key, label, source in sources]
+    return fields + [("choice", "dunnett_tail", "Dunnett Alternate Hypothesis", "two",
+                      DUNNETT_TAILS)]
 
 
 def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
@@ -539,8 +671,8 @@ def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
                        ("range", "data", "Data Range", first, {"when": ("form", "indexed")}),
                        ("range", "factor", "Factor Range", second,
                         {"when": ("form", "indexed")})]),
-            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS),
-                                  _control()]),
+            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS)] +
+             _dunnett([("control", "Dunnett Control Level", "anova1")])),
             ("Options", [_alpha(),
                          ("choice", "homogeneity", "Test for Equal Variance", "levene",
                           {"levene": "Levene (absolute deviations)",
@@ -567,8 +699,9 @@ def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
                         indexed),
                        ("range", "factor_b", "Factor B Range", second if third else "",
                         indexed)]),
-            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS),
-                                  _control()]),
+            ("Means Comparison", [("checks", "means", "", ["tukey"], st.MEANS_METHODS)] +
+             _dunnett([("control_a", "Dunnett Control Level (Factor A)", "anova2_a"),
+                       ("control_b", "Dunnett Control Level (Factor B)", "anova2_b")])),
             ("Options", [_alpha(), ("bool", "interaction", "Interactions", True),
                          ("choice", "ss", "Type of Sums of Squares", "3", st.SS_TYPES),
                          ("bool", "means_plot", "Interaction Plot", True)])],

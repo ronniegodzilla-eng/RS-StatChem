@@ -19,13 +19,16 @@ definition is stored JSON-serialisable in ``ds.meta["doe"]``.
 """
 from __future__ import annotations
 
+import functools
 import itertools
 import math
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy.linalg import blas
+from scipy import linalg as sla
+from scipy.linalg import LinAlgWarning
 
 from rsstatchem.core.dataset import NOMINAL, ORDINAL, Dataset, Variable, sanitize_name
 
@@ -684,6 +687,142 @@ def _mr5_square(D: np.ndarray, extra: bool) -> np.ndarray:
     return F
 
 
+@functools.lru_cache(maxsize=None)
+def _res5_generators(k: int, n: int) -> tuple[int, tuple[int, ...]]:
+    """Columns of a regular resolution V two-level fraction with at least ``n`` runs for ``k``
+    factors: ``(r, columns)`` with the columns as bit masks h_c of GF(2)^r (run u of the 2^r
+    sets factor c to (-1)^(u . h_c)).
+
+    No four or fewer of the h_c may sum to zero (no defining word shorter than five): the set
+    is the lexicographically first such set of GF(2)^r, for the smallest r with 2^r >= n that
+    holds k of them (17 factors in 256 runs, 21 in 512, 29 in 1024, 38 in 2048, 52 in 4096);
+    the 2FI model matrix of such a fraction has orthogonal columns."""
+    r = max(1, (n - 1).bit_length())
+    while True:
+        size = 1 << r
+        blocked = np.zeros(size, bool)   # sums of at most three chosen columns (and 0)
+        blocked[0] = True
+        chosen: list[int] = []
+        pairs: list[int] = []
+        for v in range(1, size):
+            if blocked[v]:
+                continue
+            blocked[[v] + [v ^ a for a in chosen] + [v ^ s for s in pairs]] = True
+            pairs += [v ^ a for a in chosen]
+            chosen.append(v)
+            if len(chosen) == k:
+                return r, tuple(chosen)
+        r += 1
+
+
+def _parity(x: np.ndarray) -> np.ndarray:
+    for shift in (16, 8, 4, 2, 1):
+        x = x ^ (x >> shift)
+    return x & 1
+
+
+def _mr5_start(k: int, n: int, extra: bool, rng: np.random.Generator) -> np.ndarray:
+    """A balanced starting design for the MR5 exchange: n random runs of a regular
+    resolution V fraction (columns in random order and signs), then the fewest sign changes
+    that balance every column. A random subset of an orthogonal design starts far closer to
+    the optimum than random runs (D-efficiency ~0.43 instead of ~0.36 for 50 factors), so the
+    exchange needs fewer passes and ends higher. With the extra run the interaction of the
+    last three factors is a further model column; the column order keeps it unaliased with
+    the two-factor interactions of the fraction."""
+    bits, cols = _res5_generators(k, n)
+    h = np.array(cols, dtype=np.int64)[rng.permutation(k)]
+    if extra:
+        pair_sums = {int(a ^ b) for a, b in itertools.combinations(h, 2)}
+        if int(h[-3] ^ h[-2] ^ h[-1]) in pair_sums:
+            for tri in itertools.combinations(range(k), 3):
+                if int(h[tri[0]] ^ h[tri[1]] ^ h[tri[2]]) not in pair_sums:
+                    rest = [c for c in range(k) if c not in tri]
+                    h = h[rest + list(tri)]
+                    break
+    runs = rng.choice(1 << bits, n, replace=False)
+    D = 1.0 - 2.0 * _parity(runs[:, None] & h[None, :]).astype(float)
+    D *= rng.choice([-1.0, 1.0], size=k)
+    s = D.sum(axis=0)
+    for c in np.flatnonzero(s):
+        rows = np.flatnonzero(D[:, c] == np.sign(s[c]))
+        D[rng.choice(rows, int(abs(s[c])) // 2, replace=False), c] *= -1
+    return D
+
+
+def _mr5_exchange(D: np.ndarray, extra: bool, rng: np.random.Generator, max_pass: int,
+                  candidates: int, tol: float, reps: int = 8, rank: int = 128) -> None:
+    """Columnwise-pairwise exchange of the MR5 runs ``D`` (in place); see
+    :func:`min_run_res5`."""
+    n, k = D.shape
+    sup = _flip_support(k, extra)
+    dtype = np.float32 if n > 300 else np.float64   # halves the memory traffic of G
+    accept = 1 + (1e-5 if dtype is np.float32 else 1e-9)
+    eps = dtype(1e-3)
+    F = np.asfortranarray(_mr5_square(D, extra), dtype=dtype)  # column blocks F[:, S]
+    Fe = F + eps * np.eye(n, dtype=dtype)
+    Ut = np.empty((rank, n), dtype)   # G = G0 + Ut[:used]' V[:used] (pending updates)
+    V = np.empty((rank, n), dtype)
+    used = 0
+    refresh = 3 if dtype is np.float32 else 1
+    probe = rng.choice(n, min(n, 8), replace=False)
+    for _pass in range(max_pass):
+        if _pass % refresh == 0:   # recompute G against the drift of the updates
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", LinAlgWarning)
+                G0 = sla.inv(Fe, check_finite=False)
+            # a singular start is too ill-conditioned for single precision
+            resid = Fe[probe] @ G0
+            resid[np.arange(len(probe)), probe] -= 1
+            if np.abs(resid).max() > 1e-2:
+                G0 = np.linalg.inv(Fe.astype(float)).astype(dtype)
+            used = 0
+        gain, swaps = 0.0, 0
+        for c in rng.permutation(k):
+            S = sup[c]
+            if used + 2 * reps > rank:   # apply the pending rank-2 updates in one GEMM
+                G0 += Ut[:used].T @ V[:used]
+                used = 0
+            GS = G0[S] + Ut[:used, S].T @ V[:used]   # the rows of G that column c needs
+            Fc = F[:, S]
+            col = D[:, c]
+            for _rep in range(reps):
+                w = 1 - 2 * np.einsum("ij,ji->i", Fc, GS)  # single-switch ratios
+                plus = np.flatnonzero(col > 0)
+                minus = np.flatnonzero(col < 0)
+                m = min(candidates, len(plus))
+                if m < len(plus):
+                    P = plus[np.argpartition(-np.abs(w[plus]), m - 1)[:m]]
+                    Q = minus[np.argpartition(-np.abs(w[minus]), m - 1)[:m]]
+                else:
+                    P, Q = plus, minus
+                ratio = (np.outer(w[P], w[Q])
+                         - 4 * (Fc[P] @ GS[:, Q]) * (Fc[Q] @ GS[:, P]).T)
+                idx = int(np.argmax(np.abs(ratio)))
+                r = abs(float(ratio.flat[idx]))
+                if r <= accept:
+                    break
+                i, j = P[idx // m], Q[idx % m]
+                VG = -2 * (Fc[[i, j]] @ GS)
+                a, b, cc, d = 1 + VG[0, i], VG[0, j], VG[1, i], 1 + VG[1, j]
+                det = a * d - b * cc
+                Y = np.vstack([d * VG[0] - b * VG[1], a * VG[1] - cc * VG[0]]) / det
+                # Woodbury: G -= G[:, [i, j]] Y, kept pending as a rank-2 term
+                Gij = G0[:, [i, j]] + (V[:used, [i, j]].T @ Ut[:used]).T
+                Ut[used:used + 2] = Gij.T
+                V[used:used + 2] = -Y
+                used += 2
+                GS -= Gij[S] @ Y
+                Fc[[i, j]] = -Fc[[i, j]]
+                F[i, S], F[j, S] = Fc[i], Fc[j]
+                Fe[i, S] = F[i, S] + eps * (S == i)
+                Fe[j, S] = F[j, S] + eps * (S == j)
+                col[i], col[j] = -1.0, 1.0
+                swaps += 1
+                gain += math.log(r)
+        if not swaps or 2 * gain / n < tol:
+            break
+
+
 def min_run_res5(k: int, rng: np.random.Generator, starts: int | None = None,
                  max_pass: int = 40, candidates: int = 64, tol: float = 0.005) -> np.ndarray:
     """Minimum-run equireplicated resolution V design (MR5) for ``k`` two-level factors
@@ -698,9 +837,14 @@ def min_run_res5(k: int, rng: np.random.Generator, starts: int | None = None,
     at once from the inverse G = F^-1: switching factor c in run i multiplies det F by
     1 - 2 sum_s F[i,s] G[s,i] over the columns s that involve c, a swap of two runs by the
     corresponding 2 x 2 determinant, and the best swap updates G by a rank-2 Woodbury step.
-    A random balanced start that is singular is handled through F + eps I. Passes stop when
-    the D-efficiency gains less than ``tol`` (relative) in a pass; the result is
-    deterministic for a given seed. 50 factors (1276 runs) take a few seconds."""
+    The updates are kept pending (G = G0 + U V) and applied to G0 in one matrix product per
+    64 swaps, so a swap costs O(n k) instead of O(n^2).
+
+    Starts alternate between n random runs of a regular resolution V fraction (balanced by
+    the fewest sign changes, :func:`_mr5_start`) and random balanced runs; a singular start
+    is handled through F + eps I. Passes stop when the D-efficiency gains less than ``tol``
+    (relative) in a pass; the best start is kept and the result is deterministic for a given
+    seed. 50 factors (1276 runs) take about half a second."""
     if k < 2:
         raise ValueError("Min-Run Characterize needs at least 2 factors.")
     if k > MR_MAX_FACTORS:
@@ -711,58 +855,16 @@ def min_run_res5(k: int, rng: np.random.Generator, starts: int | None = None,
     extra = n > p
     if extra and k < 3:
         raise ValueError("Min-Run Characterize needs at least 3 factors here.")
-    sup = _flip_support(k, extra)
     if starts is None:
-        starts = 8 if n <= 64 else 4 if n <= 200 else 2 if n <= 500 else 1
-    dtype = np.float32 if n > 300 else np.float64   # halves the memory traffic of G
-    accept = 1 + (1e-5 if dtype is np.float32 else 1e-9)
-    eps = 1e-3
+        starts = 24 if n <= 64 else 6 if n <= 200 else 3 if n <= 500 else 1
     best, best_ld = None, -np.inf
-    for _start in range(starts):
-        D = np.column_stack([rng.permutation(np.repeat([1.0, -1.0], n // 2))
-                             for _ in range(k)])
-        F = np.asfortranarray(_mr5_square(D, extra))   # column blocks F[:, S] contiguous
-        Fe = F + eps * np.eye(n)
-        gemm = blas.sgemm if dtype is np.float32 else blas.dgemm
-        for _pass in range(max_pass):
-            G = np.ascontiguousarray(np.linalg.inv(Fe), dtype=dtype)  # row blocks G[S]
-            gain, swaps = 0.0, 0
-            for c in rng.permutation(k):
-                S = sup[c]
-                for _rep in range(8):
-                    Fc, GS = F[:, S], G[S]
-                    w = 1 - 2 * np.einsum("ij,ji->i", Fc, GS)  # single-switch ratios
-                    plus = np.flatnonzero(D[:, c] > 0)
-                    minus = np.flatnonzero(D[:, c] < 0)
-                    m = min(candidates, len(plus))
-                    if m < len(plus):
-                        P = plus[np.argpartition(-np.abs(w[plus]), m - 1)[:m]]
-                        Q = minus[np.argpartition(-np.abs(w[minus]), m - 1)[:m]]
-                    else:
-                        P, Q = plus, minus
-                    ratio = (np.outer(w[P], w[Q])
-                             - 4 * (Fc[P] @ GS[:, Q]) * (Fc[Q] @ GS[:, P]).T)
-                    idx = int(np.argmax(np.abs(ratio)))
-                    r = abs(float(ratio.flat[idx]))
-                    if r <= accept:
-                        break
-                    i, j = P[idx // m], Q[idx % m]
-                    VG = -2 * np.vstack([F[i, S] @ GS, F[j, S] @ GS])
-                    a, b, cc, d = 1 + VG[0, i], VG[0, j], VG[1, i], 1 + VG[1, j]
-                    det = a * d - b * cc
-                    Y = np.vstack([d * VG[0] - b * VG[1], a * VG[1] - cc * VG[0]]) / det
-                    # G -= G[:, [i, j]] @ Y in place, as G' -= Y' G[:, [i, j]]' (G' is
-                    # Fortran-ordered, so BLAS updates it without a copy)
-                    G = gemm(-1.0, Y.T.astype(dtype), G[:, [i, j]].T, 1.0, G.T,
-                             overwrite_c=True).T
-                    F[i, S], F[j, S] = -F[i, S], -F[j, S]
-                    Fe[i, S] = F[i, S] + eps * (S == i)
-                    Fe[j, S] = F[j, S] + eps * (S == j)
-                    D[i, c], D[j, c] = -1.0, 1.0
-                    swaps += 1
-                    gain += math.log(r)
-            if not swaps or 2 * gain / n < tol:
-                break
+    for start in range(starts):
+        if start % 2 == 0:
+            D = _mr5_start(k, n, extra, rng)
+        else:
+            D = np.column_stack([rng.permutation(np.repeat([1.0, -1.0], n // 2))
+                                 for _ in range(k)])
+        _mr5_exchange(D, extra, rng, max_pass, candidates, tol)
         F2 = two_fi_matrix(D)
         sign, ld = np.linalg.slogdet(F2.T @ F2)
         if sign > 0 and ld > best_ld + 1e-9:

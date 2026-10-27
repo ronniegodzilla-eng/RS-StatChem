@@ -256,6 +256,140 @@ def test_dunnett_matches_published_example_and_scipy():
                                  "means": ["dunnett"], "control": "Nope"})
 
 
+@pytest.mark.parametrize("tail,alternative", [("two", "two-sided"), ("lower", "less"),
+                                              ("upper", "greater")])
+def test_dunnett_one_sided_matches_scipy(tail, alternative):
+    """Origin's Dunnett alternatives (two-sided, "< control", "> control") against
+    scipy.stats.dunnett: statistics, p-values and the (one-sided) simultaneous bounds."""
+    groups = [("Control", np.array(DUNNETT_CONTROL)), ("Drug A", np.array(DUNNETT_A)),
+              ("Drug B", np.array(DUNNETT_B))]
+    mse, df = _pooled(groups)
+    vals = st.dunnett_values(groups, 0, mse, df, 0.05, tail)
+    ref = stats.dunnett(np.array(DUNNETT_A), np.array(DUNNETT_B),
+                        control=np.array(DUNNETT_CONTROL), alternative=alternative, rng=1)
+    ci = ref.confidence_interval(0.95)
+    assert [v[3] for v in vals] == pytest.approx(list(ref.statistic), rel=1e-9)
+    assert [v[4] for v in vals] == pytest.approx(list(ref.pvalue), abs=2e-3)
+    assert [v[5] for v in vals] == pytest.approx(list(ci.low), abs=2e-2)
+    assert [v[6] for v in vals] == pytest.approx(list(ci.high), abs=2e-2)
+    if tail == "lower":    # Drug B is far above the control: no evidence of "< control"
+        assert np.all(np.isneginf([v[5] for v in vals])) and vals[1][4] > 0.99
+    elif tail == "upper":  # one-sided p is about half the two-sided one (0.0029 vs 0.0058)
+        assert np.all(np.isposinf([v[6] for v in vals]))
+        assert vals[1][4] == pytest.approx(0.0029, abs=1e-3)
+
+
+@pytest.mark.parametrize("alpha,tail,crit", [(0.05, "two", 2.50), (0.01, "two", 3.39),
+                                             (0.05, "upper", 2.11), (0.01, "upper", 3.01),
+                                             (0.05, "lower", 2.11)])
+def test_dunnett_critical_values_match_dunnett_1955_tables(alpha, tail, crit):
+    """Equal group sizes (rho = 1/2), two treatments and 12 error DF: Dunnett (1955) Table 1
+    (one-sided) gives 2.11 / 3.01 and Table 2 (two-sided) 2.50 / 3.39."""
+    rng = np.random.default_rng(0)
+    groups = [(f"G{i}", rng.normal(0, 1, 5)) for i in range(3)]
+    mse, df = _pooled(groups)
+    assert df == 12
+    _, d, se, _, _, lo, hi = st.dunnett_values(groups, 0, mse, df, alpha, tail)[0]
+    half = (hi - d) / se if tail == "lower" else (d - lo) / se
+    assert half == pytest.approx(crit, abs=6e-3)
+
+
+def test_dunnett_alternative_in_anova_reports():
+    book = _sheet_book([DUNNETT_A, DUNNETT_CONTROL, DUNNETT_B])
+    for c, name in zip(book.sheets[0].columns, ("DrugA", "Control", "DrugB")):
+        c.long_name = name
+    books = {"Book1": book}
+    base = {"ranges": ["[Book1]Sheet1!A", "[Book1]Sheet1!B", "[Book1]Sheet1!C"],
+            "means": ["dunnett"], "control": "Control"}
+    rep, _ = st.one_way_anova(books, {**base, "dunnett_tail": "upper"})
+    t = rep.table("Dunnett Test")
+    assert float(t["rows"][1][4]) == pytest.approx(0.0029, abs=1e-3)
+    assert [r[8] for r in t["rows"]] == ["∞", "∞"] and t["rows"][1][6] == "1"
+    assert "one-sided, mean > control" in t["notes"][0] and "lower bound" in t["notes"][1]
+    rep, _ = st.one_way_anova(books, {**base, "dunnett_tail": "lower"})
+    t = rep.table("Dunnett Test")
+    assert [r[7] for r in t["rows"]] == ["-∞", "-∞"] and [r[6] for r in t["rows"]] == ["0", "0"]
+    # the default (and older reports without the option) stay two-sided
+    rep, _ = st.one_way_anova(books, base)
+    assert "two-sided" in rep.table("Dunnett Test")["notes"][0]
+    with pytest.raises(st.StatError, match="alternative"):
+        st.one_way_anova(books, {**base, "dunnett_tail": "sideways"})
+    # Two-Way ANOVA: a control per factor; a control typed for either factor still works
+    a = [8.1, 7.9, 8.4, 9.6, 9.2, 9.9, 8.0, 8.3, 7.7, 10.4, 10.9, 10.1]
+    b = ["M"] * 6 + ["F"] * 6
+    c = ["SV", "SV", "SV", "LV", "LV", "LV"] * 2
+    book2 = _sheet_book([a, b, c], "Book2")
+    books2 = {"Book2": book2}
+    ind = {"form": "indexed", "data": "[Book2]Sheet1!A", "factor_a": "[Book2]Sheet1!B",
+           "factor_b": "[Book2]Sheet1!C", "means": ["dunnett"]}
+    assert st.factor_levels(books2, ind, "anova2_a") == ["F", "M"]
+    assert st.factor_levels(books2, ind, "anova2_b") == ["LV", "SV"]
+    rep, _ = st.two_way_anova(books2, {**ind, "control_a": "M", "control_b": "SV",
+                                       "dunnett_tail": "upper"})
+    tables = [t for t in rep.tables() if t["title"].startswith("Dunnett Test")]
+    assert [t["rows"][0][0] for t in tables] == ["F  M", "LV  SV"]
+    rep, _ = st.two_way_anova(books2, {**ind, "control": "SV"})       # legacy text
+    tables = [t for t in rep.tables() if t["title"].startswith("Dunnett Test")]
+    assert [t["rows"][0][0] for t in tables] == ["M  F", "LV  SV"]
+    assert st.factor_levels(books2, {"form": "indexed", "data": "[Book2]Sheet1!Z"},
+                            "anova2_a") == []
+
+
+def test_dunnett_control_dropdown(ctx, monkeypatch):
+    """The control level is picked from a dropdown of the factor's levels (refreshed from
+    the input ranges); a control stored as text by an older report is still selected."""
+    _no_prompts(monkeypatch)
+    from rsstatchem.ui.origin import open_workspace
+    from rsstatchem.ui.origin import stat_dialogs as sd
+    from rsstatchem.ui.origin.sheet_view import HEADER_ROWS
+
+    win = open_workspace(ctx)
+    bw = win.active_book_window()
+    vals = DUNNETT_CONTROL + DUNNETT_A + DUNNETT_B
+    levels = ["ctrl"] * 6 + ["drugA"] * 4 + ["drugB"] * 5
+    bw.paste_block([[f"{v}", lv] for v, lv in zip(vals, levels)], HEADER_ROWS, 0)
+    saved = {"form": "indexed", "data": "[Book1]Sheet1!A", "factor": "[Book1]Sheet1!B",
+             "means": ["dunnett"], "control": "drugA"}
+    dlg = sd.make_dialog("anova1", win, saved)
+    combo = dlg.widget("control")
+    assert isinstance(combo, sd.LevelCombo)
+    assert combo.levels() == ["ctrl", "drugA", "drugB"] and combo.currentData() == "drugA"
+    assert dlg.widget("dunnett_tail").currentData() == "two"
+    assert combo.isEnabled()
+    dlg.widget("means").boxes["dunnett"].setChecked(False)   # options only for Dunnett
+    assert not combo.isEnabled() and not dlg.widget("dunnett_tail").isEnabled()
+    dlg.widget("means").boxes["dunnett"].setChecked(True)
+    combo.setCurrentIndex(combo.findData("ctrl"))
+    dlg.widget("dunnett_tail").setCurrentIndex(dlg.widget("dunnett_tail").findData("upper"))
+    values = dlg.values()
+    assert values["control"] == "ctrl" and values["dunnett_tail"] == "upper"
+    rep, _ = st.one_way_anova(win.project.data_windows(), values)
+    t = rep.table("Dunnett Test")
+    assert [r[0] for r in t["rows"]] == ["drugA  ctrl", "drugB  ctrl"]
+    assert float(t["rows"][1][4]) == pytest.approx(0.0029, abs=1e-3)
+    # a new factor range refreshes the list; a vanished control falls back to the first
+    dlg.widget("factor").setText("[Book1]Sheet1!A")
+    dlg.refresh_levels()
+    assert combo.currentData() == "" and "7.4" in combo.levels()
+    # without readable input (or main window) the stored text is kept as it is
+    dlg2 = sd.make_dialog("anova1", None, {"ranges": [], "control": "Old"})
+    assert dlg2.widget("control").currentData() == "Old" and dlg2.values()["control"] == "Old"
+    # Two-Way ANOVA: one dropdown per factor; an old single control is offered for both
+    dlg3 = sd.make_dialog("anova2", None, {"form": "raw", "names_a": "Male, Female",
+                                           "names_b": "SV, LV, Nor", "levels_b": 3,
+                                           "control": "Female"})
+    ca, cb = dlg3.widget("control_a"), dlg3.widget("control_b")
+    assert ca.levels() == ["Male", "Female"] and ca.currentData() == "Female"
+    assert cb.levels() == ["SV", "LV", "Nor"] and cb.currentData() == ""
+    v3 = dlg3.values()
+    assert v3["control_a"] == "Female" and v3["control"] == "Female"
+    dlg3.widget("names_b").setText("SV, LV, Normal")
+    dlg3.refresh_levels()
+    assert cb.levels() == ["SV", "LV", "Normal"]
+    win.modified = False
+    win.close()
+
+
 @pytest.mark.parametrize("method,sm", [("holm_bonferroni", "holm"),
                                        ("holm_sidak", "holm-sidak")])
 def test_holm_procedures_match_statsmodels(method, sm):

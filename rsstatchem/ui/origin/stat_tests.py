@@ -13,7 +13,8 @@ plots are live graph objects (:mod:`rsstatchem.ui.origin.report_graphs`).
 
 Numbers come from scipy / statsmodels and, for the means comparisons, from
 :func:`rsstatchem.core.stats.anova.posthoc` (Tukey, Bonferroni, Dunn-Šidák, Scheffé, Fisher
-LSD) plus Dunnett's many-to-one test (multivariate t, as scipy.stats.dunnett) and Holm's
+LSD) plus Dunnett's many-to-one test against a chosen control level — two-sided, "< control"
+or "> control" with one-sided bounds (multivariate t, as scipy.stats.dunnett) — and Holm's
 step-down Holm-Bonferroni / Holm-Šidák procedures. Two-Way ANOVA takes raw (one column per
 level combination) or indexed data, balanced or not, with Type I / II / III sums of squares.
 The Chen-Shapiro normality test uses the QH* statistic of Chen & Shapiro (1995) with a
@@ -889,22 +890,40 @@ def holm_rows(groups: list[tuple[str, np.ndarray]], method: str, mse: float,
     return rows
 
 
-def _dunnett_cdf(c: np.ndarray, rho: np.ndarray, df: float) -> np.ndarray:
-    """P(|T_j| < c for all j) of the multivariate t with correlation ``rho``, for every
-    value of ``c`` (Dunnett 1955; integrated like scipy.stats.dunnett)."""
+DUNNETT_TAILS = {"two": "two-sided", "lower": "less", "upper": "greater"}  # scipy names
+DUNNETT_TAIL_TEXT = {"two": "two-sided", "lower": "one-sided, mean < control",
+                     "upper": "one-sided, mean > control"}
+
+
+def _dunnett_cdf(c: np.ndarray, rho: np.ndarray, df: float, two_sided: bool = True
+                 ) -> np.ndarray:
+    """P(|T_j| < c for all j) (two-sided) or P(T_j < c for all j) (one-sided) of the
+    multivariate t with correlation ``rho``, for every value of ``c`` (Dunnett 1955;
+    integrated like scipy.stats.dunnett)."""
     c = np.atleast_1d(np.asarray(c, float))
     m = rho.shape[0]
     if m == 1:
-        return 1 - 2 * stats.t.sf(np.abs(c), df)
+        return 1 - 2 * stats.t.sf(np.abs(c), df) if two_sided else stats.t.cdf(c, df)
     mvt = stats.multivariate_t(shape=rho, df=df, seed=DUNNETT_SEED)
-    x = np.repeat(np.abs(c)[:, None], m, axis=1)
-    return np.atleast_1d(mvt.cdf(x, lower_limit=-x))
+    if two_sided:
+        x = np.repeat(np.abs(c)[:, None], m, axis=1)
+        return np.atleast_1d(mvt.cdf(x, lower_limit=-x))
+    x = np.repeat(c[:, None], m, axis=1)
+    return np.atleast_1d(mvt.cdf(x, lower_limit=np.full_like(x, -np.inf)))
 
 
 def dunnett_values(groups: list[tuple[str, np.ndarray]], control: int, mse: float,
-                   df_error: float, alpha: float) -> list[tuple]:
-    """Dunnett's two-sided many-to-one comparisons against group ``control`` with the pooled
-    MSE: ``(i, mean diff, SE, t, p, LCL, UCL)`` for every other group."""
+                   df_error: float, alpha: float, tail: str = "two") -> list[tuple]:
+    """Dunnett's many-to-one comparisons against group ``control`` with the pooled MSE:
+    ``(i, mean diff, SE, t, p, LCL, UCL)`` for every other group.
+
+    ``tail`` is the alternative hypothesis as in Origin / scipy.stats.dunnett: ``"two"``
+    (mean <> control), ``"lower"`` (mean < control, scipy's ``less``) or ``"upper"``
+    (mean > control, ``greater``). The one-sided tests use the one-sided critical value
+    of the multivariate t and give one-sided simultaneous confidence bounds (LCL = -inf for
+    "< control", UCL = +inf for "> control"), like scipy's ``confidence_interval``."""
+    if tail not in DUNNETT_TAILS:
+        raise StatError(f"Unknown Dunnett alternative {tail!r}.")
     others = [i for i in range(len(groups)) if i != control]
     n0 = len(groups[control][1])
     ns = np.array([len(groups[i][1]) for i in others], float)
@@ -915,21 +934,24 @@ def dunnett_values(groups: list[tuple[str, np.ndarray]], control: int, mse: floa
     diffs = np.array([float(np.mean(groups[i][1])) - m0 for i in others])
     se = np.sqrt(mse * (1 / ns + 1 / n0))
     t = diffs / se
-    p = np.clip(1 - _dunnett_cdf(t, rho, df_error), 0.0, 1.0)
+    two = tail == "two"
+    stat = -t if tail == "lower" else t   # "< control": large values of -t reject
+    p = np.clip(1 - _dunnett_cdf(stat, rho, df_error, two), 0.0, 1.0)
     from scipy.optimize import brentq
-    f = lambda c: 1 - _dunnett_cdf(c, rho, df_error)[0] - alpha   # noqa: E731
+    f = lambda c: 1 - _dunnett_cdf(c, rho, df_error, two)[0] - alpha   # noqa: E731
     hi = 3.0
     while f(hi) > 0 and hi < 200:
         hi *= 2
-    crit = brentq(f, 1e-6, hi, xtol=1e-6)
+    crit = brentq(f, 1e-6 if two else -50.0, hi, xtol=1e-6)
+    lo_b = np.full_like(diffs, -np.inf) if tail == "lower" else diffs - crit * se
+    hi_b = np.full_like(diffs, np.inf) if tail == "upper" else diffs + crit * se
     return [(i, float(diffs[k]), float(se[k]), float(t[k]), float(p[k]),
-             float(diffs[k] - crit * se[k]), float(diffs[k] + crit * se[k]))
-            for k, i in enumerate(others)]
+             float(lo_b[k]), float(hi_b[k])) for k, i in enumerate(others)]
 
 
 def control_index(groups: list[tuple[str, np.ndarray]], control: str | None) -> int:
     """Index of the Dunnett control level (by name; the first level when blank)."""
-    if control:
+    if control is not None and str(control).strip():
         for k, (name, _) in enumerate(groups):
             if str(name) == str(control).strip():
                 return k
@@ -938,10 +960,39 @@ def control_index(groups: list[tuple[str, np.ndarray]], control: str | None) -> 
     return 0
 
 
+def factor_levels(books: dict, settings: dict, key: str) -> list[str]:
+    """The levels a Dunnett control can be chosen from, for the dialog's dropdown:
+    ``"anova1"`` (one column per level, or the levels of the factor column), ``"anova2_a"``
+    / ``"anova2_b"`` (Factor A / B of a Two-Way ANOVA). Empty while the input cannot be
+    read."""
+    try:
+        if key == "anova1":
+            if settings.get("form", "raw") == "indexed":
+                data = read_range(books, settings.get("data", ""))
+                factor = read_range(books, settings.get("factor", ""))
+                return [str(name) for name, _ in indexed_groups(data, factor)]
+            return [r.title for r in read_ranges(books, settings.get("ranges", []))]
+        if key in ("anova2_a", "anova2_b"):
+            a = key == "anova2_a"
+            if settings.get("form", "indexed") == "raw":
+                n = int(settings.get("levels_a" if a else "levels_b", 2))
+                return level_names(settings.get("names_a" if a else "names_b", ""), n,
+                                   "A" if a else "B")
+            data = read_range(books, settings.get("data", ""))
+            fac = read_range(books, settings.get("factor_a" if a else "factor_b", ""))
+            n = min(len(data.values), len(fac.texts))
+            return _sort_levels([fac.texts[i] for i in range(n)
+                                 if fac.texts[i] != "" and np.isfinite(data.values[i])])
+    except (StatError, KeyError, ValueError, TypeError, IndexError, AttributeError):
+        return []
+    return []
+
+
 def means_comparison_rows(groups: list[tuple[str, np.ndarray]], method: str, mse: float,
-                          df_error: float, alpha: float, control: str | None = None) \
-        -> list[list[str]]:
-    """Origin's Means Comparisons table rows ("B A" = mean of B − mean of A)."""
+                          df_error: float, alpha: float, control: str | None = None,
+                          tail: str = "two") -> list[list[str]]:
+    """Origin's Means Comparisons table rows ("B A" = mean of B − mean of A); ``tail`` is
+    the Dunnett alternative (see :func:`dunnett_values`)."""
     if method in ("holm_bonferroni", "holm_sidak"):
         return holm_rows(groups, method, mse, df_error, alpha)
     if method == "dunnett":
@@ -949,7 +1000,7 @@ def means_comparison_rows(groups: list[tuple[str, np.ndarray]], method: str, mse
         return [[f"{groups[i][0]}  {groups[c][0]}", num(d), num(se), num(t, 5), pval(p),
                  num(alpha), "1" if p < alpha else "0", num(lo), num(hi)]
                 for i, d, se, t, p, lo, hi in dunnett_values(groups, c, mse, df_error,
-                                                             alpha)]
+                                                             alpha, tail)]
     gs = [Group(k, name, v) for k, (name, v) in enumerate(groups)]
     comps = {(i, j): (d, se, p, lo, hi) for i, j, d, se, p, lo, hi in
              posthoc(gs, method, mse, df_error, 1 - alpha)}
@@ -964,7 +1015,7 @@ def means_comparison_rows(groups: list[tuple[str, np.ndarray]], method: str, mse
 
 
 def _means_tables(fresh: ReportSheet, groups, methods, mse, df_error, alpha,
-                  factor: str = "", control: str | None = None) -> None:
+                  factor: str = "", control: str | None = None, tail: str = "two") -> None:
     for m in methods:
         stat = "q Value" if m == "tukey" else "t Value"
         notes = [f"Sig equals 1 indicates that the difference of the means is "
@@ -974,14 +1025,19 @@ def _means_tables(fresh: ReportSheet, groups, methods, mse, df_error, alpha,
         if m == "dunnett":
             c = control_index(groups, control)
             notes.insert(0, f"Each level is compared with the control level "
-                            f"{groups[c][0]} (two-sided Dunnett test).")
+                            f"{groups[c][0]} ({DUNNETT_TAIL_TEXT.get(tail, tail)} Dunnett "
+                            "test).")
+            if tail != "two":
+                notes.insert(1, "LCL / UCL are one-sided simultaneous confidence bounds "
+                                f"({'upper' if tail == 'lower' else 'lower'} bound only).")
         elif m.startswith("holm"):
             notes.insert(0, "Prob is the unadjusted p-value; Alpha is the step-down "
                             "critical level of that comparison (Holm's sequential "
                             "procedure).")
         fresh.add_table(f"{MEANS_METHODS[m]} Test" + (f" ({factor})" if factor else ""),
                         ["", "MeanDiff", "SEM", stat, "Prob", "Alpha", "Sig", "LCL", "UCL"],
-                        means_comparison_rows(groups, m, mse, df_error, alpha, control),
+                        means_comparison_rows(groups, m, mse, df_error, alpha, control,
+                                              tail),
                         notes, group="Means Comparisons")
 
 
@@ -1019,7 +1075,8 @@ def one_way_anova(books: dict, settings: dict, report: ReportSheet | None = None
                     [[num(r2), num(math.sqrt(mse) / grand if grand else math.nan),
                       num(math.sqrt(mse)), num(grand)]])
     _means_tables(fresh, groups, methods, mse, df_w, alpha,
-                  control=settings.get("control") or None)
+                  control=settings.get("control") or None,
+                  tail=settings.get("dunnett_tail", "two"))
     homog = settings.get("homogeneity", "levene")
     if homog != "none":
         center = "median" if homog == "brown_forsythe" else "mean"
@@ -1195,11 +1252,12 @@ def two_way_anova(books: dict, settings: dict, report: ReportSheet | None = None
                     [[num(ss_model_total / ss_tot if ss_tot else math.nan),
                       num(math.sqrt(mse) / frame.y.mean() if frame.y.mean() else math.nan),
                       num(math.sqrt(mse)), num(frame.y.mean())]])
-    control = settings.get("control") or None
-    for title, col, levels in ((an, "A", la), (bn, "B", lb)):
+    legacy = settings.get("control") or None   # one control name typed for either factor
+    for title, col, levels, key in ((an, "A", la, "control_a"), (bn, "B", lb, "control_b")):
         groups = [(lv, frame.y[frame[col] == lv].to_numpy(float)) for lv in levels]
-        _means_tables(fresh, groups, methods, mse, df_e, alpha, title,
-                      control if control in levels else None)
+        control = settings.get(key) or (legacy if legacy in levels else None)
+        _means_tables(fresh, groups, methods, mse, df_e, alpha, title, control,
+                      settings.get("dunnett_tail", "two"))
     if settings.get("means_plot", True):
         means = np.array([[frame.y[(frame.A == a_) & (frame.B == b_)].mean() for b_ in lb]
                           for a_ in la], float)
