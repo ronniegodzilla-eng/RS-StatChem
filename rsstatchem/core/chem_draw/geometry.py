@@ -7,13 +7,17 @@ Also the Pen tool's cubic Bezier curves (ChemDraw's Curves menu styles: dashed, 
 closed, filled, shaded, full / half arrowheads at either end) and the orbital shapes (s, p,
 single lobe, hybrid, d(xy), d(z2); plain, shaded, filled or phased lobes).
 
+Arrow kinds also cover ChemDraw's no-go (crossed), unbalanced equilibrium, block (hollow,
+filled or shaded), double-headed, arc (90 / 180 / 270 deg) and dipole arrows, each optionally
+dashed or bold. Bonds include quadruple and bold-double bonds.
+
 Angles are in radians in screen coordinates (y down), so -30 deg points up-right.
 """
 from __future__ import annotations
 
 import math
 
-from rsstatchem.core.chem_draw.model import Arrow, Bond, Curve, Document, Orbital
+from rsstatchem.core.chem_draw.model import BENT_ARROWS, Arrow, Bond, Curve, Document, Orbital
 from rsstatchem.core.chem_draw.style import Style
 
 __all__ = ["snap_angle", "new_bond_angle", "chain_points", "free_ring", "ring_on_bond",
@@ -283,15 +287,29 @@ def bond_primitives(doc: Document, bond: Bond, style: Style, trim_a: float = 0.0
 
     order = bond.order
     st = bond.style
+    if order == 4:                          # quadruple bond
+        for k in (-1.5, -0.5, 0.5, 1.5):
+            line(off(p, sp * k), off(q, sp * k))
+        return out
     if order in (2, 1.5) and st != "either":
         if side is None:
             side = double_bond_side(doc, bond, labelled)
         if side == 0 and order == 2:
-            line(off(p, sp / 2), off(q, sp / 2))
+            if st == "bold":
+                w = style.bold_width / 2
+                c = off(p, sp / 2), off(q, sp / 2)
+                out.append(("poly", [off(c[0], w), off(c[1], w), off(c[1], -w),
+                                     off(c[0], -w)]))
+            else:
+                line(off(p, sp / 2), off(q, sp / 2))
             line(off(p, -sp / 2), off(q, -sp / 2))
             return out
         side = side or 1
-        line(p, q)
+        if st == "bold" and order == 2:     # Bold Double Bond: the main line is bold
+            w = style.bold_width / 2
+            out.append(("poly", [off(p, w), off(q, w), off(q, -w), off(p, -w)]))
+        else:
+            line(p, q)
         sa = trim_a if bond.a in (labelled or ()) else max(
             trim_a, _shorten(doc, bond.a, bond.b, side, nx, ny, sp, L))
         sb = trim_b if bond.b in (labelled or ()) else max(
@@ -396,9 +414,44 @@ def head_size(style: Style) -> tuple[float, float]:
     return hl, hl * 0.36
 
 
+def arc_points(x1, y1, x2, y2, sweep_deg: float, side: int, samples: int = 36
+               ) -> list[tuple[float, float]]:
+    """Circular arc from (x1, y1) to (x2, y2) spanning ``sweep_deg`` degrees and bulging to
+    ``side`` (+1 = left normal (-dy, dx) of the chord, -1 = right)."""
+    dx, dy = x2 - x1, y2 - y1
+    L = math.hypot(dx, dy)
+    th = math.radians(max(10.0, min(350.0, sweep_deg)))
+    if L < 1e-9:
+        return [(x1, y1), (x2, y2)]
+    nx, ny = -dy / L, dx / L
+    r = L / (2 * math.sin(th / 2))
+    d = r * math.cos(th / 2)
+    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+    cx, cy = mx - side * nx * d, my - side * ny * d
+    a0 = math.atan2(y1 - cy, x1 - cx)
+    best = None
+    for direction in (1, -1):
+        pts = [(cx + r * math.cos(a0 + direction * th * k / samples),
+                cy + r * math.sin(a0 + direction * th * k / samples))
+               for k in range(samples + 1)]
+        mid = pts[samples // 2]
+        on_side = ((mid[0] - mx) * nx + (mid[1] - my) * ny) * side
+        err = math.hypot(pts[-1][0] - x2, pts[-1][1] - y2)
+        score = (err > 1e-3 * max(1.0, L), -on_side)
+        if best is None or score < best[0]:
+            best = (score, pts)
+    pts = best[1]
+    pts[-1] = (x2, y2)
+    return pts
+
+
 def arrow_path_points(ar: Arrow, samples: int = 24) -> list[tuple[float, float]]:
-    """Points along the arrow shaft (a quadratic curve for curved arrows)."""
-    if ar.kind not in ("curved", "fishhook") or abs(ar.bend) < 1e-6:
+    """Points along the arrow shaft (a quadratic curve for curved arrows, a circular arc
+    for arc arrows)."""
+    if ar.kind == "arc":
+        return arc_points(ar.x1, ar.y1, ar.x2, ar.y2, ar.sweep, -1 if ar.bend < 0 else 1,
+                          max(samples, 36))
+    if ar.kind not in BENT_ARROWS or abs(ar.bend) < 1e-6:
         return [(ar.x1, ar.y1), (ar.x2, ar.y2)]
     dx, dy = ar.x2 - ar.x1, ar.y2 - ar.y1
     L = math.hypot(dx, dy) or 1.0
@@ -428,9 +481,45 @@ def _head(tip, ux, uy, hl, hw, half: int = 0) -> list[tuple[float, float]]:
     return [tip, left, notch, right]
 
 
+def _dash_lines(out: list, dashed: bool) -> list:
+    """Make the shaft lines / paths of an arrow dashed."""
+    if not dashed:
+        return out
+    res = []
+    for prim in out:
+        if prim[0] == "line":
+            res.append(prim[:6] + (True,))
+        elif prim[0] == "path":
+            res.append(("shape", prim[1], prim[2], True, "", False))
+        else:
+            res.append(prim)
+    return res
+
+
 def arrow_primitives(ar: Arrow, style: Style) -> list[tuple]:
-    lw = style.line_width
+    out = _arrow_primitives(ar, style)
+    return _dash_lines(out, getattr(ar, "dashed", False))
+
+
+def _block_arrow(tail, tip, ux, uy, L, style: Style, fill: str, lw: float) -> list[tuple]:
+    nx, ny = -uy, ux
+    w1 = max(style.bond_length * 0.13, 2.5)
+    w2 = w1 * 2.2
+    hl = min(L * 0.45, w2 * 1.7)
+    neck = (tip[0] - ux * hl, tip[1] - uy * hl)
+    pts = [(tail[0] + nx * w1, tail[1] + ny * w1), (neck[0] + nx * w1, neck[1] + ny * w1),
+           (neck[0] + nx * w2, neck[1] + ny * w2), tip,
+           (neck[0] - nx * w2, neck[1] - ny * w2), (neck[0] - nx * w1, neck[1] - ny * w1),
+           (tail[0] - nx * w1, tail[1] - ny * w1)]
+    f = {"filled": "solid", "shaded": "shade"}.get(fill, "white")
+    return [("shape", pts, lw, False, f, True)]
+
+
+def _arrow_primitives(ar: Arrow, style: Style) -> list[tuple]:
+    lw = style.bold_width * 0.75 if getattr(ar, "bold", False) else style.line_width
     hl, hw = head_size(style)
+    if getattr(ar, "bold", False):
+        hl, hw = hl * 1.25, hw * 1.35
     out: list[tuple] = []
     dx, dy = ar.x2 - ar.x1, ar.y2 - ar.y1
     L = math.hypot(dx, dy)
@@ -440,20 +529,58 @@ def arrow_primitives(ar: Arrow, style: Style) -> list[tuple]:
     nx, ny = -uy, ux
     tail, tip = (ar.x1, ar.y1), (ar.x2, ar.y2)
     k = ar.kind
-    if k in ("curved", "fishhook"):
+    if k in ("curved", "fishhook", "double", "arc"):
         pts = arrow_path_points(ar)
-        ex, ey = pts[-1][0] - pts[-2][0], pts[-1][1] - pts[-2][1]
-        el = math.hypot(ex, ey) or 1.0
-        ex, ey = ex / el, ey / el
         hl2, hw2 = hl * 0.9, hw * 0.9
         cut = hl2 * 0.7
-        trimmed = [pt for pt in pts if math.hypot(pt[0] - tip[0], pt[1] - tip[1]) > cut]
-        trimmed.append((tip[0] - ex * cut, tip[1] - ey * cut))
-        out.append(("path", trimmed, lw))
+        heads = []
         half = 0
         if k == "fishhook":
             half = 1 if ar.bend >= 0 else -1
-        out.append(("poly", _head(tip, ex, ey, hl2, hw2 * (1.15 if half else 1), half)))
+        ex, ey = _end_tangent(pts, True)
+        heads.append(("poly", _head(tip, ex, ey, hl2, hw2 * (1.15 if half else 1), half)))
+        pts = _trim(pts, cut, True)
+        if k == "double":
+            sx, sy = _end_tangent(pts, False)
+            heads.append(("poly", _head(tail, sx, sy, hl2, hw2)))
+            pts = _trim(pts, cut, False)
+        out.append(("path", pts, lw))
+        return out + heads
+    if k == "block":
+        return _block_arrow(tail, tip, ux, uy, L, style, getattr(ar, "fill", ""),
+                            style.line_width)
+    if k == "nogo":
+        notch = (tip[0] - ux * hl * 0.78, tip[1] - uy * hl * 0.78)
+        out.append(("line", tail[0], tail[1], notch[0], notch[1], lw, False))
+        out.append(("poly", _head(tip, ux, uy, hl, hw)))
+        mx, my = (tail[0] + tip[0]) / 2, (tail[1] + tip[1]) / 2
+        c = max(hw * 1.8, style.bond_length * 0.18)
+        for s in (1, -1):
+            ax, ay = (ux + s * nx) * c / math.sqrt(2), (uy + s * ny) * c / math.sqrt(2)
+            out.append(("line", mx - ax, my - ay, mx + ax, my + ay, lw, False))
+        return out
+    if k == "dipole":
+        notch = (tip[0] - ux * hl * 0.78, tip[1] - uy * hl * 0.78)
+        out.append(("line", tail[0], tail[1], notch[0], notch[1], lw, False))
+        out.append(("poly", _head(tip, ux, uy, hl, hw)))
+        cx, cy = tail[0] + ux * min(L * 0.15, hl * 1.2), tail[1] + uy * min(L * 0.15, hl * 1.2)
+        c = hw * 1.6
+        out.append(("line", cx - nx * c, cy - ny * c, cx + nx * c, cy + ny * c, lw, False))
+        return out
+    if k == "unbalanced":
+        # unbalanced equilibrium: long forward harpoon on top, short reverse harpoon below
+        g = max(hw * 0.9, 2.2 * lw)
+        t1 = (tail[0] - nx * g / 2, tail[1] - ny * g / 2)
+        h1 = (tip[0] - nx * g / 2, tip[1] - ny * g / 2)
+        out.append(("line", t1[0], t1[1], h1[0] - ux * hl * 0.6, h1[1] - uy * hl * 0.6, lw,
+                    False))
+        out.append(("poly", _head(h1, ux, uy, hl, hw * 1.1, half=-1)))
+        f0, f1 = 0.3, 0.7
+        t2 = (tail[0] + ux * L * f1 + nx * g / 2, tail[1] + uy * L * f1 + ny * g / 2)
+        h2 = (tail[0] + ux * L * f0 + nx * g / 2, tail[1] + uy * L * f0 + ny * g / 2)
+        out.append(("line", t2[0], t2[1], h2[0] + ux * hl * 0.6, h2[1] + uy * hl * 0.6, lw,
+                    False))
+        out.append(("poly", _head(h2, -ux, -uy, hl, hw * 1.1, half=-1)))
         return out
     if k == "line":
         out.append(("line", tail[0], tail[1], tip[0], tip[1], lw, False))
@@ -603,6 +730,8 @@ def curve_primitives(c: Curve, style: Style) -> list[tuple]:
     fill = ""
     if closed and not c.dashed:
         fill = "shade" if c.shaded else ("solid" if c.filled else "")
+        if not fill and getattr(c, "faded", False):
+            fill = "fade"
     hl, hw = head_size(style)
     hl, hw = hl * (1.15 if c.bold else 0.95), hw * (1.25 if c.bold else 0.95)
     heads = []
@@ -689,12 +818,15 @@ def orbital_primitives(o: Orbital, style: Style) -> list[tuple]:
             for pts, fill in orbital_outline(o, style.bond_length)]
 
 
-def bracket_primitives(x1, y1, x2, y2, kind: str, style: Style) -> list[tuple]:
+def bracket_primitives(x1, y1, x2, y2, kind: str, style: Style,
+                       sides: str = "both") -> list[tuple]:
+    """Bracket pair (or a single left / right bracket with ``sides``)."""
     lw = style.line_width
     h = y2 - y1
     tick = max(3.0, min(h * 0.12, style.bond_length * 0.3))
     out: list[tuple] = []
-    for x, s in ((x1, 1), (x2, -1)):
+    ends = {"left": ((x1, 1),), "right": ((x2, -1),)}.get(sides, ((x1, 1), (x2, -1)))
+    for x, s in ends:
         if kind == "round":
             pts = []
             for k in range(17):

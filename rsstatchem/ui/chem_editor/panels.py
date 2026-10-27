@@ -157,7 +157,10 @@ class TemplatePanel(QWidget):
             doc = Document(preset("ACS Document 1996"))
             doc.style.font_size = 9.0
             try:
-                convert.insert_text(doc, smiles, 0, 0)
+                if templates.is_drawn(smiles):
+                    templates.insert_drawn(doc, smiles, 0, 0)
+                else:
+                    convert.insert_text(doc, smiles, 0, 0)
                 img = image(doc, dpi=110, transparent=True)
                 pm = QPixmap.fromImage(img).scaled(
                     84, 64, Qt.AspectRatioMode.KeepAspectRatio,
@@ -172,7 +175,7 @@ class TemplatePanel(QWidget):
         for name, smi in templates.TEMPLATES[self.category.currentText()]:
             it = QListWidgetItem(self._icon(smi), name)
             it.setData(Qt.ItemDataRole.UserRole, smi)
-            it.setToolTip(f"{name}\n{smi}")
+            it.setToolTip(name if templates.is_drawn(smi) else f"{name}\n{smi}")
             self.list.addItem(it)
 
     def _chosen(self, it: QListWidgetItem) -> None:

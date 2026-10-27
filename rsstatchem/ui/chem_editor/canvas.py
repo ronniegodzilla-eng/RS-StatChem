@@ -10,8 +10,18 @@ Tool ids: ``select``, ``lasso``, ``rotate``, ``eraser``, ``bond:<kind>``, ``chai
 ``map``, ``arrow:<kind>``, ``plus``, ``text``, ``bracket``, ``template``, ``pen`` (Bezier
 curves: click = corner point, drag = smooth point with handles, click the first point to
 close, double-click / Enter / Esc to finish; drag anchors and handles of a selected curve to
-edit it), ``orbital:<kind>[:<fill>]`` (click or drag on an atom / in space) and ``fragment``
-(ChemDraw's Mass Fragmentation tool: drag a line across bonds).
+edit it), ``orbital:<kind>[:<fill>]`` (click or drag on an atom / in space), ``fragment``
+(ChemDraw's Mass Fragmentation tool: drag a line across bonds), ``shape:<kind>[:<sweep>]``
+(drawing elements: drag a box, circles from the centre), ``symbol:<kind>`` (chemical symbols:
+click an atom to associate it, or click in space), ``tlc`` / ``gel`` (drag a plate; click in
+a lane to add a spot / band; drag spots to change Rf) and ``clipart:<name>`` (glassware).
+Arrows take an optional sweep (``arrow:arc:270``); curved mechanism arrows dragged from an
+atom, bond or lone pair to another one stay anchored to them.
+
+Hotkeys follow ChemDraw 17.1's "enhanced hotkeys" (User Guide pp. 54-60): atom keys (labels,
+sprouting number keys), bond keys (bond types, ring fusion), generic tool-switching keys when
+the pointer is over nothing, and Ctrl+arrow keys to duplicate the selection across a new
+reaction arrow (see :data:`ATOM_LABEL_KEYS`, :data:`BOND_KEYS`, :data:`GENERIC_KEYS`).
 """
 from __future__ import annotations
 
@@ -21,26 +31,45 @@ from PySide6.QtCore import QEvent, QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QBrush, QColor, QPainter, QPainterPath, QPen,
                            QPolygonF, QUndoCommand)
 from PySide6.QtWidgets import (QGraphicsLineItem, QGraphicsPathItem, QGraphicsRectItem,
-                               QGraphicsScene, QGraphicsView, QLineEdit, QMenu,
+                               QGraphicsScene, QGraphicsView, QInputDialog, QLineEdit, QMenu,
                                QPlainTextEdit)
 
 from rsstatchem.core.chem import molecule as mo
 from rsstatchem.core.chem_draw import abbrev, convert, ops
+from rsstatchem.core.chem_draw import clipart as clip
 from rsstatchem.core.chem_draw import geometry as geo
-from rsstatchem.core.chem_draw.model import _STORES, Document
+from rsstatchem.core.chem_draw import objects as obj
+from rsstatchem.core.chem_draw import templates as tpls
+from rsstatchem.core.chem_draw.model import _STORES, ANCHORED_ARROWS, Document
 from rsstatchem.ui.chem_editor.render import SELECT_COLOR, BuildInfo, Builder
 
-__all__ = ["ChemCanvas", "SnapshotCommand"]
+__all__ = ["ChemCanvas", "SnapshotCommand", "ATOM_LABEL_KEYS", "BOND_KEYS", "GENERIC_KEYS",
+           "BOND_KEY_EXTRAS"]
 
 _STORE_NAMES = tuple(_STORES.values())
 ORBITAL_MENU = [("s Orbital", "s"), ("p Orbital", "p"), ("Single Lobe", "lobe"),
                 ("Hybrid Orbital", "hybrid"), ("d(xy) Orbital", "dxy"),
                 ("d(z²) Orbital", "dz2")]
 
-_HOTKEY_ELEMENTS = {"c": "C", "n": "N", "o": "O", "s": "S", "p": "P", "f": "F", "i": "I",
-                    "h": "H", "l": "Cl", "b": "Br", "B": "B", "k": "K"}
-_RING_KEYS = {"3": "cyclopropane", "4": "cyclobutane", "5": "cyclopentane",
-              "6": "cyclohexane", "7": "cycloheptane", "8": "cyclooctane"}
+# ChemDraw 17.1 atom hotkeys (pp. 54-55): key -> label (Shift+key = upper case)
+ATOM_LABEL_KEYS = {"f": "F", "p": "P", "P": "Ph", "A": "Ac", "h": "H", "b": "Br", "B": "B",
+                   "i": "I", "r": "R", "k": "K", "s": "S", "S": "Si", "m": "Me", "n": "N",
+                   "w": "N", "N": "Na", "c": "C", "l": "Cl", "C": "Cl", "x": "X", "o": "O",
+                   "q": "O", "d": "D", "e": "Et", "E": "CO2Me"}
+# bond hotkeys (pp. 57-58): key -> bond tool, double-bond position or ring fusion
+BOND_KEYS = {"1": "single", "2": "double", "3": "triple", "d": "dashed", "B": "bolddouble",
+             "y": "wavy", "b": "bold", "w": "wedge", "h": "hash", "H": "hashed",
+             "l": "pos:left", "c": "pos:center", "r": "pos:right", "f": "front",
+             "/": "properties", "?": "properties", **{k: "fuse" for k in ops.FUSE_KEYS}}
+BOND_KEY_EXTRAS = {"o": "hollow", "D": "dative", "A": "aromatic"}   # RS-StatChem additions
+# generic (tool switching) hotkeys, pointer over nothing (pp. 58-59)
+GENERIC_KEYS = {" ": "select", "x": "bond:single", "X": "chain", "t": "text",
+                "T": "bracket:square", "e": "arrow:forward", "E": "symbol:lonepair",
+                "j": "ring:benzene", "J": "ring:cyclopentadiene", "u": "ring:cyclohexane",
+                "U": "ring:cyclopentane", "g": "tlc", "G": "orbital:p:shaded", "l": "pen",
+                "L": "shape:rect", "k": "fragment", "K": "query"}
+_ON_ATOM_CHARGE = {"circleplus": (1, 0, True), "circleminus": (-1, 0, True),
+                   "radicalcation": (1, 1, False), "radicalanion": (-1, 1, False)}
 
 
 class SnapshotCommand(QUndoCommand):
@@ -154,6 +183,8 @@ class ChemCanvas(QGraphicsView):
         if before is None:
             self.rebuild()
             return False
+        if self.doc.style.show_stereo:
+            ops.refresh_stereo(self.doc)
         after = self.doc.to_dict()
         if after == before:
             self.rebuild()
@@ -310,6 +341,8 @@ class ChemCanvas(QGraphicsView):
                 rects.append(self.info.curve_boxes[i])
             elif k == "orbital" and i in self.info.orbital_boxes:
                 rects.append(self.info.orbital_boxes[i])
+            elif (k, i) in self.info.object_boxes:
+                rects.append(self.info.object_boxes[(k, i)])
         if not rects:
             return None
         r = rects[0]
@@ -364,7 +397,9 @@ class ChemCanvas(QGraphicsView):
         else:
             box = {"text": self.info.text_boxes, "plus": self.info.plus_boxes,
                    "bracket": self.info.bracket_boxes,
-                   "orbital": self.info.orbital_boxes}[kind].get(i)
+                   "orbital": self.info.orbital_boxes}.get(kind, {}).get(i)
+            if box is None:
+                box = self.info.object_boxes.get(key)
             if box is None:
                 return
             item = QGraphicsRectItem(box.adjusted(-2, -2, 2, 2))
@@ -403,7 +438,16 @@ class ChemCanvas(QGraphicsView):
         z = self.zoom()
         bl = self.bl
         kinds = kinds or ("atom", "bond", "arrow", "text", "plus", "bracket", "curve",
-                          "orbital")
+                          "orbital", "symbol", "shape", "clipart", "tlc", "gel")
+        if "symbol" in kinds:                       # small: tested before their atoms
+            r = max(obj.symbol_radius(self.doc.style) * 0.9, 4 / z)
+            best, best_d = None, r
+            for sym in self.doc.symbols.values():
+                d = math.hypot(sym.x - x, sym.y - y)
+                if d <= best_d:
+                    best, best_d = sym, d
+            if best is not None:
+                return ("symbol", best.id)
         if "atom" in kinds:
             a = self.doc.atom_at(x, y, max(bl * 0.3, 7 / z))
             if a is not None:
@@ -444,7 +488,30 @@ class ChemCanvas(QGraphicsView):
             o = self.doc.orbital_at(x, y, max(1.5, 3 / z))
             if o is not None:
                 return ("orbital", o.id)
+        tol = max(2.5, 5 / z)
+        if "shape" in kinds:
+            for sid, sh in sorted(self.doc.shapes.items(), key=lambda kv: -kv[1].z):
+                if self._on_shape(sh, x, y, tol):
+                    return ("shape", sid)
+        for kind in ("clipart", "tlc", "gel"):
+            if kind not in kinds:
+                continue
+            for oid in self.doc.store(kind):
+                b = obj.object_box(self.doc, (kind, oid))
+                if b and b[0] - tol <= x <= b[2] + tol and b[1] - tol <= y <= b[3] + tol:
+                    return (kind, oid)
         return None
+
+    def _on_shape(self, sh, x, y, tol) -> bool:
+        if sh.filled or sh.shaded or sh.faded or sh.kind == "shadowrect":
+            if sh.x1 <= x <= sh.x2 and sh.y1 <= y <= sh.y2:
+                return True
+        pts = []
+        for prim in obj.shape_primitives(sh, self.doc.style):
+            if prim[0] == "shape" and prim[2] > 0:
+                pts = prim[1] + ([prim[1][0]] if prim[5] else [])
+        from rsstatchem.core.chem_draw.model import point_segment
+        return any(point_segment(x, y, *a, *b)[0] <= tol for a, b in zip(pts, pts[1:]))
 
     # --- mouse ---------------------------------------------------------------------------
     def mousePressEvent(self, e) -> None:  # noqa: N802
@@ -505,6 +572,19 @@ class ChemCanvas(QGraphicsView):
         if h is None:
             return
         kind, i = h
+        if kind == "tlc":
+            sp = obj.tlc_spot_at(self.doc.tlcs[i], p.x(), p.y(), self.bl)
+            if sp is not None:
+                self.edit_rf(i, *sp)
+            return
+        if kind == "gel":
+            b = obj.gel_band_at(self.doc.gels[i], p.x(), p.y(), self.bl)
+            if b is not None:
+                self.edit_band_size(i, *b)
+            return
+        if kind == "bracket":
+            self.bracket_properties(i)
+            return
         if kind == "text":
             self.edit_text(i)
         elif kind == "arrow" and self.tool in ("select", "lasso"):
@@ -554,6 +634,8 @@ class ChemCanvas(QGraphicsView):
                 self.select_keys(keys)
             return
         if t == "eraser":
+            if h is not None and h[0] in ("tlc", "gel") and self._erase_spot(h, x, y):
+                return
             if h is not None:
                 self.edit("Erase", lambda: self.erase([h]))
             return
@@ -605,15 +687,66 @@ class ChemCanvas(QGraphicsView):
             self.edit({"map": "Atom Map"}.get(t, "Change Atom"), fn)
             return
         if t.startswith("arrow:"):
-            ak = t.split(":", 1)[1]
+            ak, sweep = self._arrow_tool()
             if kind == "arrow":
-                self.edit("Change Arrow", lambda: setattr(self.doc.arrows[i], "kind", ak))
+                def change():
+                    ar = self.doc.arrows[i]
+                    ar.kind = ak
+                    if sweep:
+                        ar.sweep = sweep
+                self.edit("Change Arrow", change)
                 return
             if h is None:
-                L = self.bl * (2.0 if ak in ("curved", "fishhook") else 3.0)
-                bend = -L * 0.35 if ak in ("curved", "fishhook") else 0.0
-                self.edit("Add Arrow", lambda: self.doc.add_arrow(x, y, x + L, y, ak,
-                                                                  bend=bend))
+                bent = ak in ("curved", "fishhook", "double")
+                L = self.bl * (2.0 if bent or ak == "arc" else 3.0)
+                bend = -L * 0.35 if bent else (-1.0 if ak == "arc" else 0.0)
+                self.edit("Add Arrow", lambda: self.doc.add_arrow(
+                    x, y, x + L, y, ak, bend=bend, sweep=sweep or 180.0))
+            return
+        if t.startswith("shape:"):
+            sk, sweep = self._shape_tool()
+            if h is None:
+                r = self.bl * 0.6
+                self.edit("Add Shape", lambda: self.doc.add_shape(
+                    x - r * (1.4 if sk in ("rect", "roundrect", "shadowrect", "ellipse")
+                             else 1), y - r, x + r * (1.4 if sk in (
+                                 "rect", "roundrect", "shadowrect", "ellipse") else 1), y + r,
+                    sk, sweep=sweep or 180.0))
+            return
+        if t.startswith("symbol:"):
+            sk = t.split(":", 1)[1]
+            if kind == "atom":
+                self.edit("Add Symbol", lambda: self.symbol_on_atom(i, sk))
+            elif kind == "symbol":
+                self.edit("Change Symbol", lambda: setattr(self.doc.symbols[i], "kind", sk))
+            elif h is None:
+                self.edit("Add Symbol", lambda: self.doc.add_symbol(x, y, sk))
+            return
+        if t == "tlc":
+            if kind == "tlc":
+                self.edit("Add TLC Spot", lambda: obj.add_tlc_spot(self.doc.tlcs[i], x, y,
+                                                                   self.bl))
+            elif h is None:
+                bl = self.bl
+                self.edit("Add TLC Plate", lambda: self.doc.add_tlc(
+                    x - 1.8 * bl, y - 2.2 * bl, x + 1.8 * bl, y + 2.2 * bl, lanes=3))
+            return
+        if t == "gel":
+            if kind == "gel":
+                g = self.doc.gels[i]
+                self.edit("Add Band", lambda: obj.add_gel_band(
+                    g, obj.gel_lane_at(g, x), obj.gel_mass_at(g, y, self.bl)))
+            elif h is None:
+                bl = self.bl
+                self.edit("Add Gel Plate", lambda: self.doc.add_gel(
+                    x - 2 * bl, y - 2.5 * bl, x + 2 * bl, y + 2.5 * bl, lanes=4))
+            return
+        if t.startswith("clipart:"):
+            name = t.split(":", 1)[1]
+            if h is None or kind in ("tlc", "gel", "shape"):
+                w, hh = clip.default_size(name, self.bl)
+                self.edit("Add Clipware", lambda: self.doc.add_clipart(
+                    x - w / 2, y - hh / 2, name, w=w, h=hh))
             return
         if t == "plus" and h is None:
             self.edit("Add Plus", lambda: self.doc.add_plus(x, y))
@@ -632,8 +765,9 @@ class ChemCanvas(QGraphicsView):
         if t == "bracket" and self.selection:
             r = self._selection_rect()
             if r is not None:
+                bk, sides = self._bracket_kind()
                 self.edit("Add Brackets", lambda: self.doc.add_bracket(
-                    r.left(), r.top(), r.right(), r.bottom(), self.bracket_kind))
+                    r.left(), r.top(), r.right(), r.bottom(), bk, sides=sides))
             return
         if t == "template" and h is None and self.template_smiles:
             self.insert_text(self.template_smiles, x, y, "Insert Template")
@@ -699,6 +833,8 @@ class ChemCanvas(QGraphicsView):
             if end is not None:
                 self._mode, self._handle = "arrow-handle", end
                 return
+            if h is not None and h[0] in ("tlc", "gel") and self._plate_drag_start(h, p):
+                return
             if h is not None:
                 if h not in self.selection:
                     self.select_keys(self.doc.group_members({h}))
@@ -731,8 +867,11 @@ class ChemCanvas(QGraphicsView):
         if t.startswith("arrow:"):
             self._mode = "arrow"
             return
-        if t == "bracket":
-            self._mode = "bracket"
+        if t == "bracket" or t.startswith("shape:") or t in ("tlc", "gel"):
+            if t in ("tlc", "gel") and h is not None and h[0] == t:
+                if self._plate_drag_start(h, p):
+                    return
+            self._mode = "bracket" if t == "bracket" else "box"
             return
         self._mode = "click"
 
@@ -829,11 +968,14 @@ class ChemCanvas(QGraphicsView):
             sx, sy = self._press.x(), self._press.y()
             ex, ey = self._arrow_end(p, free)
             self._preview_line([(sx, sy), (ex, ey)])
-        elif m == "bracket":
+        elif m in ("bracket", "box"):
             self._clear(self._preview)
-            item = QGraphicsRectItem(QRectF(self._press, p).normalized())
+            item = QGraphicsRectItem(self._box_rect(p, free))
             item.setPen(QPen(QColor(SELECT_COLOR), 1 / self.zoom(), Qt.PenStyle.DashLine))
             self._add(item, 20, self._preview)
+        elif m in ("tlc-spot", "tlc-size", "tlc-line", "gel-band"):
+            self._plate_drag_move(p)
+            self.rebuild()
 
     def set_state_quiet(self, data: dict) -> None:
         new = Document.from_dict(data)
@@ -917,15 +1059,38 @@ class ChemCanvas(QGraphicsView):
             self.commit("Add Chain")
         elif m == "arrow":
             ex, ey = self._arrow_end(p, free)
-            ak = self.tool.split(":", 1)[1]
+            ak, sweep = self._arrow_tool()
             L = math.hypot(ex - self._press.x(), ey - self._press.y())
-            bend = -L * 0.35 if ak in ("curved", "fishhook") else 0.0
-            doc.add_arrow(self._press.x(), self._press.y(), ex, ey, ak, bend=bend)
+            bent = ak in ("curved", "fishhook", "double")
+            bend = -L * 0.35 if bent else (-1.0 if ak == "arc" else 0.0)
+            ar = doc.add_arrow(self._press.x(), self._press.y(), ex, ey, ak, bend=bend,
+                               sweep=sweep or 180.0)
+            if ak in ANCHORED_ARROWS:
+                self._anchor_arrow(ar, self._press_hit, self.hit(p, ("symbol", "atom",
+                                                                     "bond")))
             self.commit("Add Arrow")
         elif m == "bracket":
             r = QRectF(self._press, p).normalized()
-            doc.add_bracket(r.left(), r.top(), r.right(), r.bottom(), self.bracket_kind)
+            bk, sides = self._bracket_kind()
+            doc.add_bracket(r.left(), r.top(), r.right(), r.bottom(), bk, sides=sides)
             self.commit("Add Brackets")
+        elif m == "box":
+            r = self._box_rect(p, free)
+            if self.tool.startswith("shape:"):
+                sk, sweep = self._shape_tool()
+                doc.add_shape(r.left(), r.top(), r.right(), r.bottom(), sk,
+                              sweep=sweep or 180.0)
+                self.commit("Add Shape")
+            elif self.tool == "tlc":
+                doc.add_tlc(r.left(), r.top(), r.right(), r.bottom())
+                self.commit("Add TLC Plate")
+            else:
+                doc.add_gel(r.left(), r.top(), r.right(), r.bottom())
+                self.commit("Add Gel Plate")
+        elif m in ("tlc-spot", "tlc-size", "tlc-line", "gel-band"):
+            self._plate_drag_move(p)
+            self.commit({"tlc-line": "Move Line", "gel-band": "Move Band"}.get(
+                m, "Edit TLC Spot"))
         else:
             self._before = None
             self.click(self._press, self._press_hit, mods)
@@ -990,6 +1155,11 @@ class ChemCanvas(QGraphicsView):
         for o in doc.orbitals.values():
             if inside(o.x, o.y):
                 keys.add(("orbital", o.id))
+        for kind in ("shape", "symbol", "tlc", "gel", "clipart"):
+            for oid in doc.store(kind):
+                b = obj.object_box(doc, (kind, oid))
+                if b and inside(b[0], b[1]) and inside(b[2], b[3]):
+                    keys.add((kind, oid))
         keys = doc.group_members(keys)
         if mods & Qt.KeyboardModifier.ShiftModifier:
             keys |= self.selection
@@ -1018,11 +1188,16 @@ class ChemCanvas(QGraphicsView):
     # --- keyboard ------------------------------------------------------------------------
     def keyPressEvent(self, e) -> None:  # noqa: N802
         key, text = e.key(), e.text()
+        mods = e.modifiers()
+        ctrl = bool(mods & (Qt.KeyboardModifier.ControlModifier |
+                            Qt.KeyboardModifier.MetaModifier))
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             if self.selection:
                 self.edit("Delete", lambda: self.erase(self.doc.with_bonds(self.selection)))
             elif self.hover is not None:
                 h = self.hover
+                if h[0] == "atom" and self._remove_label(h[1]):
+                    return
                 self.hover = None
                 self.edit("Delete", lambda: self.erase([h]))
             return
@@ -1036,72 +1211,139 @@ class ChemCanvas(QGraphicsView):
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._pen is not None:
             self.finish_curve()
             return
-        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down) and \
-                self.selection:
-            step = 10.0 if e.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1.0
+        arrows = {Qt.Key.Key_Left: "left", Qt.Key.Key_Right: "right", Qt.Key.Key_Up: "up",
+                  Qt.Key.Key_Down: "down"}
+        if key in arrows and self.selection and ctrl:
+            self.duplicate_across_arrow(arrows[key])
+            return
+        if key in arrows and self.selection:
+            step = 10.0 if mods & Qt.KeyboardModifier.ShiftModifier else 1.0
             dx = {Qt.Key.Key_Left: -step, Qt.Key.Key_Right: step}.get(key, 0.0)
             dy = {Qt.Key.Key_Up: -step, Qt.Key.Key_Down: step}.get(key, 0.0)
             self.edit("Nudge", lambda: self.doc.move(self.doc.with_bonds(self.selection),
                                                      dx, dy))
             return
-        if self.hover is not None and self.hotkey(self.hover, text, key):
+        if not ctrl and self.hover is not None and self.hotkey(self.hover, text, key):
+            return
+        if not ctrl and self.hover is None and self.generic_key(text):
             return
         super().keyPressEvent(e)
 
+    def duplicate_across_arrow(self, direction: str) -> list:
+        """Ctrl+arrow key: a reaction arrow plus a copy of the selection beyond it."""
+        keys = self.edit("Duplicate Across Arrow", lambda: obj.duplicate_across_arrow(
+            self.doc, self.selection, direction))
+        new = [k for k in keys or [] if k[0] != "arrow"]
+        if new:
+            self.select_keys(set(new))
+        return keys or []
+
+    def _switch_tool(self, tool: str) -> None:
+        win = self.window()
+        if win is not self and hasattr(win, "set_tool"):
+            win.set_tool(tool)
+        else:
+            self.set_tool(tool)
+
+    def _palette_tool(self, default: str) -> str:
+        """The tool shown on the palette slot of ``default`` (fly-outs remember picks)."""
+        pal = getattr(self.window(), "palette", None)
+        fn = getattr(pal, "current_of", None)
+        return fn(default) if fn is not None else default
+
+    def generic_key(self, text: str) -> bool:
+        """ChemDraw 17.1 generic hotkeys (pointer over nothing): switch tools."""
+        tool = GENERIC_KEYS.get(text)
+        if tool is None:
+            return False
+        if tool == "query":
+            self.status_message.emit("Query tools are not available")
+            return True
+        if text in ("T", "e", "E", "g", "G", "L"):
+            tool = self._palette_tool(tool)
+        self._switch_tool(tool)
+        return True
+
+    def _remove_label(self, aid: int) -> bool:
+        """Backspace / Delete / Space on a labelled atom removes the label (ChemDraw)."""
+        a = self.doc.atoms.get(aid)
+        if a is None or not (a.label or a.symbol != "C" or a.show_carbon):
+            return False
+        self.edit("Remove Label", lambda: ops.set_element(self.doc, aid, "C"))
+        return True
+
     def hotkey(self, target, text: str, key=None) -> bool:
-        """ChemDraw-style hover hotkeys on atoms and bonds."""
+        """ChemDraw 17.1 hover hotkeys on atoms and bonds (User Guide pp. 54-58)."""
         kind, i = target
+        doc = self.doc
         if kind == "atom":
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.edit_label(i)
                 return True
-            if text in _HOTKEY_ELEMENTS:
-                sym = _HOTKEY_ELEMENTS[text]
-                self.edit("Change Atom", lambda: ops.set_element(self.doc, i, sym))
+            if text == " ":
+                self._remove_label(i)
                 return True
-            if text in ("+", "="):
-                self.edit("Charge", lambda: ops.change_charge(self.doc, i, 1))
+            if text in ATOM_LABEL_KEYS:
+                lab = ATOM_LABEL_KEYS[text]
+                self.edit("Atom Label", lambda: convert.apply_label_text(doc, i, lab))
+                return True
+            if text == "+":
+                self.edit("Charge", lambda: ops.change_charge(doc, i, 1))
                 return True
             if text == "-":
-                self.edit("Charge", lambda: ops.change_charge(self.doc, i, -1))
+                self.edit("Charge", lambda: ops.change_charge(doc, i, -1))
                 return True
-            if text == ".":
-                self.edit("Radical", lambda: ops.cycle_radical(self.doc, i))
+            if text == ".":                         # attachment point
+                def attach():
+                    a = doc.atoms[i]
+                    a.attachment = 0 if a.attachment else 1 + max(
+                        [x.attachment for x in doc.atoms.values()] + [0])
+                self.edit("Attachment Point", attach)
                 return True
-            if text == "1":
-                self.edit("Add Bond", lambda: ops.add_bond_at_atom(self.doc, i))
+            if text == "'":                         # atom number
+                def number():
+                    a = doc.atoms[i]
+                    a.number = 0 if a.number else 1 + max(
+                        [x.number for x in doc.atoms.values()] + [0])
+                self.edit("Atom Number", number)
                 return True
-            if text in _RING_KEYS:                  # 3-8: ring of that size on the atom
-                tpl = _RING_KEYS[text]
-                self.edit("Add Ring", lambda: ops.stamp_ring(self.doc, tpl, atom=i))
+            if text in ops.SPROUT_KEYS:
+                self.edit("Sprout", lambda: ops.sprout(doc, i, text))
                 return True
-            if text == "/":
+            if text in ("/", "?"):
                 self.atom_properties(i)
                 return True
+            if text == "=":
+                self.choose_nickname(i)
+                return True
+            return False
         if kind == "bond":
-            if text in _RING_KEYS and text != "3":  # 4-8: ring fused on the bond
-                tpl = _RING_KEYS[text]
-                self.edit("Add Ring", lambda: ops.stamp_ring(self.doc, tpl, bond=i))
-                return True
-            if text in ("l", "r", "c") and self.doc.bonds[i].order == 2:
-                pos = {"l": "left", "r": "right", "c": "center"}[text]
-                self.edit("Double Bond Position",
-                          lambda: setattr(self.doc.bonds[i], "double_pos", pos))
-                return True
-            tools = {"1": "single", "2": "double", "3": "triple", "w": "wedge", "h": "hash",
-                     "y": "wavy", "a": "aromatic", "b": "bold", "d": "dashed",
-                     "o": "hollow", "v": "dative"}
-            if text in tools:
-                tool = tools[text]
-
+            action = BOND_KEYS.get(text) or BOND_KEY_EXTRAS.get(text)
+            if action is None:
+                return False
+            if action == "fuse":
+                self.edit("Add Ring", lambda: ops.fuse_on_bond(doc, i, text))
+            elif action.startswith("pos:"):
+                if doc.bonds[i].order == 2:
+                    self.edit("Double Bond Position",
+                              lambda: setattr(doc.bonds[i], "double_pos", action[4:]))
+            elif action == "front":
+                def front():
+                    b = doc.bonds.pop(i)
+                    doc.bonds[i] = b
+                self.edit("Bring to Front", front)
+            elif action == "properties":
+                self.bond_properties(i)
+            else:
                 def fn():
-                    b = self.doc.bonds[i]
-                    if tool in ("single", "triple", "bold", "dashed"):
-                        b.order, b.style = ops.BOND_TOOLS[tool]
+                    b = doc.bonds[i]
+                    if action in ("single", "triple", "bold", "dashed", "bolddouble",
+                                  "hashed", "aromatic"):
+                        b.order, b.style = ops.BOND_TOOLS[action]
                     else:
-                        ops.apply_bond_tool(self.doc, i, tool)
+                        ops.apply_bond_tool(doc, i, action)
                 self.edit("Change Bond", fn)
-                return True
+            return True
         return False
 
     def _describe(self, h) -> None:
@@ -1286,7 +1528,17 @@ class ChemCanvas(QGraphicsView):
         elif h is not None and h[0] == "arrow":
             i = h[1]
             menu.addAction("Arrow Properties...", lambda: self.arrow_properties(i))
+            ar = self.doc.arrows[i]
+            if ar.tail_ref or ar.head_ref:
+                def detach():
+                    a = self.doc.arrows[i]
+                    a.tail_ref = a.head_ref = ""
+                menu.addAction("Detach from Atoms / Bonds",
+                               lambda: self.edit("Detach Arrow", detach))
             menu.addAction("Delete", lambda: self.edit("Delete", lambda: self.erase([h])))
+        elif h is not None and h[0] in ("tlc", "gel", "symbol", "shape", "bracket",
+                                         "clipart"):
+            self.object_menu(menu, h, p)
         elif h is not None:
             if h[0] == "text":
                 menu.addAction("Edit Text", lambda: self.edit_text(h[1]))
@@ -1298,6 +1550,350 @@ class ChemCanvas(QGraphicsView):
                 if isinstance(act, QAction):
                     menu.addAction(act)
         return menu
+
+    # --- teaching / lab-report objects -----------------------------------------------------
+    def _arrow_tool(self) -> tuple[str, float]:
+        parts = self.tool.split(":")
+        kind = parts[1] if len(parts) > 1 else "forward"
+        try:
+            sweep = float(parts[2]) if len(parts) > 2 else 0.0
+        except ValueError:
+            sweep = 0.0
+        return kind, sweep
+
+    def _shape_tool(self) -> tuple[str, float]:
+        parts = self.tool.split(":")
+        kind = parts[1] if len(parts) > 1 else "rect"
+        try:
+            sweep = float(parts[2]) if len(parts) > 2 else 0.0
+        except ValueError:
+            sweep = 0.0
+        return kind, sweep
+
+    def _bracket_kind(self) -> tuple[str, str]:
+        kind, _, sides = (self.bracket_kind or "square").partition(":")
+        return kind or "square", sides or "both"
+
+    def _box_rect(self, p: QPointF, free: bool = False) -> QRectF:
+        """Box dragged from the press point; circles are dragged from their centre and
+        Shift keeps boxes / ovals square."""
+        x0, y0 = self._press.x(), self._press.y()
+        if self.tool == "shape:circle":
+            r = math.hypot(p.x() - x0, p.y() - y0)
+            return QRectF(x0 - r, y0 - r, 2 * r, 2 * r)
+        r = QRectF(self._press, p).normalized()
+        if free and self.tool.startswith("shape:"):
+            d = max(r.width(), r.height())
+            r = QRectF(x0 if p.x() >= x0 else x0 - d, y0 if p.y() >= y0 else y0 - d, d, d)
+        return r
+
+    def _anchor_arrow(self, ar, start, end) -> None:
+        """Attach a mechanism arrow to the lone pair / atom / bond it starts and ends on."""
+        doc = self.doc
+        for which, hit in (("tail", start), ("head", end)):
+            if hit is None or hit[0] not in ("atom", "bond", "symbol"):
+                continue
+            ref = f"{hit[0]}:{hit[1]}"
+            pt = doc.anchor_point(ref)
+            if pt is None:
+                continue
+            if which == "tail":
+                ar.x1, ar.y1 = pt
+            else:
+                ox, oy = ar.x1, ar.y1
+                d = math.hypot(pt[0] - ox, pt[1] - oy) or 1.0
+                stop = self.bl * 0.22 if hit[0] == "atom" else 0.0
+                ar.x2, ar.y2 = pt[0] - (pt[0] - ox) / d * stop, pt[1] - (pt[1] - oy) / d * stop
+            doc.anchor(ar, which, ref)
+        if not ar.bend:
+            ar.bend = -0.35 * math.hypot(ar.x2 - ar.x1, ar.y2 - ar.y1)
+
+    def symbol_on_atom(self, aid: int, kind: str):
+        """Chemical-symbol tool on an atom: circled charges and radical ions change the
+        atom (charge / radical, drawn as the symbol); other symbols are associated with it."""
+        if kind in _ON_ATOM_CHARGE:
+            q, rad, circle = _ON_ATOM_CHARGE[kind]
+            a = self.doc.atoms[aid]
+            a.charge, a.charge_circle = q, circle
+            a.radicals = rad or a.radicals
+            return a
+        if kind in ("plus", "minus"):
+            ops.change_charge(self.doc, aid, 1 if kind == "plus" else -1)
+            return self.doc.atoms[aid]
+        if kind == "electron":
+            ops.cycle_radical(self.doc, aid)
+            return self.doc.atoms[aid]
+        return obj.place_symbol(self.doc, aid, kind)
+
+    def _plate_drag_start(self, h, p: QPointF) -> bool:
+        """Drag on a TLC spot (Shift: resize), on its origin / front line, or a gel band."""
+        x, y = p.x(), p.y()
+        kind, i = h
+        shift = bool(getattr(self, "_mods", None) and
+                     self._mods & Qt.KeyboardModifier.ShiftModifier)
+        if kind == "tlc":
+            t = self.doc.tlcs[i]
+            sp = obj.tlc_spot_at(t, x, y, self.bl)
+            if sp is not None:
+                self._plate = (i, *sp)
+                self._mode = "tlc-size" if shift else "tlc-spot"
+                return True
+            lay = obj.tlc_layout(t, self.bl)
+            tol = max(2.0, 4 / self.zoom())
+            for which in ("origin", "front"):
+                if abs(y - lay[which]) <= tol:
+                    self._plate = (i, which)
+                    self._mode = "tlc-line"
+                    return True
+            return False
+        g = self.doc.gels[i]
+        b = obj.gel_band_at(g, x, y, self.bl)
+        if b is not None:
+            self._plate = (i, *b)
+            self._mode = "gel-band"
+            return True
+        return False
+
+    def _plate_drag_move(self, p: QPointF) -> None:
+        m = self._mode
+        x, y = p.x(), p.y()
+        if m == "tlc-spot":
+            i, lane, j = self._plate
+            t = self.doc.tlcs[i]
+            lane, j = obj.move_tlc_spot(t, lane, j, x, y, self.bl)
+            self._plate = (i, lane, j)
+            self.status_message.emit(f"Rf = {t.lanes[lane][j]['rf']:.2f}")
+        elif m == "tlc-size":
+            i, lane, j = self._plate
+            t = self.doc.tlcs[i]
+            lay = obj.tlc_layout(t, self.bl)
+            cx = lay["xs"][lane]
+            sp = t.lanes[lane][j]
+            cy = lay["origin"] - sp.get("rf", 0.5) * (lay["origin"] - lay["front"])
+            sp["w"] = max(2.0, 2 * abs(x - cx))
+            sp["tail"] = max(0.0, y - cy - (sp.get("h") or sp["w"] * 0.7) / 2)
+        elif m == "tlc-line":
+            i, which = self._plate
+            t = self.doc.tlcs[i]
+            frac = max(0.0, min(1.0, (t.y2 - y) / ((t.y2 - t.y1) or 1.0)))
+            if which == "origin":
+                t.origin = min(frac, t.front - 0.05)
+            else:
+                t.front = max(frac, t.origin + 0.05)
+        elif m == "gel-band":
+            i, lane, j = self._plate
+            g = self.doc.gels[i]
+            g.lanes[lane]["bands"][j]["mass"] = obj.gel_mass_at(g, y, self.bl)
+            self.status_message.emit(f"{g.lanes[lane]['bands'][j]['mass']:g} kDa")
+
+    def _erase_spot(self, h, x: float, y: float) -> bool:
+        """Eraser on a spot / band removes it (a TLC lane without spots goes too)."""
+        kind, i = h
+        if kind == "tlc":
+            t = self.doc.tlcs[i]
+            sp = obj.tlc_spot_at(t, x, y, self.bl)
+            if sp is None:
+                return False
+
+            def fn():
+                del t.lanes[sp[0]][sp[1]]
+                if not t.lanes[sp[0]] and len(t.lanes) > 1:
+                    del t.lanes[sp[0]]
+            self.edit("Erase Spot", fn)
+            return True
+        g = self.doc.gels[i]
+        b = obj.gel_band_at(g, x, y, self.bl)
+        if b is None:
+            return False
+        self.edit("Erase Band", lambda: g.lanes[b[0]]["bands"].pop(b[1]))
+        return True
+
+    def edit_rf(self, tid: int, lane: int, j: int, value: float | None = None) -> None:
+        """Set the Rf of a spot (the spot moves to it)."""
+        t = self.doc.tlcs[tid]
+        if value is None:
+            value, ok = QInputDialog.getDouble(self, "TLC Spot", "Rf:",
+                                               t.lanes[lane][j].get("rf", 0.5), 0.0, 1.0, 2)
+            if not ok:
+                return
+        self.edit("Set Rf", lambda: t.lanes[lane][j].update(rf=float(value)))
+
+    def edit_band_size(self, gid: int, lane: int, j: int, value: float | None = None) -> None:
+        g = self.doc.gels[gid]
+        if value is None:
+            value, ok = QInputDialog.getDouble(self, "Gel Band", "Size (kDa):",
+                                               g.lanes[lane]["bands"][j]["mass"], 0.001,
+                                               1e7, 3)
+            if not ok:
+                return
+        self.edit("Set Band Size", lambda: g.lanes[lane]["bands"][j].update(
+            mass=float(value)))
+
+    def bracket_properties(self, bid: int) -> None:
+        from rsstatchem.ui.chem_editor.dialogs import BracketDialog
+        dlg = BracketDialog(self.doc.brackets[bid], self)
+        if dlg.exec():
+            self.edit("Bracket Properties", lambda: dlg.apply(self.doc.brackets[bid]))
+
+    def bond_properties(self, bid: int) -> None:
+        from rsstatchem.ui.chem_editor.dialogs import BondDialog
+        dlg = BondDialog(self.doc.bonds[bid], self)
+        if dlg.exec():
+            self.edit("Bond Properties", lambda: dlg.apply(self.doc.bonds[bid]))
+
+    def choose_nickname(self, aid: int) -> None:
+        """Hotkey "=": pick a nickname for the atom (ChemDraw's Choose Nickname)."""
+        names = sorted(abbrev.ABBREVIATIONS, key=str.lower)
+        name, ok = QInputDialog.getItem(self, "Choose Nickname", "Nickname:", names, 0, False)
+        if ok and name:
+            self.edit("Atom Label", lambda: convert.apply_label_text(self.doc, aid, name))
+
+    def object_menu(self, menu: QMenu, h, p: QPointF) -> None:
+        """Context menu of TLC / gel plates, symbols, drawing elements and brackets."""
+        kind, i = h
+        doc = self.doc
+        x, y = p.x(), p.y()
+        o = doc.get(h)
+
+        def toggle(text, attr, target=None):
+            tgt = target or o
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(bool(getattr(tgt, attr)))
+            act.triggered.connect(lambda c: self.edit(text, lambda: setattr(tgt, attr, c)))
+        if kind == "tlc":
+            sp = obj.tlc_spot_at(o, x, y, self.bl)
+            lane = obj.tlc_lane_at(o, x)
+            if sp is not None:
+                spot = o.lanes[sp[0]][sp[1]]
+                sub = menu.addMenu("TLC Spot")
+                act = sub.addAction("Show Rf")
+                act.setCheckable(True)
+                act.setChecked(bool(spot.get("show_rf")))
+                act.triggered.connect(lambda c: self.edit(
+                    "Show Rf", lambda: spot.update(show_rf=c)))
+                sub.addAction("Set Rf...", lambda: self.edit_rf(i, *sp))
+                for st in obj.SPOT_STYLES:
+                    sub.addAction(st.capitalize(), lambda st=st: self.edit(
+                        "Spot Style", lambda: spot.update(style=st)))
+                menu.addSeparator()
+            spots = menu.addMenu("TLC Spots")
+            toggle("Show Rf", "show_rf")
+            spots.addAction("Add Spot in This Lane", lambda: self.edit(
+                "Add TLC Spot", lambda: obj.add_tlc_spot(o, x, y, self.bl)))
+            for st in obj.SPOT_STYLES:
+                def all_style(st=st):
+                    for ln in o.lanes:
+                        for s2 in ln:
+                            s2["style"] = st
+                spots.addAction(f"All Spots {st.capitalize()}",
+                                lambda st=st: self.edit("Spot Style", lambda: all_style(st)))
+            menu.addSeparator()
+            menu.addAction("Add Lane", lambda: self.edit(
+                "Add Lane", lambda: o.lanes.insert(lane + 1, [{"rf": 0.5}])))
+            menu.addAction("Duplicate Lane", lambda: self.edit(
+                "Duplicate Lane", lambda: o.lanes.insert(
+                    lane + 1, [dict(s2) for s2 in o.lanes[lane]])))
+            if len(o.lanes) > 1:
+                menu.addAction("Delete Lane", lambda: self.edit(
+                    "Delete Lane", lambda: o.lanes.pop(lane)))
+            menu.addSeparator()
+            for text, attr in (("Show Origin", "show_origin"),
+                               ("Show Solvent Front", "show_front"),
+                               ("Show Borders", "show_border"),
+                               ("Show Side Ticks", "show_ticks"),
+                               ("Transparent", "transparent")):
+                toggle(text, attr)
+        elif kind == "gel":
+            b = obj.gel_band_at(o, x, y, self.bl)
+            lane = obj.gel_lane_at(o, x)
+            if b is not None:
+                band = o.lanes[b[0]]["bands"][b[1]]
+                act = menu.addAction("Show Size")
+                act.setCheckable(True)
+                act.setChecked(bool(band.get("show")))
+                act.triggered.connect(lambda c: self.edit(
+                    "Show Size", lambda: band.update(show=c)))
+                menu.addAction("Set Size...", lambda: self.edit_band_size(i, *b))
+                sub = menu.addMenu("Style")
+                for st in obj.BAND_STYLES:
+                    sub.addAction(st.capitalize(), lambda st=st: self.edit(
+                        "Band Style", lambda: band.update(style=st)))
+                menu.addAction("Delete Band", lambda: self.edit(
+                    "Delete Band", lambda: o.lanes[b[0]]["bands"].pop(b[1])))
+                menu.addSeparator()
+            menu.addAction("Add Band Here", lambda: self.edit(
+                "Add Band", lambda: obj.add_gel_band(o, lane, obj.gel_mass_at(o, y, self.bl))))
+            menu.addAction("Add Bands...", lambda: self._add_bands(i, lane))
+            menu.addAction("Add Lane", lambda: self.edit("Add Lane", lambda: o.lanes.insert(
+                lane + 1, {"label": str(len(o.lanes) + 1), "bands": []})))
+            menu.addAction("Duplicate Lane", lambda: self.edit(
+                "Duplicate Lane", lambda: o.lanes.insert(lane + 1, {
+                    "label": o.lanes[lane].get("label", ""),
+                    "bands": [dict(x2) for x2 in o.lanes[lane].get("bands", [])]})))
+            if len(o.lanes) > 1:
+                menu.addAction("Delete Lane", lambda: self.edit(
+                    "Delete Lane", lambda: o.lanes.pop(lane)))
+            menu.addAction("Set Range...", lambda: self._gel_range(i))
+            units = menu.addMenu("Units")
+            for u, text in (("kDa", "Mass (kDa)"), ("log", "Log (Mass)"),
+                            ("distance", "Distance")):
+                units.addAction(text, lambda u=u: self.edit("Units",
+                                                            lambda: setattr(o, "units", u)))
+            menu.addSeparator()
+            toggle("Show Scale", "show_scale")
+            toggle("Show Lane Labels", "show_labels")
+        elif kind == "symbol":
+            sub = menu.addMenu("Symbol")
+            for k, text in obj.SYMBOL_NAMES.items():
+                sub.addAction(text, lambda k=k: self.edit(
+                    "Change Symbol", lambda: setattr(o, "kind", k)))
+            if o.atom:
+                menu.addAction("Dissociate from Atom", lambda: self.edit(
+                    "Dissociate Symbol", lambda: setattr(o, "atom", 0)))
+        elif kind == "shape":
+            sub = menu.addMenu("Shape")
+            for k, text in obj.SHAPE_NAMES.items():
+                sub.addAction(text, lambda k=k: self.edit(
+                    "Change Shape", lambda: setattr(o, "kind", k)))
+            for text, attr in (("Dashed", "dashed"), ("Bold", "bold"), ("Filled", "filled"),
+                               ("Shaded", "shaded"), ("Faded", "faded")):
+                toggle(text, attr)
+        elif kind == "bracket":
+            menu.addAction("Bracket Properties...", lambda: self.bracket_properties(i))
+        elif kind == "clipart":
+            sub = menu.addMenu("Liquid Level")
+            for lvl in (0.0, 0.25, 0.5, 0.75):
+                sub.addAction(f"{lvl:.0%}", lambda lvl=lvl: self.edit(
+                    "Liquid Level", lambda: setattr(o, "fill", lvl)))
+        menu.addSeparator()
+        menu.addAction("Delete", lambda: self.edit("Delete", lambda: self.erase([h])))
+
+    def _add_bands(self, gid: int, lane: int) -> None:
+        text, ok = QInputDialog.getText(self, "Add Bands",
+                                        "Masses of the new bands (kDa, separated by spaces):")
+        if not ok:
+            return
+        masses = []
+        for tok in text.replace(",", " ").split():
+            try:
+                masses.append(float(tok))
+            except ValueError:
+                pass
+        g = self.doc.gels[gid]
+        if masses:
+            self.edit("Add Bands", lambda: [obj.add_gel_band(g, lane, m) for m in masses])
+
+    def _gel_range(self, gid: int) -> None:
+        g = self.doc.gels[gid]
+        lo, ok = QInputDialog.getDouble(self, "Set Range", "Lowest mass (kDa):", g.lo, 1e-3,
+                                        1e7, 3)
+        if not ok:
+            return
+        hi, ok = QInputDialog.getDouble(self, "Set Range", "Highest mass (kDa):", g.hi, lo,
+                                        1e8, 3)
+        if ok and hi > lo:
+            self.edit("Set Range", lambda: (setattr(g, "lo", lo), setattr(g, "hi", hi)))
 
     # --- Pen tool / curves ----------------------------------------------------------------
     def pen_click(self, x: float, y: float, h=None) -> None:
@@ -1399,9 +1995,13 @@ class ChemCanvas(QGraphicsView):
         if kw.get("dashed"):
             style["filled"] = style["shaded"] = style["doubled"] = False
         if kw.get("filled"):
-            style["shaded"] = False
+            style["shaded"] = style["faded"] = False
         if kw.get("shaded"):
-            style["filled"] = False
+            style["filled"] = style["faded"] = False
+        if kw.get("faded"):
+            style["filled"] = style["shaded"] = style["dashed"] = False
+            style["closed"] = True
+            style["arrow_start"] = style["arrow_end"] = ""
         self.curve_style = {k: v for k, v in style.items() if v}
         cids = [i for i in cids if i in self.doc.curves]
         if not cids:
@@ -1426,11 +2026,11 @@ class ChemCanvas(QGraphicsView):
         cur = first()
         st = self.curve_style if cur is None else {
             f: getattr(cur, f) for f in ("closed", "dashed", "bold", "doubled", "filled",
-                                         "shaded", "arrow_start", "arrow_end")}
+                                         "shaded", "faded", "arrow_start", "arrow_end")}
         plain = menu.addAction("Plain")
         plain.triggered.connect(lambda: self.set_curve_style(
             target(), arrow_start="", arrow_end="", dashed=False, bold=False, doubled=False,
-            filled=False, shaded=False, closed=False))
+            filled=False, shaded=False, faded=False, closed=False))
         menu.addSeparator()
         for text, kw, on in (
                 ("Arrow at Start", {"arrow_start": "full"}, st.get("arrow_start") == "full"),
@@ -1448,7 +2048,8 @@ class ChemCanvas(QGraphicsView):
             act.triggered.connect(lambda _=False, kw=kw: self.set_curve_style(target(), **kw))
         menu.addSeparator()
         for text, flag in (("Dashed", "dashed"), ("Bold", "bold"), ("Doubled", "doubled"),
-                           ("Closed", "closed"), ("Filled", "filled"), ("Shaded", "shaded")):
+                           ("Closed", "closed"), ("Filled", "filled"), ("Shaded", "shaded"),
+                           ("Faded", "faded")):
             act = menu.addAction(text)
             act.setCheckable(True)
             act.setChecked(bool(st.get(flag)))
@@ -1543,7 +2144,7 @@ class ChemCanvas(QGraphicsView):
         """Fit once the view has its real size (on first show)."""
         self._fit_pending = True
         if self.isVisible():
-            QTimer.singleShot(0, self._do_pending_fit)
+            QTimer.singleShot(0, self, self._do_pending_fit)
 
     def _do_pending_fit(self) -> None:
         if getattr(self, "_fit_pending", False):
@@ -1555,7 +2156,7 @@ class ChemCanvas(QGraphicsView):
     def showEvent(self, e) -> None:  # noqa: N802
         super().showEvent(e)
         if getattr(self, "_fit_pending", False):
-            QTimer.singleShot(0, self._do_pending_fit)
+            QTimer.singleShot(0, self, self._do_pending_fit)
 
     def view_center(self) -> QPointF:
         return self.mapToScene(self.viewport().rect().center())
@@ -1565,6 +2166,10 @@ class ChemCanvas(QGraphicsView):
         if x is None or y is None:
             c = self.view_center()
             x, y = c.x(), c.y()
+        if tpls.is_drawn(text):                 # projections, conformers, clipware
+            keys = self.edit(title, lambda: tpls.insert_drawn(self.doc, text, x, y))
+            self.select_keys(set(keys or []))
+            return keys
         keys = self.edit(title, lambda: convert.insert_text(self.doc, text, x, y))
         self.select_keys(set(keys or []))
         return keys
@@ -1594,11 +2199,15 @@ class ChemCanvas(QGraphicsView):
                               lambda: convert.clean_structure(self.doc, atoms)))
 
     def event(self, e) -> bool:
-        if e.type() == QEvent.Type.ShortcutOverride and self.hover is not None and \
-                self._editor is None and e.text() and \
-                e.text() in "cnospfihlbBk+-=.12345678wyadrcov/":
-            e.accept()
-            return True
+        if e.type() == QEvent.Type.ShortcutOverride and self._editor is None and \
+                e.text() and len(e.text()) == 1 and e.text().isprintable() and \
+                not e.modifiers() & (Qt.KeyboardModifier.ControlModifier |
+                                     Qt.KeyboardModifier.MetaModifier |
+                                     Qt.KeyboardModifier.AltModifier):
+            t = e.text()
+            if (self.hover is not None) or t in GENERIC_KEYS:
+                e.accept()                      # hotkeys win over single-key shortcuts
+                return True
         return super().event(e)
 
     def problems_text(self) -> str:

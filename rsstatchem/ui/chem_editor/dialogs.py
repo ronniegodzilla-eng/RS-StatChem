@@ -15,17 +15,23 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 from rsstatchem.core.chem import elements as el
 from rsstatchem.core.chem.formula import format_formula
 from rsstatchem.core.chem_draw import analysis
-from rsstatchem.core.chem_draw.model import ARROW_KINDS, Arrow, Atom, Document
+from rsstatchem.core.chem_draw.model import (ARROW_KINDS, BRACKET_KINDS, POLYMER_TYPES,
+                                             REPEAT_PATTERNS, Arrow, Atom, Bond, Bracket,
+                                             Document)
 from rsstatchem.core.chem_draw.style import PRESETS, Style
 
 __all__ = ["PeriodicTableDialog", "AtomPropertiesDialog", "ArrowDialog",
            "DocumentSettingsDialog", "ImportDialog", "ImageOptionsDialog", "BalanceDialog",
-           "StoichiometryDialog", "DataInsertDialog", "pt_position"]
+           "StoichiometryDialog", "DataInsertDialog", "pt_position", "BondDialog",
+           "BracketDialog", "ARROW_NAMES"]
 
 ARROW_NAMES = {"forward": "Reaction (→)", "equilibrium": "Equilibrium (⇌)",
                "retro": "Retrosynthetic (⇒)", "resonance": "Resonance (↔)",
                "curved": "Curved, two-electron", "fishhook": "Curved, one-electron (fishhook)",
-               "line": "Plain line"}
+               "line": "Plain line", "nogo": "No-go (crossed, no reaction)",
+               "unbalanced": "Unbalanced equilibrium", "block": "Block (hollow / filled)",
+               "double": "Double-headed (bendable)", "arc": "Arc arrow",
+               "dipole": "Dipole"}
 
 
 def _buttons(dlg: QDialog, ok_text: str = "OK") -> QDialogButtonBox:
@@ -184,6 +190,24 @@ class ArrowDialog(QDialog):
         self.below.setPlaceholderText("conditions, e.g. reflux, 2 h")
         form.addRow("Above the arrow:", self.above)
         form.addRow("Below the arrow:", self.below)
+        self.dashed = QCheckBox("Dashed")
+        self.dashed.setChecked(arrow.dashed)
+        self.bold = QCheckBox("Bold")
+        self.bold.setChecked(arrow.bold)
+        row = QHBoxLayout()
+        row.addWidget(self.dashed)
+        row.addWidget(self.bold)
+        form.addRow("Line:", row)
+        self.fill = QComboBox()
+        for text, v in (("Hollow", ""), ("Filled", "filled"), ("Shaded", "shaded")):
+            self.fill.addItem(text, v)
+        self.fill.setCurrentIndex(max(0, self.fill.findData(arrow.fill)))
+        form.addRow("Block arrow fill:", self.fill)
+        self.sweep = QComboBox()
+        for v in (90, 120, 180, 270):
+            self.sweep.addItem(f"{v}°", float(v))
+        self.sweep.setCurrentIndex(max(0, self.sweep.findData(float(arrow.sweep))))
+        form.addRow("Arc:", self.sweep)
         note = QLabel("Use \\n for a line break. Formulas get subscripts automatically.")
         note.setStyleSheet("color: #666;")
         lay = QVBoxLayout(self)
@@ -195,8 +219,106 @@ class ArrowDialog(QDialog):
         arrow.kind = self.kind.currentData()
         arrow.above = self.above.text().replace("\\n", "\n")
         arrow.below = self.below.text().replace("\\n", "\n")
-        if arrow.kind in ("curved", "fishhook") and abs(arrow.bend) < 1e-6:
+        arrow.dashed = self.dashed.isChecked()
+        arrow.bold = self.bold.isChecked()
+        arrow.fill = self.fill.currentData()
+        arrow.sweep = self.sweep.currentData()
+        if arrow.kind in ("curved", "fishhook", "double") and abs(arrow.bend) < 1e-6:
             arrow.bend = -0.35 * math.hypot(arrow.x2 - arrow.x1, arrow.y2 - arrow.y1)
+
+
+class BondDialog(QDialog):
+    """Bond Properties (bond hotkey "/"): order, display style and double-bond position."""
+
+    ORDERS = (("Single", 1), ("Double", 2), ("Triple", 3), ("Quadruple", 4),
+              ("Aromatic", 1.5))
+    STYLES = (("Plain", ""), ("Wedged", "wedge"), ("Hashed Wedged", "hash"),
+              ("Hollow Wedged", "hollow"), ("Hashed", "hashed"), ("Bold", "bold"),
+              ("Dashed", "dashed"), ("Wavy", "wavy"), ("Dative", "dative"),
+              ("Either (crossed double)", "either"))
+
+    def __init__(self, bond: Bond, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Bond Properties")
+        form = QFormLayout()
+        self.order = QComboBox()
+        for text, v in self.ORDERS:
+            self.order.addItem(text, v)
+        self.order.setCurrentIndex(max(0, self.order.findData(bond.order)))
+        self.style_box = QComboBox()
+        for text, v in self.STYLES:
+            self.style_box.addItem(text, v)
+        self.style_box.setCurrentIndex(max(0, self.style_box.findData(bond.style)))
+        self.pos = QComboBox()
+        for text, v in (("Automatic", "auto"), ("Centered", "center"), ("Left", "left"),
+                        ("Right", "right")):
+            self.pos.addItem(text, v)
+        self.pos.setCurrentIndex(max(0, self.pos.findData(bond.double_pos)))
+        form.addRow("Order:", self.order)
+        form.addRow("Display:", self.style_box)
+        form.addRow("Double position:", self.pos)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(_buttons(self))
+
+    def apply(self, bond: Bond) -> None:
+        bond.order = self.order.currentData()
+        bond.style = self.style_box.currentData()
+        bond.double_pos = self.pos.currentData()
+
+
+POLYMER_NAMES = {"": "(none)", "SRU": "Structural repeating unit (SRU)",
+                 "copolymer": "Copolymer", "alternating": "Alternating copolymer",
+                 "random": "Random copolymer", "block": "Block copolymer",
+                 "graft": "Graft copolymer", "mer": "Mer", "monomer": "Monomer",
+                 "crosslink": "Crosslink", "mixture": "Mixture", "component": "Component"}
+REPEAT_NAMES = {"": "(none)", "ht": "Head-to-tail", "hh": "Head-to-head",
+                "eu": "Either / unknown"}
+
+
+class BracketDialog(QDialog):
+    """Bracket Properties: bracket shape, single or paired, repeat count label and the
+    polymer semantics (SRU / copolymer type, repeat pattern)."""
+
+    def __init__(self, br: Bracket, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Bracket Properties")
+        form = QFormLayout()
+        self.kind = QComboBox()
+        for k, text in zip(BRACKET_KINDS, ("Square [ ]", "Round ( )", "Curly { }")):
+            self.kind.addItem(text, k)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(br.kind)))
+        self.sides = QComboBox()
+        for text, v in (("Pair", "both"), ("Left only", "left"), ("Right only", "right")):
+            self.sides.addItem(text, v)
+        self.sides.setCurrentIndex(max(0, self.sides.findData(br.sides)))
+        self.label = QLineEdit(br.label)
+        self.label.setPlaceholderText("n, 2, ‡ ...")
+        self.polymer = QComboBox()
+        for k in POLYMER_TYPES:
+            self.polymer.addItem(POLYMER_NAMES.get(k, k), k)
+        self.polymer.setCurrentIndex(max(0, self.polymer.findData(br.polymer)))
+        self.repeat = QComboBox()
+        for k in REPEAT_PATTERNS:
+            self.repeat.addItem(REPEAT_NAMES.get(k, k), k)
+        self.repeat.setCurrentIndex(max(0, self.repeat.findData(br.repeat)))
+        form.addRow("Bracket:", self.kind)
+        form.addRow("Sides:", self.sides)
+        form.addRow("Repeat count:", self.label)
+        form.addRow("Polymer type:", self.polymer)
+        form.addRow("Repeat pattern:", self.repeat)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(_buttons(self))
+
+    def apply(self, br: Bracket) -> None:
+        br.kind = self.kind.currentData()
+        br.sides = self.sides.currentData()
+        br.label = self.label.text()
+        br.polymer = self.polymer.currentData()
+        br.repeat = self.repeat.currentData()
+        if br.polymer and not br.label:
+            br.label = "n"
 
 
 class DocumentSettingsDialog(QDialog):

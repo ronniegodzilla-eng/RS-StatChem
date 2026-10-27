@@ -60,7 +60,10 @@ def implicit_h(doc: Document, atom: Atom) -> int:
 def label_visible(doc: Document, atom: Atom, degree: int | None = None) -> bool:
     if atom.label or atom.symbol != "C":
         return True
-    if atom.charge or atom.isotope or atom.radicals or atom.show_carbon:
+    circled = getattr(atom, "charge_circle", False)     # circled charge: carbon stays bare
+    if (atom.charge and not circled) or atom.isotope or atom.show_carbon:
+        return True
+    if atom.radicals and not circled:
         return True
     if degree is None:
         degree = len(doc.neighbors(atom.id))
@@ -148,7 +151,7 @@ def layout(doc: Document, atom: Atom) -> LabelLayout:
             rng = (0, len(anchor))
         else:
             rng = (0, len(text))
-        if atom.charge:
+        if atom.charge and not getattr(atom, "charge_circle", False):
             runs.append((charge_text(atom.charge), "sup"))
         return LabelLayout(True, runs, rng, radicals=atom.radicals)
     nh = implicit_h(doc, atom)
@@ -164,7 +167,7 @@ def layout(doc: Document, atom: Atom) -> LabelLayout:
     rng = (start, start + len(atom.symbol))
     if side == "right":
         runs += hruns
-    if atom.charge:
+    if atom.charge and not getattr(atom, "charge_circle", False):
         runs.append((charge_text(atom.charge), "sup"))
     stacked, pos = ([], "")
     if side in ("up", "down"):
