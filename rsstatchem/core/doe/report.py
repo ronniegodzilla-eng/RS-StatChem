@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import stats
 
-from rsstatchem.core.doe import designs, model, optimize, plots
+from rsstatchem.core.doe import designs, glm, model, optimize, plots
+from rsstatchem.core.doe.glm import is_glm
 from rsstatchem.core.doe.model import Analysis, Fit, Space, term_name
 from rsstatchem.core.output import Section, Table
 
@@ -78,13 +79,19 @@ def model_label(space: Space, terms: list) -> str:
     tset = set(terms)
     if not tset:
         return "Mean"
-    orders = [o for o in model.model_orders(space) if o[1] != "mean"]
-    for name, order in orders:
-        if tset == set(model.model_terms(space, order)):
-            return name
-    for name, order in orders:
-        if tset <= set(model.model_terms(space, order)):
-            return f"Reduced {name}"
+    base = [o for o in model.model_orders(space) if o[1] != "mean"]
+    higher = [o for o in model.all_model_orders(space) if o[1] != "mean" and o not in base]
+    if space.combined:  # every mixture x process combination, smallest first
+        base = sorted(base + higher, key=lambda o: len(model.model_terms(space, o[1])))
+        higher = []
+    for group in (base, higher):
+        for name, order in group:
+            if tset == set(model.model_terms(space, order)):
+                return name
+    for group in (base, higher):
+        for name, order in group:
+            if tset <= set(model.model_terms(space, order)):
+                return f"Reduced {name}"
     return "Custom"
 
 
@@ -181,8 +188,29 @@ def design_section(meta: dict, notes: list[str] | None = None, ds=None) -> Secti
 
 
 # ---------------------------------------------------------------------------- fit summary
+def glm_fit_summary_table(fs) -> Table:
+    seq = {r[0].split(" vs ")[0]: r for r in fs.sequential}
+    rows = []
+    for src, m2ll, aicc, bic, pseudo, remark in fs.extra:
+        r = seq.get(src)
+        rows.append([src, fval(r[3]) if r else "", str(int(r[2])) if r and r[2] else "",
+                     pval(r[4]) if r else "", num(m2ll, 6), num(aicc, 6), num(bic, 6),
+                     fixed(pseudo), remark])
+    return Table("Fit Summary (Likelihood Ratio Tests)",
+                 ["Source", "Chi-Square", "df", "Sequential p-value", "-2 Log Likelihood",
+                  "AICc", "BIC", "Pseudo R²", ""], rows,
+                 footnotes=["Each order is tested against the previous one by the drop in "
+                            "deviance (likelihood-ratio chi-square). Pseudo R² = 1 - "
+                            "deviance / null deviance. Prefer the suggested model or the "
+                            "lowest AICc."])
+
+
 def fit_summary_tables(sec: Section, a: Analysis) -> None:
     fs = a.summary
+    if fs.kind == "glm":
+        sec.table(glm_fit_summary_table(fs))
+        sec.note("Suggested Model", f"{fs.suggested} model.")
+        return
     rows = []
     for src, ss, df, f, p, remark in fs.sequential:
         ms = ss / df if df else None
@@ -227,6 +255,8 @@ def fit_summary_section(a: Analysis) -> Section:
 
 # ---------------------------------------------------------------------------- ANOVA
 def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
+    if is_glm(fit):
+        return glm_anova_table(fit, name)
     if is_reml(fit):
         return reml_anova_table(fit, name)
     a = fit.anova()
@@ -246,6 +276,10 @@ def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
         rows.append([f"  {src}", num(ss), str(df), num(ss / df), fval(f), pval(p), ""])
         if p < 0.05:
             sig_terms.append(src.split("-")[0] if t and len(t) == 1 else src)
+    curv = a.get("curvature")
+    if curv:
+        rows.append(["Curvature", num(curv["ss"]), "1", num(curv["ss"]), fval(curv["f"]),
+                     pval(curv["p"]), _sig_text(curv["p"])])
     rows.append(["Residual", num(fit.ss_res), str(fit.df_res), num(ms_res), "", "", ""])
     if a["lof"]:
         ss_l, df_l, ss_pe, df_pe = a["lof"]
@@ -260,6 +294,14 @@ def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
                           + ("Non-significant lack of fit is good: the model fits."
                              if p_l >= 0.05 else "Significant lack of fit is bad."))
     rows.append(["Cor Total", num(a["cor_total"][0]), str(a["cor_total"][1]), "", "", "", ""])
+    if curv and math.isfinite(curv["p"]):
+        interp.append(f"The curvature F-value of {curv['f']:.2f} implies the curvature (the "
+                      "difference between the average of the centre points and the average of "
+                      f"the factorial points) is {_sig_text(curv['p'])} (p = "
+                      f"{pval(curv['p'])}). " + (
+                          "Significant curvature means a quadratic model is needed: augment "
+                          "the design with axial points." if curv["p"] < 0.05 else
+                          "The factorial model describes the design space adequately."))
     if math.isfinite(p_m):
         if p_m < 0.05:
             chance = "less than 0.01%" if p_m < 0.0001 else f"only a {100 * p_m:.2f}%"
@@ -277,6 +319,9 @@ def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
                          "significant.")
     title = f"ANOVA for {name} model"
     foot = ["Sum of squares Type III (partial)."]
+    if curv:
+        foot.append("Curvature: centre points vs. factorial points, 1 df, removed from the "
+                    "residual; the model graphs and predictions use the factorial model.")
     if fit.space.mixture:
         foot.append("Mixture components coded as L_Pseudo components; the Linear Mixture "
                     "row tests the linear blending terms against the mean.")
@@ -286,6 +331,55 @@ def anova_table(fit: Fit, name: str) -> tuple[Table, list[str]]:
 
 def is_reml(fit) -> bool:
     return isinstance(fit, model.SplitPlotFit)
+
+
+def glm_anova_table(fit, name: str) -> tuple[Table, list[str]]:
+    """Likelihood-ratio (deviance) tests of a logistic / Poisson model."""
+    a = fit.anova()
+    rows, interp, sig = [], [], []
+    chi_m, df_m, p_m = a["model"]
+    rows.append(["Model", fval(chi_m), str(df_m), pval(p_m), _sig_text(p_m)])
+    for src, chi, df, p, t in a["terms"]:
+        rows.append([f"  {src}", fval(chi), str(df), pval(p), ""])
+        if math.isfinite(p) and p < 0.05:
+            sig.append(src.split("-")[0] if t and len(t) == 1 else src)
+    dev, df_r = a["deviance"]
+    rows.append(["Residual (Deviance)", num(dev), str(df_r), "", ""])
+    if math.isfinite(p_m):
+        interp.append(f"The likelihood-ratio chi-square of {chi_m:.2f} on {df_m} df implies the "
+                      f"model is {_sig_text(p_m)} (p = {pval(p_m)}).")
+    if sig:
+        interp.append("P-values less than 0.0500 indicate model terms are significant. In this "
+                      f"case {', '.join(sig)} are significant model terms.")
+    interp += list(getattr(fit, "warnings", []))
+    foot = [f"Distribution: {fit.family_title}; maximum likelihood by iteratively reweighted "
+            "least squares.",
+            "Each term: likelihood-ratio chi-square of removing it from the model (Type III); "
+            "the model row tests all terms against the intercept (and blocks)."]
+    return Table(f"Deviance Table for {name} model", ["Source", "Chi-Square", "df",
+                                                      "p-value", ""], rows,
+                 footnotes=foot), interp
+
+
+def glm_fit_statistics_table(fit) -> tuple[Table, list[str]]:
+    s = fit.fit_statistics()
+    rows = [["-2 Log Likelihood", num(s["m2ll"], 6), "Pseudo R²", fixed(s["pseudo_r2"])],
+            ["AICc", num(s["aicc"], 6), "McFadden R²", fixed(s["mcfadden_r2"])],
+            ["BIC", num(s["bic"], 6), "Dispersion (Pearson / df)", num(s["dispersion"])],
+            ["Deviance", num(s["deviance"]), "Null Deviance", num(s["null_deviance"])]]
+    interp = ["Pseudo R² = 1 - deviance / null deviance (the null model has the intercept "
+              "only). A dispersion well above 1 suggests overdispersion."]
+    items = Table("Fit Statistics", ["", "Value", "", "Value"], rows)
+    return items, interp
+
+
+def goodness_of_fit_table(fit) -> Table:
+    rows = [[name, num(chi), str(df), pval(p), "poor fit" if p < 0.05 else "adequate"]
+            for name, chi, df, p in fit.goodness_of_fit()]
+    return Table("Goodness of Fit Tests", ["Test", "Chi-Square", "df", "p-value", ""], rows,
+                 footnotes=["Deviance and Pearson tests are reliable for grouped responses "
+                            "(several trials per run or larger counts); the Hosmer-Lemeshow "
+                            "test groups binary runs by fitted probability."])
 
 
 def reml_anova_table(fit, name: str) -> tuple[Table, list[str]]:
@@ -365,13 +459,19 @@ def reml_fit_statistics_table(fit) -> tuple[Table, list[str]]:
 
 
 def fit_statistics_table(fit: Fit) -> tuple[Table, list[str]]:
+    if is_glm(fit):
+        return glm_fit_statistics_table(fit)
     if is_reml(fit):
         return reml_fit_statistics_table(fit)
     s = fit.fit_statistics()
+    info = fit.information()
+    dw = fit.durbin_watson()
     rows = [["Std. Dev.", num(s["std_dev"]), "R²", fixed(s["r2"])],
             ["Mean", num(s["mean"]), "Adjusted R²", fixed(s["adj_r2"])],
             ["C.V. %", num(s["cv"]), "Predicted R²", fixed(s["pred_r2"])],
-            ["PRESS", num(s["press"]), "Adeq Precision", num(s["adeq"])]]
+            ["PRESS", num(s["press"]), "Adeq Precision", num(s["adeq"])],
+            ["-2 Log Likelihood", num(info["m2ll"], 6), "AICc", num(info["aicc"], 6)],
+            ["BIC", num(info["bic"], 6), "Durbin-Watson", fixed(dw, 3)]]
     interp = []
     if math.isfinite(s["pred_r2"]) and math.isfinite(s["adj_r2"]):
         diff = s["adj_r2"] - s["pred_r2"]
@@ -390,10 +490,35 @@ def fit_statistics_table(fit: Fit) -> tuple[Table, list[str]]:
         interp.append(f"Adeq Precision measures the signal to noise ratio; a ratio greater "
                       f"than 4 is desirable. The ratio of {s['adeq']:.3f} indicates "
                       + ("an adequate signal." if s["adeq"] > 4 else "an inadequate signal."))
+    if math.isfinite(dw) and (dw < 1.0 or dw > 3.0):
+        interp.append(f"The Durbin-Watson statistic of {dw:.3f} (residuals in run order) is far "
+                      "from 2: look for a time trend or serial correlation on the Residuals "
+                      "vs. Run plot.")
     return Table("Fit Statistics", ["", "Value", "", "Value"], rows), interp
 
 
+def glm_coefficient_table(fit, level: float = 0.95) -> Table:
+    pct = f"{level * 100:g}%"
+    ratio_name = "Odds Ratio" if fit.family == "binomial" else "Rate Ratio"
+    rows = []
+    for c in fit.coefficients(level):
+        rows.append([c["label"], num(c["estimate"]), num(c["se"]), fval(c["z"]), pval(c["p"]),
+                     num(c["low"]), num(c["high"]),
+                     num(c["ratio"]) if c["label"] != "Intercept" else "",
+                     num(c["vif"]) if c["vif"] is not None else ""])
+    return Table("Coefficients in Terms of Coded Factors",
+                 ["Factor", "Coefficient Estimate", "Standard Error", "z-value", "p-value",
+                  f"{pct} CI Low", f"{pct} CI High", ratio_name, "VIF"], rows,
+                 footnotes=[f"Coefficients on the {'logit' if fit.family == 'binomial' else 'log'}"
+                            " scale; Wald z tests and intervals. The "
+                            f"{ratio_name.lower()} is exp(coefficient): the factor by which "
+                            f"the {'odds' if fit.family == 'binomial' else 'expected count'} "
+                            "change per coded unit."])
+
+
 def coefficient_table(fit: Fit, level: float = 0.95) -> Table:
+    if is_glm(fit):
+        return glm_coefficient_table(fit, level)
     pct = f"{level * 100:g}%"
     rows = []
     reml = is_reml(fit)
@@ -410,13 +535,19 @@ def coefficient_table(fit: Fit, level: float = 0.95) -> Table:
                              f"{pct} CI Low", f"{pct} CI High", "VIF"], rows,
                      footnotes=["REML estimates (GLS); standard errors and error df by the "
                                 "Kenward-Roger method."])
-    if fit.space.mixture:
-        title = "Coefficients in Terms of L_Pseudo Components"
+    if fit.space.mixture or fit.space.combined:
+        title = "Coefficients in Terms of L_Pseudo Components" if fit.space.mixture else \
+            "Coefficients in Terms of L_Pseudo Components and Coded Factors"
+    foot = ["The coefficient estimate is the expected change in response per unit change in "
+            "the coded factor value when all remaining factors are held constant."]
+    if getattr(fit.mat, "curv_slice", None) is not None:
+        foot.append("Curvature = average of the centre points minus the average of the "
+                    "factorial points; it is not part of the prediction equation.")
+    if fit.space.slack is not None:
+        foot.append(f"Slack model: component {fit.space.factors[fit.space.slack].title} is "
+                    "left out (it takes up the rest of the mixture).")
     return Table(title, ["Factor", "Coefficient Estimate", "df", "Standard Error",
-                         f"{pct} CI Low", f"{pct} CI High", "VIF"], rows,
-                 footnotes=["The coefficient estimate is the expected change in response per "
-                            "unit change in the coded factor value when all remaining factors "
-                            "are held constant."])
+                         f"{pct} CI Low", f"{pct} CI High", "VIF"], rows, footnotes=foot)
 
 
 def equation_tables(fit: Fit) -> list[Table]:
@@ -436,6 +567,19 @@ def equation_tables(fit: Fit) -> list[Table]:
         title = "Final Equation in Terms of Actual Components"
     else:
         title = "Final Equation in Terms of Actual Factors"
+    if fit.space.mixture and fit.space.slack is None:
+        extra = [("real", "Final Equation in Terms of Real Components",
+                  "Real components: proportions of the mixture total."),
+                 ("upseudo", "Final Equation in Terms of U_Pseudo Components",
+                  "U_Pseudo components u = (U - x) / (sum U - total), from the upper limits.")]
+        for scale, etitle, note in extra:
+            if scale == "real" and abs(fit.space.total - 1) < 1e-12:
+                continue
+            eq = model.mixture_actual_equation(fit, scale)
+            if eq is not None:
+                rows = [[label + " =", ""]] + [[signed(c, 6), ("* " + t) if t else ""]
+                                                for c, t in eq]
+                out.append(Table(etitle, ["", ""], rows, row_header_cols=0, footnotes=[note]))
     if not eqs:
         return out
     if fit.n_blocks:
@@ -483,9 +627,13 @@ def anova_section(a: Analysis, show_summary: bool = True, show_anova: bool = Tru
         sec.table(st)
         if is_reml(fit):
             sec.table(variance_components_table(fit))
+        if is_glm(fit):
+            sec.table(goodness_of_fit_table(fit))
         sec.note("Interpretation", "\n".join(interp + interp2))
     if show_coef:
         sec.table(coefficient_table(fit, level))
+        for t in treatment_tables(fit, level):
+            sec.table(t)
     if show_equations:
         for t in equation_tables(fit):
             sec.table(t)
@@ -592,64 +740,123 @@ DIAGNOSTIC_PLOTS = [("normal", "Normal plot of residuals"),
                     ("boxcox", "Box-Cox plot for power transforms"),
                     ("resid_factor", "Residuals vs. Factor"),
                     ("cooks", "Cook's distance"), ("leverage", "Leverage"),
-                    ("dffits", "DFFITS"), ("dfbetas", "DFBETAS")]
+                    ("dffits", "DFFITS"), ("dfbetas", "DFBETAS"),
+                    ("covratio", "Covariance ratio")]
+
+
+RESIDUAL_TYPES = [("external", "Externally Studentized"), ("internal", "Internally Studentized"),
+                  ("raw", "Raw (actual - predicted)")]
+
+
+def color_groups(a: Analysis, by: str | None) -> tuple[np.ndarray | None, dict | None, str]:
+    """Colour-by values for the diagnostics plots: None, "block", "group" or "factor:<j>"."""
+    if not by or by == "none":
+        return None, None, ""
+    obs, sp = a.obs, a.space
+    if by == "block" and obs.blocks is not None:
+        return obs.blocks, {b: f"Block {b:g}" for b in np.unique(obs.blocks)}, "Block"
+    if by == "group" and obs.groups is not None:
+        return obs.groups, {g: f"Group {g:g}" for g in np.unique(obs.groups)}, "Group"
+    if by.startswith("factor:"):
+        j = int(by.split(":")[1])
+        if 0 <= j < sp.k:
+            f = sp.factors[j]
+            vals = np.round(obs.actual[:, j], 10)
+            if f.categoric:
+                lv = np.asarray(f.levels, float)
+                labels = {v: f.level_label(int(np.argmin(np.abs(lv - v))))
+                          for v in np.unique(vals)}
+            else:
+                labels = {v: f"{f.letter} = {num(v)}" for v in np.unique(vals)}
+            if len(labels) <= len(plots.SERIES):
+                return vals, labels, f.title
+    return None, None, ""
 
 
 def diagnostics_section(a: Analysis, plots_wanted=("normal", "resid_pred", "resid_run",
                                                    "pred_actual", "boxcox", "cooks",
                                                    "leverage", "dffits"),
                         table: bool = True, factor_index: int = 0,
-                        term_index: int = 1) -> Section:
+                        term_index: int = 1, residual: str = "external",
+                        color_by: str | None = None) -> Section:
     fit = a.fit
     d = fit.diagnostics()
     label = fit.transform.label(fit.response_name)
+    glm_fit = is_glm(fit)
+    if glm_fit:
+        label = fit.response_name
     sec = Section(f"Diagnostics: {fit.response_name}")
     sec.log(f"DOE DIAGNOSTICS RESPONSE={a.spec.response}")
     n, p = fit.n, fit.p
+    alpha = model.PREFERENCES.alpha
+    bonf = stats.t.ppf(1 - alpha / (2 * n), max(fit.df_res - 1, 1))
+    if glm_fit:
+        bonf = stats.norm.ppf(1 - alpha / (2 * n))
     if table:
         rows = []
         order = np.argsort(d["run"], kind="stable")
-        bonf = stats.t.ppf(1 - 0.05 / (2 * n), max(fit.df_res - 1, 1))
         for i in order:
             flag = "¹" if abs(d["ext_stud"][i]) > bonf else ""
             rows.append([f"{d['run'][i]:g}", num(d["actual"][i]), num(d["predicted"][i]),
                          num(d["residual"][i]), fixed(d["leverage"][i], 3),
                          fixed(d["int_stud"][i], 3), fixed(d["ext_stud"][i], 3) + flag,
                          fixed(d["cooks"][i], 3), fixed(d["dffits"][i], 3),
+                         fixed(d["covratio"][i], 3) if "covratio" in d else "",
                          f"{d['std'][i]:g}"])
+        foot = [f"¹ Outside the outlier limit ±{bonf:.3f} (Bonferroni, alpha {alpha:g})."]
+        if label != fit.response_name:
+            foot.append(f"Values on the transformed scale {label}.")
+        if glm_fit:
+            foot.append("Logistic / Poisson fit: internally studentized = standardized Pearson "
+                        "residuals, externally studentized = likelihood residuals; Cook's "
+                        "distance and DFBETAS by the one-step approximation.")
+        else:
+            dw = fit.durbin_watson() if hasattr(fit, "durbin_watson") else float("nan")
+            if math.isfinite(dw):
+                foot.append(f"Durbin-Watson statistic (residuals in run order) = {dw:.3f}; "
+                            "values near 2 indicate no serial correlation.")
         sec.table(Table("Diagnostics Case Statistics",
                         ["Run Order", "Actual Value", "Predicted Value", "Residual", "Leverage",
                          "Internally Studentized Residuals",
                          "Externally Studentized Residuals", "Cook's Distance",
-                         "Influence on Fitted Value DFFITS", "Standard Order"], rows,
-                        footnotes=[f"¹ Outside the outlier limit ±{bonf:.3f} (Bonferroni, "
-                                   "alpha 0.05)."] + ([f"Values on the transformed scale "
-                                                       f"{label}."] if label !=
-                                                      fit.response_name else [])))
-    bonf = stats.t.ppf(1 - 0.05 / (2 * n), max(fit.df_res - 1, 1))
+                         "Influence on Fitted Value DFFITS", "Covariance Ratio",
+                         "Standard Order"], rows, footnotes=foot))
+    res, res_label = model.residuals_of_type(d, residual)
+    limit = bonf if residual == "external" else (
+        stats.norm.ppf(1 - alpha / (2 * n)) * (1 if residual == "internal" else
+                                               math.sqrt(max(fit.ms_res, 0)))
+        if not glm_fit else None)
+    if residual == "raw" and glm_fit:
+        limit = None
+    colors, clabels, _ctitle = color_groups(a, color_by)
     nm = fit.response_name
     for key in plots_wanted:
         if key == "normal":
             sec.image("Normal Plot of Residuals", plots.normal_plot(
-                d["ext_stud"], f"Normal Plot of Residuals: {nm}"))
+                res, f"Normal Plot of Residuals: {nm}", res_label, colors, clabels))
         elif key == "resid_pred":
             sec.image("Residuals vs. Predicted", plots.residual_plot(
-                d["predicted"], d["ext_stud"], bonf, f"Residuals vs. Predicted: {nm}",
-                "Predicted"))
+                d["predicted"], res, limit, f"Residuals vs. Predicted: {nm}",
+                "Predicted", res_label, colors=colors, color_labels=clabels))
         elif key == "resid_run":
             sec.image("Residuals vs. Run", plots.residual_plot(
-                d["run"], d["ext_stud"], bonf, f"Residuals vs. Run: {nm}", "Run Number",
-                connect=True))
+                d["run"], res, limit, f"Residuals vs. Run: {nm}", "Run Number", res_label,
+                connect=True, colors=colors, color_labels=clabels))
         elif key == "resid_factor":
             j = min(factor_index, fit.space.k - 1)
             f = fit.space.factors[j]
             sec.image(f"Residuals vs. {f.name}", plots.residual_plot(
-                a.obs.actual[:, j], d["ext_stud"], bonf, f"Residuals vs. {f.name}: {nm}",
-                f.axis_label))
+                a.obs.actual[:, j], res, limit, f"Residuals vs. {f.name}: {nm}",
+                f.axis_label, res_label, colors=colors, color_labels=clabels))
         elif key == "pred_actual":
             sec.image("Predicted vs. Actual", plots.predicted_vs_actual(
-                d["actual"], d["predicted"], label))
+                d["actual"], d["predicted"], label, colors, clabels))
         elif key == "boxcox":
+            if glm_fit:
+                sec.note("Box-Cox", "The Box-Cox plot is for least-squares fits; a logistic "
+                                    "or Poisson model has no response transformation.",
+                         style="warning")
+                continue
             try:
                 kk = fit.transform.k
                 if np.any(a.obs.y + kk <= 0):
@@ -672,25 +879,125 @@ def diagnostics_section(a: Analysis, plots_wanted=("normal", "resid_pred", "resi
             except ValueError as exc:
                 sec.note("Box-Cox", str(exc), style="warning")
         elif key == "cooks":
-            lim = float(stats.f.ppf(0.5, p, fit.df_res))
+            lim = float(stats.f.ppf(0.5, p, max(fit.df_res, 1)))
             sec.image("Cook's Distance", plots.index_plot(
-                d["run"], d["cooks"], f"Cook's Distance: {nm}", "Cook's Distance", [lim]))
+                d["run"], d["cooks"], f"Cook's Distance: {nm}", "Cook's Distance", [lim],
+                colors, clabels))
         elif key == "leverage":
             sec.image("Leverage", plots.index_plot(
                 d["run"], d["leverage"], f"Leverage vs. Run: {nm}", "Leverage",
-                [min(2 * p / n, 1.0)]))
+                [min(2 * p / n, 1.0)], colors, clabels))
         elif key == "dffits":
             lim = 2 * math.sqrt(p / n)
             sec.image("DFFITS", plots.index_plot(d["run"], d["dffits"], f"DFFITS vs. Run: {nm}",
-                                                 "DFFITS", [-lim, lim]))
+                                                 "DFFITS", [-lim, lim], colors, clabels))
         elif key == "dfbetas":
             j = min(max(term_index, 0), d["dfbetas"].shape[1] - 1)
             lim = 3 / math.sqrt(n)
             term = d["labels"][j]
             sec.image("DFBETAS", plots.index_plot(
                 d["run"], d["dfbetas"][:, j], f"DFBETAS for {term} vs. Run: {nm}",
-                f"DFBETAS for {term}", [-lim, lim]))
+                f"DFBETAS for {term}", [-lim, lim], colors, clabels))
+        elif key == "covratio":
+            lims = [1 - 3 * p / n, 1 + 3 * p / n]  # Belsley, Kuh & Welsch
+            sec.image("Covariance Ratio", plots.index_plot(
+                d["run"], d["covratio"], f"Covariance Ratio vs. Run: {nm}",
+                "Covariance Ratio", [v for v in lims if v > 0], colors, clabels))
     return sec
+
+
+# ---------------------------------------------------------------------------- treatment means
+def treatment_tables(fit, level: float = 0.95) -> list[Table]:
+    """Treatment means and pairwise comparisons (LSD and Tukey) of each categoric factor in
+    the model (least-squares fits)."""
+    if is_glm(fit):
+        return []
+    out = []
+    for j in model.categoric_in_model(fit):
+        try:
+            tm = model.treatment_means(fit, j, level)
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+        f = tm["factor"]
+        pct = f"{100 * tm['level']:g}%"
+        out.append(Table(f"Treatment Means: {f.title}", ["Level", "Mean", "Standard Error",
+                                                          f"{pct} CI Low", f"{pct} CI High"],
+                         [[m["level"], num(m["mean"]), num(m["se"]), num(m["low"]),
+                           num(m["high"])] for m in tm["means"]],
+                         footnotes=["Model predictions on the analysed scale; numeric factors "
+                                    "at their centre, other categoric factors averaged over "
+                                    "their levels."]))
+        out.append(Table(f"Pairwise Comparisons: {f.title}",
+                         ["Treatments", "Mean Difference", "Standard Error", "t-value",
+                          "LSD p-value", "Tukey p-value", f"LSD ({pct})"],
+                         [[f"{c['a']} vs {c['b']}", num(c["diff"]), num(c["se"]),
+                           fval(c["t"]), pval(c["p_lsd"]), pval(c["p_tukey"]), num(c["lsd"])]
+                          for c in tm["pairs"]],
+                         footnotes=[f"Error df = {tm['df']}. LSD: unadjusted t tests (Fisher's "
+                                    "least significant difference); Tukey: honestly "
+                                    "significant difference adjusted for all pairs."]))
+    return out
+
+
+# ---------------------------------------------------------------------------- analysis summary
+def analysis_summary_table(ds, responses: list[str] | None = None) -> Table:
+    """Design-Expert's Analysis Summary: one row per analysis of every response with its
+    transform, model, the model, lack-of-fit and curvature p-values and fit statistics."""
+    rows = []
+    meta = ds.meta.get("doe") or {}
+    titles = {r["column"]: f"R{i + 1}: {r.get('name') or r['column']}"
+              for i, r in enumerate(meta.get("responses", []))}
+    for e in model.all_analyses(ds, responses):
+        title = titles.get(e["response"], e["response"])
+        name = e["name"] + (" *" if e["active"] else "")
+        a = e["analysis"]
+        if a is None:
+            rows.append([title, name, "", "", "", "", "", "", "", "", e["error"][:80]])
+            continue
+        fit = a.fit
+        mdl = model_label(a.space, fit.terms)
+        if is_glm(fit):
+            chi, p_m = fit.model_test()
+            st = fit.fit_statistics()
+            rows.append([title, name, fit.family_title, mdl, pval(p_m), "", "",
+                         fixed(st["pseudo_r2"]), "", "", "Pseudo R²"])
+            continue
+        _f, p_m = fit.model_test()
+        an = fit.anova() if not is_reml(fit) else {}
+        lof = an.get("lof") if isinstance(an, dict) else None
+        p_lof = ""
+        if lof:
+            ss_l, df_l, ss_pe, df_pe = lof
+            if ss_pe > 0:
+                p_lof = pval(float(stats.f.sf((ss_l / df_l) / (ss_pe / df_pe), df_l, df_pe)))
+        curv = an.get("curvature") if isinstance(an, dict) else None
+        st = fit.fit_statistics()
+        rows.append([title, name, fit.transform.describe(), mdl, pval(p_m), p_lof,
+                     pval(curv["p"]) if curv else "", fixed(st["r2"]), fixed(st["adj_r2"]),
+                     fixed(st["pred_r2"]), "REML" if is_reml(fit) else ""])
+    return Table("Analysis Summary", ["Response", "Analysis", "Transform / Distribution",
+                                      "Model", "Model p-value", "Lack of Fit p-value",
+                                      "Curvature p-value", "R²", "Adjusted R²",
+                                      "Predicted R²", "Note"], rows,
+                 footnotes=["* = the active analysis of the response (used by optimization "
+                            "and post analysis).",
+                            "Look for a significant model, insignificant lack of fit and, "
+                            "for factorials with centre points, insignificant curvature."])
+
+
+def analysis_summary_section(ds) -> Section:
+    sec = Section("Analysis Summary")
+    sec.log("DOE ANALYSIS SUMMARY")
+    sec.table(analysis_summary_table(ds))
+    return sec
+
+
+# ---------------------------------------------------------------------------- effects plots
+def effects_normal_figure(eff: list[dict], title: str, selected: set | None = None):
+    sw = model.effects_shapiro(eff, selected if selected is not None else
+                               {e["name"] for e in eff
+                                if e.get("t", 0) > e.get("t_limit", np.inf)})
+    return plots.normal_effects_figure(eff, title, selected, sw)
 
 
 # ---------------------------------------------------------------------------- model graphs
@@ -698,7 +1005,8 @@ GRAPHS = [("contour", "Contour (2D)"), ("surface", "3D Surface"),
           ("perturbation", "Perturbation"), ("interaction", "Interaction"),
           ("one_factor", "One Factor"), ("cube", "Cube"),
           ("ternary", "Mixture: Contour (ternary)"), ("surface3", "Mixture: 3D Surface"),
-          ("trace", "Mixture: Trace (Cox)")]
+          ("trace", "Mixture: Trace (Cox)"), ("se", "Standard Error (contour)"),
+          ("se_ternary", "Mixture: Standard Error (ternary)"), ("all_factors", "All Factors")]
 
 
 def default_point(space: Space) -> np.ndarray:
@@ -709,6 +1017,9 @@ def default_point(space: Space) -> np.ndarray:
         x[j] = f.levels[0] if f.categoric else f.center
     if space.mixture:
         x = space.lower + space.pseudo_span / space.k
+    elif space.combined and space.mix_idx:
+        mix = space.mix_idx
+        x[mix] = space.lower[mix] + space.pseudo_span / len(mix)
     return x
 
 
@@ -737,7 +1048,13 @@ class GraphFigure:
     notes: list = field(default_factory=list)
 
 
-FIGURE_GRAPHS = ("contour", "surface", "ternary", "surface3")
+FIGURE_GRAPHS = ("contour", "surface", "ternary", "surface3", "se", "se_ternary")
+
+
+def se_of_prediction(fit, X: np.ndarray) -> np.ndarray:
+    """Standard error of the predicted mean on the analysed scale, sqrt(x'(X'X)^-1 x s²)."""
+    _z, v = fit.predict_coded(fit.space.to_coded(X))
+    return np.sqrt(np.clip(v, 0, None) * fit.ms_res)
 
 
 def _flag_lines(fit: Fit, X: np.ndarray, factors: list[int], nm: str) -> list[str]:
@@ -752,13 +1069,25 @@ def _flag_lines(fit: Fit, X: np.ndarray, factors: list[int], nm: str) -> list[st
 
 def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
                  points: bool = True, n_grid: int = 50, n_levels: int = 10,
-                 full_range: bool = False) -> GraphFigure:
-    """Contour, 3D surface, mixture ternary contour or mixture 3D surface as a figure."""
+                 full_range: bool = False, levels=None, cmap: str | None = None,
+                 grid: bool = False) -> GraphFigure:
+    """Contour, 3D surface, mixture ternary contour or mixture 3D surface as a figure;
+    ``se`` / ``se_ternary`` draw the standard error of the predicted mean instead of the
+    prediction. ``levels``: custom contour values; ``cmap``: colour map name."""
     fit = a.fit
     sp = fit.space
     nm = fit.response_name
     zlabel = nm + (f" ({_units(a)})" if _units(a) else "")
     notes: list[str] = []
+    value = fit.predict
+    if graph in ("se", "se_ternary"):
+        value = lambda X: se_of_prediction(fit, X)  # noqa: E731
+        nm = f"Std Error of Design: {fit.response_name}"
+        zlabel = "Std Error of Mean"
+        notes.append("Standard error of the predicted mean (on the analysed scale): low "
+                     "where the design has information, high at the edges.")
+        graph = "contour" if graph == "se" else "ternary"
+        points = points and True
 
     def rng(j):
         f = sp.factors[j]
@@ -775,11 +1104,15 @@ def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
         if sp.factors[i].categoric or sp.factors[j].categoric:
             raise ValueError("Contour and 3D plots need numeric factors on both axes; choose "
                              "the categoric level in the Factors Tool.")
+        if sp.combined and (sp.is_mix(i) or sp.is_mix(j)):
+            raise ValueError("Put process factors on the contour axes; the mixture blend is "
+                             "set in the Factors Tool (or use the ternary plot for the "
+                             "components).")
         (xl, xh), (yl, yh) = rng(i), rng(j)
         gx, gy = np.meshgrid(np.linspace(xl, xh, n_grid), np.linspace(yl, yh, n_grid))
         X = np.tile(ref, (gx.size, 1))
         X[:, i], X[:, j] = gx.ravel(), gy.ravel()
-        Z = fit.predict(X).reshape(gx.shape)
+        Z = value(X).reshape(gx.shape)
         keep = _slice_points(fit, [i, j], ref) if points else np.zeros(fit.n, bool)
         tol_x, tol_y = 1e-6 * (xh - xl), 1e-6 * (yh - yl)
         keep &= (fit.obs.actual[:, i] >= xl - tol_x) & (fit.obs.actual[:, i] <= xh + tol_x)
@@ -788,7 +1121,8 @@ def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
         if graph == "contour":
             fig = plots.contour_figure(gx, gy, Z, sp.factors[i].axis_label,
                                        sp.factors[j].axis_label, nm, points=pts,
-                                       n_levels=n_levels, zlabel=zlabel)
+                                       n_levels=n_levels, zlabel=zlabel, levels=levels,
+                                       cmap=cmap, grid=grid)
 
             def probe(x, y):
                 if not (xl <= x <= xh and yl <= y <= yh):
@@ -800,17 +1134,18 @@ def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
             return GraphFigure(fig, "Contour Plot", False, probe, notes)
         p3 = np.column_stack([pts, fit.obs.y[keep]]) if len(pts) else None
         fig = plots.surface_figure(gx, gy, Z, sp.factors[i].axis_label,
-                                   sp.factors[j].axis_label, zlabel, nm, points=p3)
+                                   sp.factors[j].axis_label, zlabel, nm, points=p3, cmap=cmap)
         return GraphFigure(fig, "3D Surface", True, None, notes)
     if graph in ("ternary", "surface3"):
-        if not sp.mixture:
+        if not (sp.mixture or sp.combined):
             raise ValueError("The ternary graphs are for mixture designs.")
-        tri = axes[:3]
+        tri = [j for j in axes if sp.is_mix(j)][:3]
         if len(tri) < 3:
             raise ValueError("Choose three components for the ternary plot.")
         rest = [j for j in range(sp.k) if j not in tri]
+        rest_mix = [j for j in rest if sp.is_mix(j)]
         lows = sp.lower[tri]
-        free = sp.total - ref[rest].sum() - lows.sum()
+        free = sp.total - ref[rest_mix].sum() - lows.sum()
         if free <= 0:
             raise ValueError("The fixed components leave no room for the plotted ones.")
 
@@ -820,7 +1155,7 @@ def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
             return X
 
         def fn(act3):
-            return fit.predict(to_full(act3))
+            return value(to_full(act3))
 
         def feas(act3):
             X = to_full(act3)
@@ -836,12 +1171,14 @@ def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
         if graph == "surface3":
             pts = np.column_stack([fit.obs.actual[keep][:, tri], fit.obs.y[keep]]) \
                 if points and keep.any() else None
-            fig = plots.ternary_surface_figure(fn, lows, free, names, nm, zlabel, feas, pts)
+            fig = plots.ternary_surface_figure(fn, lows, free, names, nm, zlabel, feas, pts,
+                                               cmap=cmap)
             return GraphFigure(fig, "Mixture 3D Surface", True, None, notes)
         pts = fit.obs.actual[keep][:, tri] if points else None
         vv = [f"{lows[m] + free:.4g}" for m in range(3)]
         fig = plots.ternary_figure(fn, lows, free, names, nm, zlabel, feas, pts,
-                                   n_levels=n_levels, vertex_values=vv)
+                                   n_levels=n_levels, vertex_values=vv, levels=levels,
+                                   cmap=cmap)
 
         def probe(x, y):
             prop = plots.ternary_point(x, y)
@@ -858,7 +1195,11 @@ def graph_figure(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
 
 def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
                   points: bool = True, n_grid: int = 50, n_levels: int = 10,
-                  full_range: bool = False) -> Section:
+                  full_range: bool = False, levels=None, cmap: str | None = None,
+                  pi_bands: bool = False, lsd: bool = False) -> Section:
+    """One model graph as a report section. ``pi_bands``: prediction-interval bands on the
+    one-factor / interaction graphs; ``lsd``: least-significant-difference bars at the
+    levels of a categoric factor (instead of confidence bars)."""
     fit = a.fit
     sp = fit.space
     nm = fit.response_name
@@ -878,14 +1219,40 @@ def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
         return lo, hi
 
     if graph in FIGURE_GRAPHS:
-        gf = graph_figure(a, graph, axes, ref, points, n_grid, n_levels, full_range)
+        gf = graph_figure(a, graph, axes, ref, points, n_grid, n_levels, full_range, levels,
+                          cmap)
         sec.image(gf.title, plots.figure_png(gf.figure))
         for text in gf.notes:
             sec.note("", text)
+    elif graph == "all_factors":
+        panels = []
+        for j, f in enumerate(sp.factors):
+            if sp.mixture or (sp.combined and sp.is_mix(j)):
+                continue
+            if f.categoric:
+                X = np.tile(ref, (len(f.levels), 1))
+                X[:, j] = f.levels
+                iv = fit.interval(X)
+                panels.append({"x": np.arange(len(f.levels), dtype=float), "y": iv["median"],
+                               "lo": iv["ci"][0], "hi": iv["ci"][1], "xlabel": f.title,
+                               "ticks": [f.level_label(i) for i in range(len(f.levels))]})
+            else:
+                lo, hi = rng(j)
+                xv = np.linspace(lo, hi, 41)
+                X = np.tile(ref, (len(xv), 1))
+                X[:, j] = xv
+                iv = fit.interval(X)
+                panels.append({"x": xv, "y": iv["median"], "lo": iv["ci"][0],
+                               "hi": iv["ci"][1], "xlabel": f.axis_label})
+        if not panels:
+            raise ValueError("All Factors shows process factors; use the trace plot for "
+                             "mixture components.")
+        sec.image("All Factors", plots.all_factors_plot(panels, zlabel, f"All Factors: {nm}"))
+        others = []
     elif graph == "perturbation":
         curves = []
         for j, f in enumerate(sp.factors):
-            if f.categoric:
+            if f.categoric or (sp.combined and sp.is_mix(j)):
                 continue
             dev = np.linspace(-1, 1, 41)
             X = np.tile(ref, (len(dev), 1))
@@ -923,11 +1290,16 @@ def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
             xvals = np.linspace(lo, hi, 61)
             xs = xvals
         curves, pts = [], []
+        bands = []
+        lsd_half = []
+        level = model.PREFERENCES.ci_level
         if graph == "one_factor" or len(axes) < 2:
             X = np.tile(ref, (len(xvals), 1))
             X[:, i] = xvals
-            iv = fit.interval(X)
+            iv = fit.interval(X, level)
             curves.append((nm, iv["median"], iv["ci"][0], iv["ci"][1]))
+            bands.append(iv["pi"] if pi_bands else None)
+            lsd_half.append(_lsd_half(fit, X, level) if lsd and f.categoric else None)
             if points:
                 pts.append(np.column_stack([_xpos(f, fit.obs.actual[pts_all, i]),
                                             fit.obs.y[pts_all]]))
@@ -935,28 +1307,39 @@ def graph_section(a: Analysis, graph: str, axes: list[int], ref: np.ndarray,
         else:
             j = axes[1]
             g = sp.factors[j]
-            levels = (list(range(len(g.levels))) if g.categoric else [g.low, g.high])
-            for lv in levels:
+            lvls = (list(range(len(g.levels))) if g.categoric else [g.low, g.high])
+            for lv in lvls:
                 X = np.tile(ref, (len(xvals), 1))
                 X[:, i] = xvals
                 X[:, j] = g.levels[lv] if g.categoric else lv
-                iv = fit.interval(X)
-                lab = f"{g.letter}{'-' if lv == levels[0] else '+'} {_fmt_level(g, X[0, j])}" \
+                iv = fit.interval(X, level)
+                lab = f"{g.letter}{'-' if lv == lvls[0] else '+'} {_fmt_level(g, X[0, j])}" \
                     if not g.categoric else f"{g.letter}: {g.level_label(lv)}"
                 curves.append((lab, iv["median"], iv["ci"][0], iv["ci"][1]))
+                bands.append(iv["pi"] if pi_bands else None)
+                lsd_half.append(_lsd_half(fit, X, level) if lsd and f.categoric else None)
                 if points:
                     sel = pts_all & (np.abs(fit.obs.actual[:, j] - X[0, j]) < 1e-6 *
                                      max(1, abs(X[0, j])))
                     pts.append(np.column_stack([_xpos(f, fit.obs.actual[sel, i]),
                                                 fit.obs.y[sel]]))
             title = f"Interaction: {nm}"
-        png = plots.line_plot(xs, curves, f.axis_label, zlabel, title,
-                              points=pts if points else None,
-                              legend_title=sp.factors[axes[1]].title if len(axes) > 1
-                              and graph == "interaction" else "")
         if f.categoric:
-            png = _categoric_line(xs, curves, f, zlabel, title, pts if points else None)
+            png = _categoric_line(xs, curves, f, zlabel, title, pts if points else None,
+                                  lsd_half if lsd else None)
+        else:
+            png = plots.line_plot(xs, curves, f.axis_label, zlabel, title,
+                                  points=pts if points else None,
+                                  legend_title=sp.factors[axes[1]].title if len(axes) > 1
+                                  and graph == "interaction" else "",
+                                  pi_bands=bands if pi_bands else None)
         sec.image(title, png)
+        if pi_bands and not f.categoric:
+            sec.note("", f"Dashed: {100 * level:g}% confidence band of the mean; dotted / "
+                         f"shaded: {100 * level:g}% prediction band of a single run.")
+        if lsd and f.categoric:
+            sec.note("", f"Bars: {100 * level:g}% least significant difference (LSD) "
+                         "intervals; non-overlapping bars indicate different treatment means.")
     elif graph == "cube":
         ax3 = [j for j in axes if not sp.factors[j].categoric][:3]
         if len(ax3) < 3 or sp.mixture:
@@ -987,7 +1370,20 @@ def _xpos(f, values):
     return values
 
 
-def _categoric_line(xs, curves, f, zlabel, title, pts):
+def _lsd_half(fit, X: np.ndarray, level: float) -> tuple[np.ndarray, np.ndarray]:
+    """LSD bars at each categoric level: the predicted mean -/+ t * SE(mean) * sqrt(2) / 2 on
+    the analysed scale (back-transformed), so two bars that do not overlap differ at the
+    given level (Design-Expert's LSD bars)."""
+    z, v = fit.predict_coded(fit.space.to_coded(X))
+    se = np.sqrt(np.clip(v, 0, None) * fit.ms_res)
+    df = max(getattr(fit, "df_res", 1), 1)
+    q = stats.norm.ppf(0.5 + level / 2) if is_glm(fit) else stats.t.ppf(0.5 + level / 2, df)
+    h = q * se * math.sqrt(2) / 2
+    lo, hi = fit.transform.inverse(z - h), fit.transform.inverse(z + h)
+    return np.minimum(lo, hi), np.maximum(lo, hi)
+
+
+def _categoric_line(xs, curves, f, zlabel, title, pts, lsd=None):
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
     import io
@@ -997,8 +1393,14 @@ def _categoric_line(xs, curves, f, zlabel, title, pts):
     for i, (name, y, lo, hi) in enumerate(curves):
         color = plots.SERIES[i % len(plots.SERIES)]
         off = (i - (len(curves) - 1) / 2) * 0.06
-        ax.errorbar(xs + off, y, yerr=[y - lo, hi - y], fmt="-o", color=color, capsize=4,
-                    label=name)
+        if lsd is not None and i < len(lsd) and lsd[i] is not None:
+            lo_l, hi_l = lsd[i]
+            yerr = [np.clip(y - lo_l, 0, None), np.clip(hi_l - y, 0, None)]
+            ax.errorbar(xs + off, y, yerr=yerr, fmt="-s", color=color, capsize=6,
+                        label=name, elinewidth=2.2)
+        else:
+            ax.errorbar(xs + off, y, yerr=[y - lo, hi - y], fmt="-o", color=color, capsize=4,
+                        label=name)
         if pts and i < len(pts) and len(pts[i]):
             ax.scatter(pts[i][:, 0] + off, pts[i][:, 1], s=16, color=color, alpha=0.6)
     ax.set_xticks(xs, [f.level_label(int(i)) for i in xs])
