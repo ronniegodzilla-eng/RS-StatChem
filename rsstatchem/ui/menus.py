@@ -16,6 +16,7 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.logistic",
     "rsstatchem.ui.dialogs.glm",
     "rsstatchem.ui.dialogs.genlin",
+    "rsstatchem.ui.dialogs.regression_ext",
     "rsstatchem.ui.dialogs.fitting",
     "rsstatchem.ui.dialogs.doe",
     "rsstatchem.ui.graph",
@@ -27,7 +28,6 @@ EXTENSIONS = (
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
 ALIASES = (
-    ("rsstatchem.ui.dialogs.fitting", "NonlinearFitDialog", "Analyze/Regression", "Nonlinear..."),
 )
 # Top-level menus whose placeholder items are dropped once a module provides real entries.
 REPLACEABLE = {"Graphs", "RSM", "Chemistry"}
