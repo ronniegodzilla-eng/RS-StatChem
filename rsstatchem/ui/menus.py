@@ -140,6 +140,9 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Multiple Response": ["Define Variable Sets...", "Frequencies...",
                                   "Crosstabs..."],
+    "Graphs": ["Chart Builder...", "Graphboard Template Chooser...", "Weibull Plot...",
+               "Compare Subgroups...", "Regression Variable Plots...", "Legacy Dialogs", None,
+               "Graph Studio (Plot Setup)..."],
     "Utilities": [
         "Variables...", "OMS Control Panel...", "OMS Identifiers...", None,
         "Data File Comments...", "Define Variable Sets...", "Use Variable Sets...",
@@ -270,10 +273,10 @@ def order_entries(entries: list, order: list) -> list:
         if k in by_key and k not in used:
             out.append(by_key[k])
             used.add(k)
-    rest = [e for e in entries if e is not None and _entry_key(e) not in used]
-    if rest:
+    rest = [e for e in entries if e is None or _entry_key(e) not in used]
+    if any(e is not None for e in rest):
         out.append(None)
-        out.extend(rest)
+        out.extend(rest)  # their own separators are kept; _tidy collapses doubles
     return out
 
 

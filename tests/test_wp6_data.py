@@ -244,17 +244,21 @@ def test_menu_order_follows_spss():
     assert transform[0] == "Compute Variable..." and transform[-1] == "Run Pending Transforms"
     assert transform.index("Create Dummy Variables...") < transform.index("Visual Binning...")
     assert [t for t in _labels(tree["Utilities"]) if t][0] == "Variables..."
+    graphs = [t for t in _labels(tree["Graphs"]) if t]
+    assert graphs[:3] == ["Chart Builder...", "Regression Variable Plots...", "Legacy Dialogs"]
+    assert "Graph Studio (Plot Setup)..." in graphs
     reports = _labels(_sub(tree["Analyze"], "Reports"))
     assert reports == ["Codebook...", "OLAP Cubes...", "Case Summaries...",
                        "Report Summaries in Rows...", "Report Summaries in Columns..."]
 
 
 def test_order_entries_puts_unknown_last():
-    from rsstatchem.ui.menus import order_entries
+    from rsstatchem.ui.menus import _tidy, order_entries
 
     entries = [("B...", 1), None, ("New Thing...", 2), ("A...", 3)]
-    assert order_entries(entries, ["A...", None, "B..."]) == \
-        [("A...", 3), None, ("B...", 1), None, ("New Thing...", 2)]
+    out = order_entries(entries, ["A...", None, "B..."])
+    _tidy(out)
+    assert out == [("A...", 3), None, ("B...", 1), None, ("New Thing...", 2)]
 
 
 def test_editor_find_goto_and_variable_sets(qapp, ds, tmp_path, monkeypatch):

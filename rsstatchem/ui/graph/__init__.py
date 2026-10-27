@@ -46,6 +46,22 @@ def open_graph_file(editor):
     return open_graph_dialog(editor)
 
 
+def open_chart_builder(editor):
+    """Graphs > Chart Builder (SPSS gallery charts into the Output Viewer)."""
+    from rsstatchem.ui.graph.chart_builder import ChartBuilderDialog
+
+    return editor.run_analysis(ChartBuilderDialog)
+
+
+def _builder(key: str):
+    def run(editor):
+        from rsstatchem.ui.graph.chart_builder import preset
+
+        return editor.run_analysis(preset(key, key))
+    run.__name__ = f"chart_builder_{key}"
+    return run
+
+
 def _kind(kind: str):
     def run(editor):
         return _open_setup(editor, kind)
@@ -56,6 +72,21 @@ def _kind(kind: str):
 MENUS = {
     "Graphs": [
         ("Graph Studio (Plot Setup)...", open_graph_studio),
+        ("Chart Builder...", open_chart_builder),
+        ("Regression Variable Plots...", _builder("regplots")),
+        ("Legacy Dialogs", [("Population Pyramid...", _builder("pyramid")),
+                            ("High-Low...", _builder("highlow")),
+                            ("Range Bar...", _builder("rangebar")),
+                            ("Difference Area...", _builder("difference")),
+                            ("Scatterplot Matrix...", _builder("splom")),
+                            ("Dot / Drop-line...", _builder("dropline")),
+                            ("Error Bar (Summary Point)...", _builder("summary_point")),
+                            ("Violin Plot...", _builder("violin")),
+                            ("1-D Boxplot...", _builder("box1d")),
+                            ("Stacked Histogram...", _builder("stacked_hist")),
+                            ("Frequency Polygon...", _builder("freq_polygon")),
+                            ("Panelled Histogram...", _builder("panel_hist")),
+                            ("Dual Y Axes...", _builder("dualaxis"))]),
         None,
         ("Line...", _kind("line")),
         ("Scatter...", _kind("scatter")),
