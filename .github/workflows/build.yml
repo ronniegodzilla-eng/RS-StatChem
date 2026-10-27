@@ -76,7 +76,8 @@ jobs:
         run: |
           RES="$(cd dist/RS-StatChem.app/Contents/Frameworks/rsstatchem/resources && pwd -P)"
           test -f "$RES/opsin/opsin-cli.jar"
-          test -f "$RES/java/cdk.jar" && test -f "$RES/java/rsstatchem-cdk.jar"
+          test -f "$RES/java/rsstatchem-cdk.jar" && test -f "$RES/java/cdk-classpath.txt"
+          while read -r jar; do test -f "$RES/java/$jar" || { echo "missing $jar"; exit 1; }; done < "$RES/java/cdk-classpath.txt"
           cp -R build-jre/jre "$RES/opsin/jre"
           # re-seal the ad-hoc signature over the added files (Temurin's binaries keep their
           # own signatures; sign them ad hoc only if the bundle cannot be sealed otherwise)
@@ -93,8 +94,11 @@ jobs:
         run: |
           $res = "dist/RS-StatChem/_internal/rsstatchem/resources"
           if (-not (Test-Path "$res/opsin/opsin-cli.jar")) { throw "OPSIN jar missing from the build" }
-          if (-not (Test-Path "$res/java/cdk.jar")) { throw "CDK jar missing from the build" }
           if (-not (Test-Path "$res/java/rsstatchem-cdk.jar")) { throw "CDK helper missing from the build" }
+          if (-not (Test-Path "$res/java/cdk-classpath.txt")) { throw "CDK class path missing from the build" }
+          foreach ($jar in Get-Content "$res/java/cdk-classpath.txt") {
+            if ($jar -and -not (Test-Path "$res/java/$jar")) { throw "CDK jar $jar missing from the build" }
+          }
           Copy-Item -Recurse build-jre/jre "$res/opsin/jre"
           "{0:N1} MB Java runtime" -f ((Get-ChildItem "$res/opsin/jre" -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 

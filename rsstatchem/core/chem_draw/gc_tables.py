@@ -19,9 +19,14 @@ lacks a group (generated data; do not edit by hand).
   (MIT licence; groupscsv/abdulelah_gani/secondary/secondary.csv rows 1-122 - the
   Abdulelah-Gani secondary groups of Alshehri et al., AIChE J. 68 (2022) e17469, are the
   Marrero-Gani second-order groups in the same order). The second-order sum is added to the
-  first-order sum inside the same equations. Third-order groups (66 polycyclic / multi-ring
-  patterns) are not used: they need ring-system rules that plain SMARTS cannot express (ugropy
-  marks most of them as unavailable), so they are not transcribed rather than guessed.
+  first-order sum inside the same equations.
+- Marrero & Gani (2001) third-order groups ("level 3", 66 groups, Table 9 of the paper):
+  contributions as tabulated in pychemqt (indices 304-369 of the same file), the Tb column
+  checked against Y. Nannoolal, MSc thesis (UKZN 2004), Table A-8 (equal except two
+  AROMFUSED[2] entries printed there as -2.692 / -2.931 instead of -0.2692 / -0.2931; the
+  pychemqt values are kept: they fit the other AROMFUSED[2] Tb values, the thesis entries
+  look misprinted). The groups are found by graph logic in :mod:`mg_third` (ring systems,
+  chain lengths), not by SMARTS; the code reproduces the paper's worked examples.
 - Abdulelah-Gani 'GC-simple' (Alshehri, Tula, You, Gani, AIChE J. 68 (2022) e17469): 220
   primary + 130 secondary groups with contributions for Tc, Pc, Vc, Hf and Gf, tables from
   ugropy (MIT). Wider group coverage than Marrero-Gani (e.g. aromatic N-heterocycles), used as
@@ -30,7 +35,7 @@ lacks a group (generated data; do not edit by hand).
 from __future__ import annotations
 
 __all__ = ["STEIN_BROWN", "STEIN_BROWN_SMARTS", "MARRERO_GANI", "MG_FIELDS",
-           "MARRERO_GANI_2", "AG_FIELDS", "AG_BIAS", "AG_PRIMARY", "AG_SECONDARY"]
+           "MARRERO_GANI_2", "MARRERO_GANI_3", "AG_FIELDS", "AG_BIAS", "AG_PRIMARY", "AG_SECONDARY"]
 
 # group -> Tb contribution (K)
 STEIN_BROWN: dict[str, float] = {
@@ -878,4 +883,76 @@ AG_SECONDARY: list[tuple] = [
     ('aC-SO2NH', '[cH0][S;!R](=O)(=O)[NH]', 0.0, 0.0, 0.0, 0.0, 0.0),
     ('aC-SO2N', '[cH0][S;!R](=O)(=O)[NH0;!R]', 0.0, 0.0, 0.0, 0.0, 0.0),
     ('aC-SO2NH2', '[cH0][S;!R](=O)(=O)[NH2]', 0.0, 0.0, 0.0, 0.0, 0.0),
+]
+
+
+# Marrero & Gani (2001) third-order groups (Table 9 of the paper, 66 groups): key, name,
+# contributions to Tb, Tm, Tc, Pc, Vc, Hf, Gf (0 = no value). See mg_third.py.
+MARRERO_GANI_3: list[tuple] = [
+    ('diacid', 'HOOC-(CHn)m-COOH (m>2; 0<n<2)', 1.6498, -1.5257, -1.6986, 0.001544, -3.72, -6.572, -4.708),
+    ('nh_acid', 'NHn-(CHn)m-COOH (m>2; 0<n<2)', 0, 11.2271, 0, 0, 0, 0, 0),
+    ('aminoalcohol', 'NH2-(CHn)m-OH (m>2; 0<n<2)', 1.075, 0.7732, 0.495, 0.000728, -23.74, 4.171, 3.079),
+    ('diol', 'OH-(CHn)m-OH (m>2; 0<n<2)', 0.7193, 0.6674, 0.1725, -0.000327, -0.84, 5.411, 7.536),
+    ('oh_o_oh', 'OH-(CHp)k-O-(CHn)m-OH (m,k>0; 0<n,p<2)', 1.1867, -0.1073, 6.6872, 0.001937, 1.44, -8.651, -8.397),
+    ('oh_s_oh', 'OH-(CHp)k-S-(CHn)m-OH (m,k>0; 0<n,p<2)', 0, -1.3891, 2.6769, 0.003792, -1.62, 8.164, 10.194),
+    ('oh_n_oh', 'OH-(CHp)k-NHx-(CHn)m-OH (m,k>0; 0<n,p,x<2)', 0.2991, -0.0781, 0, 0.003254, -0.69, 1.753, 1.662),
+    ('ether_alcohol', '(CHp)-O-(CHn)m-OH (m>2; 0<n,p<2)', -0.4605, 0, 0, 0, 0, 0, 0),
+    ('diamine', 'NH2-(CHn)m-NH2 (m>2; 0<n<2)', 0.006, -0.0604, -4.3195, 0.006734, 6.69, 0.371, 4.1),
+    ('nh_nh2', 'NHk-(CHn)m-NH2 (m>2; 0<k<1; 0<n<2)', -0.1819, -1.1888, 0, 0, 0, 0, 0),
+    ('dithiol', 'SH-(CHn)m-SH (m>2; 0<n<2)', 0.4516, 0.6669, 0, 0, 0, 0, 0),
+    ('dinitrile', 'NC-(CHn)m-CN (m>2; 0<n<2)', 1.344, -0.3798, 0.0834, -0.01109, -36.89, 7.782, -7.035),
+    ('diester', 'COO-(CHn)m-OOC (m>2; 0<n<2)', 0, -2.6542, 0, 0, 0, 0, 0),
+    ('ac_cc_cyc_fused', 'aC-(CHn=CHm)(cyclic)(fused rings) (0<n,m<1)', -0.3741, 0.2479, -0.0185, 0.000851, -8.87, 2.689, -1.601),
+    ('ac_ac', 'aC-aC (different rings)', -0.4961, 1.1395, 6.1894, -0.0401, -26.26, -4.558, -4.459),
+    ('ac_chcyc_diff', 'aC-CHn(cyclic) (different rings) (0<n<1)', -0.4574, 0.057, -0.2474, -0.005826, -8.55, -5.914, -5.267),
+    ('ac_chcyc_fused', 'aC-CHn(cyclic) (fused rings) (0<n<1)', -0.1736, -0.564, 0.506, -0.003746, -11.56, -4.863, -4.203),
+    ('ac_chain_ac', 'aC-(CHn)m-aC (different rings) (m>1; 0<n<2)', 0.3138, 1.9902, 3.0321, 0.003007, 9.73, 0.084, 1.318),
+    ('ac_chain_chcyc', 'aC-(CHn)m-CH(cyclic) (different rings) (m>0; 0<n<2)', 0.5928, 0, 0, 0, 0, 0, 0),
+    ('chcyc_chcyc', 'CH(cyclic)-CH(cyclic) (different rings)', 0.4387, 0.546, 2.1761, 0.002745, 7.72, -66.87, -67.517),
+    ('chcyc_chain_chcyc', 'CH(cyclic)-(CHn)m-CH(cyclic)(different rings) (m>0;0<n<2)', 0.5632, 0.4497, 0, 0, 0, 0, 0),
+    ('ch_multiring', 'CH (multiring)', 0.1415, 0.6647, 0.4963, -0.000985, -3.33, 0, 0),
+    ('c_multiring', 'C (multiring)', 0, 0.0792, 0, 0, 0, 0, 0),
+    ('ac_ch_ac', 'aC-CHn-aC (different rings) (0<n<2)', 0.2391, 0.6457, 0.1174, -0.002673, -4.67, 0.866, -0.729),
+    ('ac_cc_ac', 'aC-(CHm=CHn)-aC (different rings) (0<n,m<2)', 0.7192, 0.9608, 0.7039, -0.004661, 14.31, -2.291, -0.702),
+    ('cyc_ch_ch_cyc', '(CHm=C)(cyclic)-CH=CH-(C=CHn)(cyclic) (different rings)', 0, 16.2235, 0, 0, 0, 0, 0),
+    ('cyc_ch_cyc', '(CHm=C)(cyclic)-CHp-(C=CHn)(cyclic) (different rings)', 0, 16.8558, 0, 0, 0, 0, 0),
+    ('ac_co_ac', 'aC-CO-aC (different rings)', 1.0171, -1.0394, -0.2678, -0.001837, -7.05, 7.108, 11.125),
+    ('ac_ch_co_ac', 'aC-CHm-CO-aC (different rings) (0<m<2)', 0.9674, -0.4486, 0, 0, 0, 0, 0),
+    ('ac_co_cc_cyc', 'aC-CO-(C=CHn)(cyclic) (different rings) (0<n<1)', 0.1126, -0.1376, 0, 0, 0, 0, 0),
+    ('ac_co_co_ac', 'aC-CO-CO-aC (different rings)', 0.9317, 0.4361, 0, 0, 0, 0, 0),
+    ('ac_co_cyc_fused', 'aC-CO(cyclic) (fused rings)', 0.5031, 3.6847, 0, 0, 0, 0, 0),
+    ('ac_co_chain_co_ac', 'aC-CO-(CHn)m-CO-aC (different rings) (m>0; 0<n<2)', 0, 4.9038, 0, 0, 0, 0, 0),
+    ('ac_co_chcyc', 'aC-CO-CHn(cyclic) (different rings) (0<n<1)', 0, -7.0038, 0, 0, 0, 0, 0),
+    ('ac_co_nh_ac', 'aC-CO-NHn-aC (different rings) (0<n<1)', 0, 5.9653, 0, 0, 0, 0, 0),
+    ('ac_nhconh_ac', 'aC-NHn-CO-NHm-aC (different rings) (0<n,m<1)', 0, 1.5629, 0, 0, 0, 0, 0),
+    ('ac_co_ncyc', 'aC-CO-N(cyclic) (different rings)', 0, -9.1856, 0, 0, 0, 0, 0),
+    ('ac_s_cyc_fused', 'aC-S(cyclic) (fused rings)', 0.2242, 0.2612, 3.5541, 0.0046, 12.6, 9.212, 8.333),
+    ('ac_s_ac', 'aC-S-aC (different rings)', 0.0185, -1.8403, 0, 0, 0, 0, 0),
+    ('ac_po_ac', 'aC-POn-aC (different rings) (0<n<4)', 0, 0.0393, 0, 0, 0, 0, 0),
+    ('ac_so_ac', 'aC-SOn-aC (different rings) (0<n<4)', -0.085, 0.9514, 0, 0, 0, 0, 0),
+    ('ac_nh_cyc_fused', 'aC-NHn(cyclic) (fused rings) (0<n<1)', 1.1457, 3.4983, 3.5541, 0.017201, 0.44, -16.08, -2.221),
+    ('ac_nh_ac', 'aC-NH-aC (different rings)', 0.5768, -0.3048, 0.9519, 0.008484, 1.42, -1.994, -0.596),
+    ('ac_cn_cyc_diff', 'aC-(C=N)(cyclic) (different rings)', -0.5335, -1.306, 0, 0, 0, 0, 0),
+    ('ac_nc_cyc_fused', 'aC-(N=CHn)(cyclic) (fused rings) (0<n<1)', -5.2736, -4.9289, 0, 0, 0, 0, 0),
+    ('ac_cn_cyc_fused', 'aC-(CHn=N)(cyclic) (fused rings) (0<n<1)', 0, -10.1007, 0, 0, 0, 0, 0),
+    ('ac_o_ch_ac', 'aC-O-CHn-aC (different rings) (0<n<2)', 0.6571, 1.0834, 0, 0, 0, 0, 0),
+    ('ac_o_ac', 'aC-O-aC (different rings)', -0.8252, -0.4803, -0.9785, 0.001162, -2.63, -5.074, 2.668),
+    ('ac_ch_o_ch_ac', 'aC-CHn-O-CHm-aC (different rings) (0<n,m<2)', 0.279, -3.2676, -1.4002, -0.004716, 28.42, -2.303, -4.229),
+    ('ac_o_cyc_fused', 'aC-O(cyclic) (fused rings)', -0.6848, -0.3545, 0, 0, 0, 0, 0),
+    ('af2', 'AROMFUSED[2]', 0.0441, 0.2825, -1.0095, -0.001332, -6.88, 1.904, 1.993),
+    ('af2_s1', 'AROMFUSED[2] s1', -0.1666, -1.2836, 0.1605, -0.00203, -3.17, -2.274, -2.94),
+    ('af2_s2', 'AROMFUSED[2] s2', -0.2692, 0.3378, -0.6765, -0.002436, -3.85, -1.316, -1.873),
+    ('af2_s2s3', 'AROMFUSED[2] s2s3', -0.2807, 1.8941, 0, 0, 0, 0, 0),
+    ('af2_s1s4', 'AROMFUSED[2] s1s4', -0.3294, -2.7585, 0, 0, 0, 0, 0),
+    ('af2_s1s2', 'AROMFUSED[2] s1s2', -0.2931, -3.0362, 0, 0, 0, 0, 0),
+    ('af2_s1s3', 'AROMFUSED[2] s1s3', -0.336, -3.2228, 0, 0, 0, 0, 0),
+    ('af3', 'AROMFUSED[3]', 0.0402, 1.66, -1.043, 0.004695, 35.21, 5.819, 3.896),
+    ('af4a', 'AROMFUSED[4a]', 1.0466, 7.0402, 3.3011, 0.015244, -6.96, 11.387, 13.843),
+    ('af4a_s1', 'AROMFUSED[4a] s1', -7.8521, -3.3463, 0, 0, 0, 0, 0),
+    ('af4a_s1s4', 'AROMFUSED[4a] s1s4', 0, 6.8373, 0, 0, 0, 0, 0),
+    ('af4p', 'AROMFUSED[4p]', 0.9126, -1.5856, 2.8885, 0.00728, -24.02, -19.089, -16.04),
+    ('af4p_s3s4', 'AROMFUSED[4p] s3s4', 0, 2.0821, 0, 0, 0, 0, 0),
+    ('pf2', 'PYRIDINEFUSED[2]', -0.9432, -4.4725, 1.1251, -0.005369, 63.29, 13.586, 8.688),
+    ('pf2iso', 'PYRIDINEFUSED[2-iso]', -0.5844, -2.5898, 3.9241, -0.011207, -2.71, -0.314, -5.112),
+    ('pf4', 'PYRIDINEFUSED[4]', 0.1733, 1.0358, 7.7134, -0.001275, -12.04, 15.786, 20.073),
 ]

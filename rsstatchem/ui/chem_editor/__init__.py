@@ -132,14 +132,22 @@ def _selftest_properties(check) -> None:
           f"ML melting point estimate ({pred.error or pred.value})")
     tol = marrero_gani(mo.mol_from_text("Cc1ccccc1"))
     check(tol.ok and abs(tol.values["tc"] - 600) < 20, "Marrero-Gani estimate")
+    from rsstatchem.core.chem_draw import nannoolal
+    tmb = nannoolal.nannoolal(mo.mol_from_text("CC(C)(C)C(C)(C)C"), tb=379.6)
+    check(tmb["tc"] is not None and abs(tmb["tc"] - 566.8) < 0.1, "Nannoolal Tc estimate")
+    third = marrero_gani(mo.mol_from_text("c1cc2ccc3cccc4ccc(c1)c2c34"), third_order=True)
+    check(abs(third.values["tb"] - 673.96) < 0.01, "Marrero-Gani third-order estimate")
     rows = {p.name: p for p in chemical_properties(caffeine)}
     check(rows["Melting Point"].kind == "experimental", "properties rows")
+    vp = {p.name: p for p in chemical_properties(mo.mol_from_text("CCCCCCC(C)OC(=O)CC"))}
+    check(vp["Vapor Pres."].value is not None and vp["Vapor Pres."].short == "Nannoolal",
+          "vapour-pressure estimate")
     print(f"selftest ok: experimental database ({exp_props.db_size()} compounds), "
           f"ML models, group contributions")
     mode = os.environ.get("RSSTATCHEM_SELFTEST_CDK", "").lower()
     if not mode and not cdk.cdk_available(allow_system=False):
         return
-    check(cdk.cdk_jars() is not None, "CDK jar / helper is not bundled")
+    check(cdk.cdk_jars() is not None, "CDK jars / helper are not bundled")
     if mode == "bundled":
         check(names.find_java(allow_system=False) is not None, "bundled Java runtime missing")
     helper = cdk.CdkHelper()

@@ -15,7 +15,7 @@
  *             (1998) 3762 (atom-type contributions to logP and molar refractivity)
  *
  * Build (scripts/fetch_cdk.py does this):
- *   javac --release 11 -cp cdk.jar -d build scripts/java/CdkProps.java
+ *   javac --release 11 -cp "cdk/*" -d build scripts/java/CdkProps.java   (CDK module jars)
  *   jar --create --file rsstatchem-cdk.jar -C build .
  */
 

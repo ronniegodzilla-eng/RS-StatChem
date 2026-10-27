@@ -17,11 +17,15 @@ is labelled with the method that produced it:
   normal boiling point, melting point, critical temperature / pressure / volume, ideal-gas
   heat and Gibbs energy of formation at 298 K. Only molecules made entirely of Joback groups
   get Joback values.
-- When Joback lacks a group (e.g. caffeine's ring N-CH3), other published group-contribution
-  methods are tried in turn (tables in :mod:`gc_tables`): the boiling point by Stein & Brown
-  (J. Chem. Inf. Comput. Sci. 34 (1994) 581), then Marrero & Gani first- and second-order
-  groups (Fluid Phase Equilib. 183-184 (2001) 183) for every Joback property. Each value says
-  which method gave it; a value stays n/a when no method covers every atom (no guessing).
+- Further published group-contribution methods (tables in :mod:`gc_tables`): the boiling
+  point by Stein & Brown (J. Chem. Inf. Comput. Sci. 34 (1994) 581); Marrero & Gani first-,
+  second- and third-order groups (Fluid Phase Equilib. 183-184 (2001) 183; third order in
+  :mod:`mg_third`) for every Joback property; Abdulelah-Gani for the critical constants;
+  Nannoolal / Rarey (:mod:`nannoolal`) for the boiling point, the critical constants (Tc with
+  the experimental Tb when known) and the vapour pressure at 25 °C (with the experimental Tb,
+  else the default Tb estimate; solids converted with the melting point by Walden's rule).
+  Each value says which method gave it; a value stays n/a when no method covers every atom
+  (no guessing).
 - Crippen LogP and molar refractivity (Wildman & Crippen 1999, as implemented by RDKit).
 - Topological polar surface area (Ertl 2000, RDKit).
 - ESOL aqueous solubility LogS (Delaney 2004): 0.16 - 0.63 cLogP - 0.0062 MW + 0.066 RB
@@ -50,6 +54,10 @@ METHODS = {
            "second-order groups"),
     "mg1": ("Marrero-Gani 1st", "Marrero & Gani first-order group contribution estimate "
             "(2001)"),
+    "mg3": ("Marrero-Gani +3rd", "Marrero & Gani group contribution estimate (2001), first- "
+            "plus second- plus third-order groups"),
+    "nan": ("Nannoolal", "Nannoolal / Rarey group contribution estimate (Tb 2004, critical "
+            "properties 2007, vapour pressure 2008)"),
     "ag": ("Abdulelah-Gani", "Abdulelah-Gani GC-simple group contribution estimate (Alshehri "
            "et al. 2022), primary and secondary groups"),
 }
@@ -285,6 +293,7 @@ class GCResult:
     missing: str = ""
     values: dict = field(default_factory=dict)      # tb, tm, tc, pc, vc, hf, gf (None = n/a)
     second: dict = field(default_factory=dict)      # Marrero-Gani second-order groups
+    third: dict = field(default_factory=dict)       # Marrero-Gani third-order groups
 
     @property
     def ok(self) -> bool:
@@ -439,13 +448,16 @@ def stein_brown(mol: Chem.Mol) -> GCResult:
 _MG_ITEMS: list | None = None
 
 
-def marrero_gani(mol: Chem.Mol, second_order: bool = True) -> GCResult:
+def marrero_gani(mol: Chem.Mol, second_order: bool = True,
+                 third_order: bool = False) -> GCResult:
     """Marrero & Gani (2001) estimates of Tb, Tm, Tc, Pc, Vc, Hf, Gf: first-order groups
-    plus (by default) the second-order corrections."""
+    plus (by default) the second-order corrections, and optionally the third-order groups
+    (:mod:`mg_third`)."""
     global _MG_ITEMS
-    from rsstatchem.core.chem_draw.gc_tables import MARRERO_GANI, MARRERO_GANI_2, MG_FIELDS
+    from rsstatchem.core.chem_draw.gc_tables import (MARRERO_GANI, MARRERO_GANI_2,
+                                                      MARRERO_GANI_3, MG_FIELDS)
 
-    res = GCResult("mg" if second_order else "mg1")
+    res = GCResult("mg3" if third_order else ("mg" if second_order else "mg1"))
     res.missing = _gc_precheck(mol)
     if res.missing:
         return res
@@ -462,6 +474,12 @@ def marrero_gani(mol: Chem.Mol, second_order: bool = True) -> GCResult:
     second = _mg_second_order(form) if second_order else {}
     res.second = second
     mg2 = {row[0]: row[2:] for row in MARRERO_GANI_2}
+    third: dict = {}
+    if third_order:
+        from rsstatchem.core.chem_draw.mg_third import third_order_groups
+        third = third_order_groups(form)
+        res.third = third
+    mg3 = {row[0]: row[2:] for row in MARRERO_GANI_3}
     for prop in ("tb", "tm", "tc", "pc", "vc", "hf", "gf"):
         k = MG_FIELDS.index(prop)
         vals = [(n, MARRERO_GANI[g][k]) for g, n in counts.items()]
@@ -470,6 +488,7 @@ def marrero_gani(mol: Chem.Mol, second_order: bool = True) -> GCResult:
             continue
         t = sum(n * v for n, v in vals)
         t += sum(n * (mg2[g][k - 1] or 0.0) for g, n in second.items())
+        t += sum(n * (mg3[g][k - 1] or 0.0) for g, n in third.items())
         if prop in ("tb", "tm", "tc"):
             c = {"tb": 222.543, "tm": 147.45, "tc": 231.239}[prop]
             res.values[prop] = c * math.log(t) if t > 0 else None
@@ -666,13 +685,15 @@ OTHER_METHODS = {
 }
 NOT_BIOBYTE = ("open-source alternatives; not BioByte CLogP/CMR - values differ")
 # candidate estimation methods per property, in the order used when no benchmark is available
-CANDIDATES = {"mp": ("ml", "mg1", "mg", "joback"), "bp": ("ml", "sb", "mg", "mg1", "joback"),
-              "tc": ("mg", "mg1", "ag", "joback"), "pc": ("mg", "mg1", "ag", "joback"),
-              "vc": ("mg", "mg1", "ag", "joback"),
-              "hf": ("joback", "mg", "ag"), "gf": ("joback", "mg", "ag"),
+CANDIDATES = {"mp": ("ml", "mg1", "mg", "mg3", "joback"),
+              "bp": ("ml", "nan", "sb", "mg", "mg3", "mg1", "joback"),
+              "tc": ("nan", "mg", "mg3", "mg1", "ag", "joback"),
+              "pc": ("mg3", "mg", "mg1", "nan", "ag", "joback"),
+              "vc": ("mg", "mg3", "mg1", "nan", "ag", "joback"),
+              "hf": ("joback", "mg", "mg3", "ag"), "gf": ("joback", "mg", "mg3", "ag"),
               "logp": ("consensus", "ml", "consensus4", "jplogp", "xlogp", "alogp", "crippen")}
 UNITS = {"mp": "K", "bp": "K", "tc": "K", "pc": "bar", "vc": "cm³/mol", "logp": "",
-         "logs": "", "hf": "kJ/mol", "gf": "kJ/mol"}
+         "logs": "", "logvp": "", "hf": "kJ/mol", "gf": "kJ/mol"}
 
 
 def method_label(key: str) -> tuple[str, str]:
@@ -819,7 +840,8 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
         if key not in gc:
             try:
                 gc[key] = {"sb": stein_brown, "mg": marrero_gani, "ag": abdulelah_gani,
-                           "mg1": lambda m: marrero_gani(m, second_order=False)}[key](mol)
+                           "mg1": lambda m: marrero_gani(m, second_order=False),
+                           "mg3": lambda m: marrero_gani(m, third_order=True)}[key](mol)
             except Exception as exc:  # noqa: BLE001 - an estimate must never break drawing
                 gc[key] = GCResult(key, missing=str(exc))
         return gc[key]
@@ -834,13 +856,38 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
         ml = {}
     gc_field = {"mp": "tm", "bp": "tb", "tc": "tc", "pc": "pc", "vc": "vc", "hf": "hf",
                 "gf": "gf"}
+    nan_cache: dict = {}
+
+    def nan_result() -> dict:
+        """Nannoolal estimates; Tc uses the experimental Tb when the compound has one."""
+        if not nan_cache:
+            from rsstatchem.core.chem_draw import nannoolal
+            eb = exp.get("bp")
+            try:
+                nan_cache.update(nannoolal.nannoolal(mol, tb=eb.value if eb else None))
+            except Exception as exc:  # noqa: BLE001 - an estimate must never break drawing
+                nan_cache.update({"why": {k: str(exc) for k in ("tb", "tc", "pc", "vc",
+                                                                "db")}, "tc_tb": ""})
+        return nan_cache
 
     def estimate(prop: str, method: str):
         """(value, note, ML prediction or None)."""
         if method == "joback":
             v = jv[gc_field[prop]] if jb.ok else None
             return v, ("" if v is not None else f"{jb.missing or 'no Joback parameter'}"), None
-        if method in ("sb", "mg", "mg1", "ag"):
+        if method == "nan":
+            r = nan_result()
+            if prop not in ("bp", "tc", "pc", "vc"):
+                return None, "Tb, critical constants and vapour pressure only", None
+            key = {"bp": "tb"}.get(prop, prop)
+            v = r.get(key)
+            why = r["why"].get(key, "")
+            if v is not None and prop == "tc":
+                why = "with the experimental Tb" if r["tc_tb"] == "given" else \
+                    "with the Nannoolal Tb estimate"
+                return v, why, None
+            return v, ("" if v is not None else (why or "no parameter")), None
+        if method in ("sb", "mg", "mg1", "mg3", "ag"):
             if method == "sb" and prop != "bp":
                 return None, "boiling point only", None
             if method == "ag" and prop in ("mp", "bp"):
@@ -873,7 +920,12 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
         avail = [m for m, (v, _w, _p) in values.items() if v is not None]
         mlp = values.get("ml", (None, "", None))[2]
         ood = bool(mlp is not None and mlp.value is not None and not mlp.in_domain)
-        order = ranked(prop, avail, ood)
+        # Nannoolal Tc without an experimental Tb: judged by its benchmark with estimated Tb
+        bkey = {m: m for m in CANDIDATES[prop]}
+        if prop == "tc" and nan_result().get("tc_tb") == "estimated":
+            bkey["nan"] = "nan_tbest"
+        back = {bkey[m]: m for m in avail}
+        order = [back[k] for k in ranked(prop, [bkey[m] for m in avail], ood)]
         best = order[0] if order else None
         for m in CANDIDATES[prop]:
             v, why, p = values[m]
@@ -881,7 +933,7 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
             if m == "ml" and p is not None and p.value is not None:
                 note = _ml_detail(p, unit)[0]
             alts.append(MethodValue(m, method_label(m)[0], v, _fmt(v, unit, decimals),
-                                    benchmark_text(prop, m), note,
+                                    benchmark_text(prop, bkey[m]), note,
                                     default=(e is None and m == best)))
         if e is not None:
             return PropertyValue(name, e.value, unit,
@@ -894,9 +946,11 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
                                 for m in CANDIDATES[prop] if m != "ml" or values[m][1])
             return PropertyValue(name, None, unit, method_label(CANDIDATES[prop][0])[1] + extra,
                                  decimals, reasons, key=prop, alternatives=alts)
-        v, _why, p = values[best]
+        v, why, p = values[best]
         short, long = method_label(best)
         detail, warn = (_ml_detail(p, unit) if best == "ml" else ("", False))
+        if best == "nan" and prop == "tc":
+            detail = why
         return PropertyValue(name, v, unit, long + extra, decimals, short=short, key=prop,
                              detail=detail, warn=warn, alternatives=alts)
 
@@ -914,6 +968,7 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
         gc_row("Heat of Form.", "hf", extra=" (ideal gas, 298 K)", use_exp=False),
     ]
     rows += _logp_rows(mol, exp, ml, cdk_values, cdk_state)
+    rows[-1] = _vp_row(exp, bp, rows[2], nan_result())
     return rows
 
 
@@ -1009,21 +1064,7 @@ def _logp_rows(mol, exp: dict, ml: dict, cdk_values: dict | None, cdk_state: str
     else:
         logs = PropertyValue("LogS", esol, "", OTHER_METHODS["esol"][1], 2, short="ESOL",
                              key="logs", alternatives=logs_alts)
-    ev = exp.get("logvp")
-    if ev is not None:
-        pa = 10 ** ev.value
-        detail, warn = _exp_detail("logvp", ev, "", 2)
-        vp = PropertyValue("Vapor Pres.", pa, "Pa", "experimental vapour pressure at 25 °C: " +
-                           exp_props.source_text(ev.sources), 2, short="experimental",
-                           key="logvp", kind="experimental", detail=detail, warn=warn,
-                           display=f"{_sig(pa)} Pa at 25 °C",
-                           alternatives=[MethodValue("exp", "experimental", pa,
-                                                     f"{_sig(pa)} Pa", default=True,
-                                                     note=exp_props.source_text(ev.sources))])
-    else:
-        vp = PropertyValue("Vapor Pres.", None, "Pa", "experimental values only", 2,
-                           "not in the experimental database (no estimate offered)",
-                           key="logvp")
+    vp = PropertyValue("Vapor Pres.", None, "Pa", "no estimate", 2, "", key="logvp")
     return [logp,
             PropertyValue("MR", mr, "cm³/mol", "Crippen molar refractivity (RDKit); " +
                           NOT_BIOBYTE.replace("CLogP/", ""), 2, short="Crippen", key="mr",
@@ -1031,6 +1072,74 @@ def _logp_rows(mol, exp: dict, ml: dict, cdk_values: dict | None, cdk_state: str
             PropertyValue("tPSA", tpsa, "Å²", "Topological polar surface area, Ertl (RDKit)", 2,
                           short="Ertl", key="tpsa", kind="computed"),
             logs, vp]
+
+
+VP_T = 298.15
+
+
+def _vp_row(exp: dict, bp: PropertyValue, mp: PropertyValue, nan: dict) -> PropertyValue:
+    """Vapour pressure at 25 °C: experimental, else the Nannoolal (2008) vapour-pressure
+    equation with the experimental Tb (or the default Tb estimate of the Boiling Point row) and
+    the group-contribution slope dB; below the melting point (experimental, else the default
+    estimate) the liquid value is converted to the solid's with Walden's rule."""
+    from rsstatchem.core.chem_draw import exp_props, nannoolal
+    ev = exp.get("logvp")
+    alts: list[MethodValue] = []
+    if ev is not None:
+        pa = 10 ** ev.value
+        alts.append(MethodValue("exp", "experimental", pa, f"{_sig(pa)} Pa", default=True,
+                                note=exp_props.source_text(ev.sources)))
+    db = nan.get("db")
+    est, note, detail, warn = None, "", "", False
+    if db is None:
+        note = nan.get("why", {}).get("db") or "no dB parameter"
+    elif bp.value is None:
+        note = "needs a boiling point"
+    else:
+        tb_src = "the experimental Tb" if bp.kind == "experimental" else \
+            f"the {bp.short} Tb estimate"
+        try:
+            log_l = math.log10(nannoolal.vapour_pressure(VP_T, bp.value, db))
+        except (ValueError, OverflowError, ZeroDivisionError):
+            log_l = None
+        if log_l is None or not math.isfinite(log_l):
+            note = "out of range"
+        else:
+            tm = mp.value
+            corr = nannoolal.solid_correction(VP_T, tm)
+            est = 10 ** (log_l + corr)
+            b = benchmarks().get("logvp", {}).get("subsets", {})
+            src_key = "tb_experimental" if bp.kind == "experimental" else "tb_estimated"
+            state = "solids" if corr else "liquids"
+            sub = (b.get(f"{src_key}_{state}") or b.get(src_key) or {}).get("nan_s")
+            detail = f"with {tb_src}"
+            if corr:
+                src = "experimental" if mp.kind == "experimental" else f"{mp.short} estimate"
+                detail += f"; solid below Tm {tm:.0f} K ({src}), Walden conversion"
+            if sub:
+                detail += f"; ±{sub['rmse']:.1f} log units expected"
+                warn = sub["rmse"] > 1.0
+            note = detail
+    bench = ""
+    s = benchmarks().get("logvp", {}).get("methods", {}).get("nan_s")
+    if s:
+        bench = (f"RMSE {s['rmse']:.2f}, MAE {s['mae']:.2f} log10(Pa), n = {s['n']}")
+    alts.append(MethodValue("nan", "Nannoolal", est, f"{_sig(est)} Pa" if est else "n/a",
+                            bench, note, default=ev is None and est is not None))
+    if ev is not None:
+        pa = 10 ** ev.value
+        detail_e, warn_e = _exp_detail("logvp", ev, "", 2)
+        return PropertyValue("Vapor Pres.", pa, "Pa", "experimental vapour pressure at 25 °C: " +
+                             exp_props.source_text(ev.sources), 2, short="experimental",
+                             key="logvp", kind="experimental", detail=detail_e, warn=warn_e,
+                             display=f"{_sig(pa)} Pa at 25 °C", alternatives=alts)
+    if est is None:
+        return PropertyValue("Vapor Pres.", None, "Pa", method_label("nan")[1], 2,
+                             f"Nannoolal: {note}", key="logvp", alternatives=alts)
+    return PropertyValue("Vapor Pres.", est, "Pa", "Nannoolal et al. (2008) vapour-pressure "
+                         "estimate at 25 °C (group contribution dB)", 2, short="Nannoolal",
+                         key="logvp", detail=detail, warn=warn,
+                         display=f"{_sig(est)} Pa at 25 °C", alternatives=alts)
 
 
 def _sig(v: float) -> str:

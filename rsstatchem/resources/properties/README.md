@@ -10,7 +10,8 @@ Rebuild (raw downloads, ~100 MB, go to the git-ignored `build/propdb-raw`):
 
     python scripts/build_property_db.py --download --training
     python scripts/train_property_models.py --oof        # needs scikit-learn (dev only)
-    python scripts/fetch_cdk.py                          # CDK jar + helper (Java, javac)
+    python scripts/fetch_cdk.py                          # CDK jars + helper (Java, javac)
+    python scripts/build_nannoolal_tables.py --download  # Nannoolal parameters (DDBST)
     python scripts/benchmark_properties.py
 
 ## Sources and licences
@@ -87,23 +88,38 @@ favours them. "n" = compounds the method covers.
 |---|---|---|---|---|
 | Melting point (K) | ML | 19 854 | 37.0 | 26.9 |
 | | Marrero-Gani 1st order | 16 994 | 54.2 | 40.0 |
+| | Marrero-Gani 1st + 2nd + 3rd order | 16 802 | 64.3 | 43.8 |
 | | Marrero-Gani 1st + 2nd order | 16 806 | 64.8 | 43.8 |
 | | Joback | 14 922 | 152.9 | 96.6 |
 | Boiling point (K) | ML | 5 743 | 26.8 | 13.5 |
+| | Nannoolal (2004) | 5 397 | 28.3 | 13.9 |
+| | Marrero-Gani 1st + 2nd + 3rd | 5 299 | 32.4 | 17.6 |
 | | Marrero-Gani 1st + 2nd | 5 299 | 32.6 | 17.9 |
 | | Marrero-Gani 1st | 5 299 | 33.3 | 18.8 |
 | | Stein-Brown | 5 665 | 36.7 | 19.8 |
 | | Joback | 5 299 | 55.6 | 31.2 |
-| Tc (K) | Marrero-Gani 1st + 2nd | 342 | 53.5 | 26.1 |
+| Tc (K) | Nannoolal (2007), experimental Tb | 331 | 42.7 | 14.8 |
+| | Nannoolal (2007), Nannoolal Tb estimate | 331 | 47.2 | 21.2 |
+| | Marrero-Gani 1st + 2nd | 342 | 53.5 | 26.1 |
+| | Marrero-Gani 1st + 2nd + 3rd | 342 | 53.8 | 26.5 |
 | | Marrero-Gani 1st | 342 | 54.8 | 27.5 |
 | | Abdulelah-Gani | 354 | 63.5 | 30.7 |
 | | Joback | 352 | 65.6 | 37.2 |
-| Pc (bar) | Marrero-Gani 1st + 2nd | 294 | 5.57 | 3.06 |
+| Pc (bar) | Marrero-Gani 1st + 2nd + 3rd | 294 | 5.31 | 2.89 |
+| | Marrero-Gani 1st + 2nd | 294 | 5.57 | 3.06 |
 | | Joback | 303 | 6.14 | 3.65 |
 | | Abdulelah-Gani | 303 | 7.68 | 4.28 |
+| | Nannoolal (2007) | 287 | 8.20 | 4.17 |
 | Vc (cm³/mol) | Marrero-Gani 1st + 2nd | 33 | 16.2 | 11.8 |
+| | Marrero-Gani 1st + 2nd + 3rd | 33 | 16.4 | 12.1 |
+| | Nannoolal (2007) | 32 | 17.5 | 9.8 |
 | | Joback | 33 | 22.4 | 12.2 |
 | | Abdulelah-Gani | 33 | 25.8 | 15.3 |
+| log10 vapour pressure, 25 °C (Pa) | Nannoolal (2008), as shown by the app | 2 611 | 1.08 | 0.56 |
+| | ... with experimental Tb, liquids | 1 405 | 0.43 | 0.18 |
+| | ... with experimental Tb, solids | 438 | 1.09 | 0.64 |
+| | ... with ML Tb, liquids | 124 | 1.09 | 0.68 |
+| | ... with ML Tb, solids | 644 | 1.81 | 1.29 |
 | logP | ML | 14 049 | 0.47 | 0.31 |
 | | Consensus (Crippen, JPlogP, XLogP, ALogP, ML) | 14 043 | 0.67 | 0.48 |
 | | Consensus of the 4 open atom/fragment methods | 14 050 | 0.77 | 0.54 |
@@ -113,8 +129,53 @@ favours them. "n" = compounds the method covers.
 | | Crippen (RDKit) | 14 056 | 0.92 | 0.65 |
 | logS | ESOL | 8 964 | 1.34 | 1.00 |
 
+Vapour pressure: the app uses the experimental Tb when there is one, else the default Tb
+estimate (ML; the benchmark uses the shipped ML model for compounds without an experimental Tb,
+which it never saw), and converts the subcooled-liquid value of a solid (melting point above
+25 °C: experimental, else the default estimate) with Walden's rule, log10(Ps/PL) =
+-56.5 J mol⁻¹ K⁻¹ (Tm - T) / (ln 10 R T) (S. H. Yalkowsky, Ind. Eng. Chem. Fundam. 18 (1979)
+108). Without that conversion solids are overestimated (RMSE 2.04 instead of 1.56 log units,
+bias +1.18); with the Nannoolal Tb estimate instead of ML the RMSE is 2.13. The expected error
+shown next to a value is the RMSE of its subset (Tb source x liquid / solid).
+
 The app shows, per property, the experimental value when there is one, otherwise the method
 with the lowest RMSE on the compounds every compared method covers (`common` in the JSON; for
 molecules outside the ML domain the `ood_common` subset, where ML still had the lowest error).
 All other methods are listed in the tooltip and the Details panel with these errors. The CDK
 methods are open-source alternatives, not BioByte CLogP/CMR; values differ.
+
+## Group-contribution sources
+
+* **Nannoolal / Rarey** (normal boiling point, Fluid Phase Equilib. 226 (2004) 45; critical
+  properties, 252 (2007) 1; vapour pressure, 269 (2008) 117). Group definitions and priorities:
+  Y. Nannoolal, PhD thesis, University of KwaZulu-Natal 2006, Appendix B (ResearchSpace,
+  http://hdl.handle.net/10413/3766; the MSc thesis of 2004 for boiling-point details).
+  Parameters: DDBST files "2012-01-18 Rarey-Nannoolal {Tb, Tcri, Pcri, vcri, Vap}.txt",
+  https://chemthermo.ddbst.com/Parameters/ (published for the textbook Gmehling, Kolbe,
+  Kleiber, Rarey, Chemical Thermodynamics for Process Simulation, Wiley-VCH 2012, to be
+  implemented in software; no licence terms are stated - only numerical parameters are used).
+  Their Tc, Pc, Vc and dB values are the PhD-thesis tables; the code reproduces the thesis'
+  worked examples (Appendix D) and the MSc thesis' boiling-point examples (Appendix C, with the
+  MSc parameters). The Tb equation uses the 2004 publication's constants (0.6583, 1.6868,
+  84.3395): the DDBST "revised" constants with the same group values overestimate the open
+  boiling points by 17 K (RMSE 35.1 K instead of 28.3 K).
+* **Marrero-Gani third order**: values as tabulated in pychemqt (GPL; numerical data only, no
+  code), Tb column checked against the MSc thesis Table A-8; group search written for
+  RS-StatChem (``mg_third.py``), reproducing the paper's examples (N-phenyl-1,4-
+  benzenediamine, pyrene, 4-aminobutanol, 1,9-nonanediol, dicoumarol, flutemazepam).
+
+What became the default (lowest benchmark RMSE among the methods covering a molecule):
+Nannoolal for Tc, Marrero-Gani 1st + 2nd + 3rd order for Pc, Nannoolal for the vapour pressure
+(the only estimate). ML stays the default for Tb and Tm.
+
+## CDK (resources/java)
+
+``scripts/fetch_cdk.py`` downloads 13 unmodified jars from Maven Central into
+``resources/java/cdk`` (each pinned by SHA-256; list, hashes and source locations in the
+generated ``resources/java/LICENSE-CDK.txt`` and ``VERSION``): cdk-interfaces, cdk-core,
+cdk-standard, cdk-silent, cdk-valencycheck, cdk-atomtype, cdk-isomorphism, cdk-smarts,
+cdk-smiles, cdk-qsar, cdk-qsarmolecular 2.13 (LGPL-2.1-or-later; source
+https://github.com/cdk/cdk/tree/cdk-2.13 and the ``-sources.jar`` files on Maven Central),
+beam-core 1.3.10 (BSD 2-Clause) and vecmath 1.5.2 (GPL-2.0 with Classpath exception). 1.9 MB
+instead of the 24.1 MB ``cdk-2.13.jar`` bundle; the helper gives byte-identical answers for all
+52 895 benchmark and database SMILES with both (``fetch_cdk.py --compare-bundle FILE``).

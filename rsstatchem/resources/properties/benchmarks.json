@@ -1,6 +1,6 @@
 {
- "_about": "RS-StatChem benchmark of the property estimates against the open experimental data of exp_props.tsv.xz (scripts/benchmark_properties.py). Group-contribution and logP methods were fitted by their authors on data that overlap these sets (optimistic for them); 'ml' values are 5-fold cross-validated predictions (held out). Units: K for mp/bp/tc, bar for pc, cm3/mol for vc, log units for logp/logs.",
- "generated": "2026-10-26",
+ "_about": "RS-StatChem benchmark of the property estimates against the open experimental data of exp_props.tsv.xz (scripts/benchmark_properties.py). Group-contribution and logP methods were fitted by their authors on data that overlap these sets (optimistic for them); 'ml' values are 5-fold cross-validated predictions (held out). Units: K for mp/bp/tc, bar for pc, cm3/mol for vc, log units for logp/logs, log10(Pa) at 25 C for logvp (Nannoolal Tc and vapour pressure use the experimental Tb when known, else the ML Tb).",
+ "generated": "2026-10-27",
  "mp": {
   "methods": {
    "joback": {
@@ -24,6 +24,13 @@
     "bias": -6.967,
     "coverage": 0.846
    },
+   "mg3": {
+    "n": 16802,
+    "rmse": 64.25,
+    "mae": 43.818,
+    "bias": -3.222,
+    "coverage": 0.846
+   },
    "ml": {
     "n": 19854,
     "rmse": 37.033,
@@ -34,31 +41,37 @@
   },
   "n_experimental": 19859,
   "common": {
-   "n": 13725,
+   "n": 13719,
    "methods": {
     "joback": {
-     "n": 13725,
-     "rmse": 141.746,
-     "mae": 91.945,
-     "bias": 73.014
+     "n": 13719,
+     "rmse": 141.774,
+     "mae": 91.966,
+     "bias": 73.028
     },
     "mg1": {
-     "n": 13725,
-     "rmse": 53.643,
-     "mae": 39.24,
-     "bias": -6.822
+     "n": 13719,
+     "rmse": 53.649,
+     "mae": 39.242,
+     "bias": -6.84
     },
     "mg": {
-     "n": 13725,
-     "rmse": 64.614,
-     "mae": 42.92,
-     "bias": -9.305
+     "n": 13719,
+     "rmse": 63.736,
+     "mae": 42.727,
+     "bias": -9.097
+    },
+    "mg3": {
+     "n": 13719,
+     "rmse": 62.883,
+     "mae": 42.427,
+     "bias": -5.819
     },
     "ml": {
-     "n": 13725,
-     "rmse": 35.162,
-     "mae": 25.306,
-     "bias": -0.075
+     "n": 13719,
+     "rmse": 35.167,
+     "mae": 25.309,
+     "bias": -0.076
     }
    }
   },
@@ -82,6 +95,12 @@
      "rmse": 98.554,
      "mae": 67.482,
      "bias": -23.539
+    },
+    "mg3": {
+     "n": 100,
+     "rmse": 76.759,
+     "mae": 59.953,
+     "bias": -12.603
     },
     "ml": {
      "n": 100,
@@ -122,82 +141,120 @@
     "bias": 7.467,
     "coverage": 0.922
    },
+   "mg3": {
+    "n": 5299,
+    "rmse": 32.418,
+    "mae": 17.586,
+    "bias": 7.64,
+    "coverage": 0.922
+   },
    "ml": {
     "n": 5743,
     "rmse": 26.782,
     "mae": 13.496,
     "bias": 0.239,
     "coverage": 1.0
+   },
+   "nan": {
+    "n": 5397,
+    "rmse": 28.263,
+    "mae": 13.876,
+    "bias": 2.42,
+    "coverage": 0.939
    }
   },
   "n_experimental": 5745,
   "common": {
-   "n": 5071,
+   "n": 4924,
    "methods": {
     "joback": {
-     "n": 5071,
-     "rmse": 53.047,
-     "mae": 29.889,
-     "bias": 16.111
+     "n": 4924,
+     "rmse": 52.034,
+     "mae": 29.326,
+     "bias": 15.825
     },
     "sb": {
-     "n": 5071,
-     "rmse": 31.026,
-     "mae": 17.615,
-     "bias": 3.342
+     "n": 4924,
+     "rmse": 29.831,
+     "mae": 17.044,
+     "bias": 3.022
     },
     "mg1": {
-     "n": 5071,
-     "rmse": 31.117,
-     "mae": 17.852,
-     "bias": 7.127
+     "n": 4924,
+     "rmse": 29.794,
+     "mae": 17.245,
+     "bias": 6.596
     },
     "mg": {
-     "n": 5071,
-     "rmse": 30.341,
-     "mae": 16.882,
-     "bias": 6.626
+     "n": 4924,
+     "rmse": 28.998,
+     "mae": 16.258,
+     "bias": 6.086
+    },
+    "mg3": {
+     "n": 4924,
+     "rmse": 28.777,
+     "mae": 15.913,
+     "bias": 6.29
     },
     "ml": {
-     "n": 5071,
-     "rmse": 21.868,
-     "mae": 11.4,
-     "bias": 0.162
+     "n": 4924,
+     "rmse": 21.029,
+     "mae": 10.99,
+     "bias": -0.034
+    },
+    "nan": {
+     "n": 4924,
+     "rmse": 25.303,
+     "mae": 12.795,
+     "bias": 1.578
     }
    }
   },
   "ood_common": {
-   "n": 44,
+   "n": 33,
    "methods": {
     "joback": {
-     "n": 44,
-     "rmse": 127.435,
-     "mae": 74.877,
-     "bias": 46.669
+     "n": 33,
+     "rmse": 102.001,
+     "mae": 62.724,
+     "bias": 43.946
     },
     "sb": {
-     "n": 44,
-     "rmse": 72.386,
-     "mae": 44.728,
-     "bias": 22.08
+     "n": 33,
+     "rmse": 49.721,
+     "mae": 35.286,
+     "bias": 19.956
     },
     "mg1": {
-     "n": 44,
-     "rmse": 79.067,
-     "mae": 48.875,
-     "bias": 23.315
+     "n": 33,
+     "rmse": 50.337,
+     "mae": 34.549,
+     "bias": 11.656
     },
     "mg": {
-     "n": 44,
-     "rmse": 74.137,
-     "mae": 46.325,
-     "bias": 20.989
+     "n": 33,
+     "rmse": 40.912,
+     "mae": 31.414,
+     "bias": 8.819
+    },
+    "mg3": {
+     "n": 33,
+     "rmse": 39.904,
+     "mae": 30.141,
+     "bias": 11.55
     },
     "ml": {
-     "n": 44,
-     "rmse": 50.125,
-     "mae": 29.204,
-     "bias": -0.03
+     "n": 33,
+     "rmse": 26.715,
+     "mae": 19.064,
+     "bias": -4.475
+    },
+    "nan": {
+     "n": 33,
+     "rmse": 43.167,
+     "mae": 29.01,
+     "bias": 11.179
     }
    }
   }
@@ -225,41 +282,80 @@
     "bias": 3.414,
     "coverage": 0.947
    },
+   "mg3": {
+    "n": 342,
+    "rmse": 53.785,
+    "mae": 26.473,
+    "bias": 4.376,
+    "coverage": 0.947
+   },
    "ag": {
     "n": 354,
     "rmse": 63.523,
     "mae": 30.715,
     "bias": -3.379,
     "coverage": 0.981
+   },
+   "nan": {
+    "n": 331,
+    "rmse": 42.658,
+    "mae": 14.773,
+    "bias": -0.571,
+    "coverage": 0.917
+   },
+   "nan_tbest": {
+    "n": 331,
+    "rmse": 47.173,
+    "mae": 21.158,
+    "bias": -0.814,
+    "coverage": 0.917
    }
   },
   "n_experimental": 361,
   "common": {
-   "n": 341,
+   "n": 318,
    "methods": {
     "joback": {
-     "n": 341,
-     "rmse": 65.062,
-     "mae": 36.543,
-     "bias": 5.26
+     "n": 318,
+     "rmse": 64.869,
+     "mae": 35.384,
+     "bias": 4.348
     },
     "mg1": {
-     "n": 341,
-     "rmse": 54.857,
-     "mae": 27.511,
-     "bias": 4.743
+     "n": 318,
+     "rmse": 55.7,
+     "mae": 27.316,
+     "bias": 4.196
     },
     "mg": {
-     "n": 341,
-     "rmse": 53.573,
-     "mae": 26.14,
-     "bias": 3.381
+     "n": 318,
+     "rmse": 54.324,
+     "mae": 25.831,
+     "bias": 2.645
+    },
+    "mg3": {
+     "n": 318,
+     "rmse": 54.625,
+     "mae": 26.239,
+     "bias": 3.66
     },
     "ag": {
-     "n": 341,
-     "rmse": 59.665,
-     "mae": 29.101,
-     "bias": -1.326
+     "n": 318,
+     "rmse": 61.09,
+     "mae": 29.426,
+     "bias": -2.126
+    },
+    "nan": {
+     "n": 318,
+     "rmse": 43.486,
+     "mae": 15.088,
+     "bias": -0.81
+    },
+    "nan_tbest": {
+     "n": 318,
+     "rmse": 47.848,
+     "mae": 21.237,
+     "bias": -1.408
     }
    }
   }
@@ -287,41 +383,67 @@
     "bias": -0.594,
     "coverage": 0.955
    },
+   "mg3": {
+    "n": 294,
+    "rmse": 5.313,
+    "mae": 2.886,
+    "bias": -0.404,
+    "coverage": 0.955
+   },
    "ag": {
     "n": 303,
     "rmse": 7.677,
     "mae": 4.275,
     "bias": -0.158,
     "coverage": 0.984
+   },
+   "nan": {
+    "n": 287,
+    "rmse": 8.202,
+    "mae": 4.173,
+    "bias": -1.063,
+    "coverage": 0.932
    }
   },
   "n_experimental": 308,
   "common": {
-   "n": 293,
+   "n": 277,
    "methods": {
     "joback": {
-     "n": 293,
-     "rmse": 6.174,
-     "mae": 3.647,
-     "bias": -0.375
+     "n": 277,
+     "rmse": 6.184,
+     "mae": 3.601,
+     "bias": -0.417
     },
     "mg1": {
-     "n": 293,
-     "rmse": 5.626,
-     "mae": 3.113,
-     "bias": -0.541
+     "n": 277,
+     "rmse": 5.67,
+     "mae": 3.103,
+     "bias": -0.571
     },
     "mg": {
-     "n": 293,
-     "rmse": 5.581,
-     "mae": 3.065,
-     "bias": -0.593
+     "n": 277,
+     "rmse": 5.623,
+     "mae": 3.053,
+     "bias": -0.624
+    },
+    "mg3": {
+     "n": 277,
+     "rmse": 5.352,
+     "mae": 2.875,
+     "bias": -0.427
     },
     "ag": {
-     "n": 293,
-     "rmse": 6.993,
-     "mae": 4.052,
-     "bias": -0.532
+     "n": 277,
+     "rmse": 7.114,
+     "mae": 4.099,
+     "bias": -0.566
+    },
+    "nan": {
+     "n": 277,
+     "rmse": 8.324,
+     "mae": 4.244,
+     "bias": -1.148
     }
    }
   }
@@ -349,41 +471,243 @@
     "bias": 0.072,
     "coverage": 1.0
    },
+   "mg3": {
+    "n": 33,
+    "rmse": 16.437,
+    "mae": 12.065,
+    "bias": -0.232,
+    "coverage": 1.0
+   },
    "ag": {
     "n": 33,
     "rmse": 25.759,
     "mae": 15.329,
     "bias": -4.327,
     "coverage": 1.0
+   },
+   "nan": {
+    "n": 32,
+    "rmse": 17.501,
+    "mae": 9.812,
+    "bias": 5.324,
+    "coverage": 0.97
    }
   },
   "n_experimental": 33,
   "common": {
-   "n": 33,
+   "n": 32,
    "methods": {
     "joback": {
-     "n": 33,
-     "rmse": 22.392,
-     "mae": 12.197,
-     "bias": -2.561
+     "n": 32,
+     "rmse": 22.735,
+     "mae": 12.5,
+     "bias": -2.562
     },
     "mg1": {
-     "n": 33,
-     "rmse": 16.436,
-     "mae": 11.754,
-     "bias": -0.451
+     "n": 32,
+     "rmse": 16.613,
+     "mae": 11.836,
+     "bias": -0.179
     },
     "mg": {
-     "n": 33,
-     "rmse": 16.24,
-     "mae": 11.761,
-     "bias": 0.072
+     "n": 32,
+     "rmse": 16.456,
+     "mae": 11.936,
+     "bias": 0.267
+    },
+    "mg3": {
+     "n": 32,
+     "rmse": 16.657,
+     "mae": 12.25,
+     "bias": -0.047
     },
     "ag": {
-     "n": 33,
-     "rmse": 25.759,
-     "mae": 15.329,
-     "bias": -4.327
+     "n": 32,
+     "rmse": 26.093,
+     "mae": 15.48,
+     "bias": -4.135
+    },
+    "nan": {
+     "n": 32,
+     "rmse": 17.501,
+     "mae": 9.812,
+     "bias": 5.324
+    }
+   }
+  }
+ },
+ "logvp": {
+  "methods": {
+   "nan_s": {
+    "n": 2611,
+    "rmse": 1.078,
+    "mae": 0.555,
+    "bias": 0.214,
+    "coverage": 0.871
+   }
+  },
+  "n_experimental": 2999,
+  "common": {
+   "n": 2611,
+   "methods": {
+    "nan_s": {
+     "n": 2611,
+     "rmse": 1.078,
+     "mae": 0.555,
+     "bias": 0.214
+    }
+   }
+  },
+  "variants": {
+   "nan": {
+    "n": 2611,
+    "rmse": 1.37,
+    "mae": 0.718,
+    "bias": 0.538,
+    "coverage": 0.871
+   },
+   "nan_tbexp": {
+    "n": 1843,
+    "rmse": 0.719,
+    "mae": 0.327,
+    "bias": 0.183,
+    "coverage": 0.615
+   },
+   "nan_gc": {
+    "n": 2611,
+    "rmse": 2.133,
+    "mae": 0.65,
+    "bias": 0.207,
+    "coverage": 0.871
+   }
+  },
+  "subsets": {
+   "tb_experimental": {
+    "nan_s": {
+     "n": 1843,
+     "rmse": 0.649,
+     "mae": 0.29,
+     "bias": 0.055,
+     "coverage": 0.936
+    },
+    "nan": {
+     "n": 1843,
+     "rmse": 0.719,
+     "mae": 0.327,
+     "bias": 0.183,
+     "coverage": 0.936
+    }
+   },
+   "tb_estimated": {
+    "nan_s": {
+     "n": 768,
+     "rmse": 1.715,
+     "mae": 1.191,
+     "bias": 0.596,
+     "coverage": 0.746
+    },
+    "nan": {
+     "n": 768,
+     "rmse": 2.267,
+     "mae": 1.655,
+     "bias": 1.389,
+     "coverage": 0.746
+    }
+   },
+   "liquids": {
+    "nan_s": {
+     "n": 1529,
+     "rmse": 0.513,
+     "mae": 0.221,
+     "bias": 0.084,
+     "coverage": 0.954
+    },
+    "nan": {
+     "n": 1529,
+     "rmse": 0.513,
+     "mae": 0.221,
+     "bias": 0.084,
+     "coverage": 0.954
+    }
+   },
+   "solids": {
+    "nan_s": {
+     "n": 1082,
+     "rmse": 1.56,
+     "mae": 1.027,
+     "bias": 0.398,
+     "coverage": 0.823
+    },
+    "nan": {
+     "n": 1082,
+     "rmse": 2.04,
+     "mae": 1.42,
+     "bias": 1.178,
+     "coverage": 0.823
+    }
+   },
+   "tb_experimental_liquids": {
+    "nan_s": {
+     "n": 1405,
+     "rmse": 0.426,
+     "mae": 0.181,
+     "bias": 0.052,
+     "coverage": 0.964
+    },
+    "nan": {
+     "n": 1405,
+     "rmse": 0.426,
+     "mae": 0.181,
+     "bias": 0.052,
+     "coverage": 0.964
+    }
+   },
+   "tb_experimental_solids": {
+    "nan_s": {
+     "n": 438,
+     "rmse": 1.091,
+     "mae": 0.64,
+     "bias": 0.065,
+     "coverage": 0.911
+    },
+    "nan": {
+     "n": 438,
+     "rmse": 1.263,
+     "mae": 0.798,
+     "bias": 0.602,
+     "coverage": 0.911
+    }
+   },
+   "tb_estimated_liquids": {
+    "nan_s": {
+     "n": 124,
+     "rmse": 1.089,
+     "mae": 0.68,
+     "bias": 0.447,
+     "coverage": 0.849
+    },
+    "nan": {
+     "n": 124,
+     "rmse": 1.089,
+     "mae": 0.68,
+     "bias": 0.447,
+     "coverage": 0.849
+    }
+   },
+   "tb_estimated_solids": {
+    "nan_s": {
+     "n": 644,
+     "rmse": 1.811,
+     "mae": 1.29,
+     "bias": 0.624,
+     "coverage": 0.773
+    },
+    "nan": {
+     "n": 644,
+     "rmse": 2.43,
+     "mae": 1.842,
+     "bias": 1.57,
+     "coverage": 0.773
     }
    }
   }
