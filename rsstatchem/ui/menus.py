@@ -15,6 +15,7 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.data_ops",
     "rsstatchem.ui.dialogs.logistic",
     "rsstatchem.ui.dialogs.glm",
+    "rsstatchem.ui.dialogs.genlin",
     "rsstatchem.ui.dialogs.fitting",
     "rsstatchem.ui.dialogs.doe",
     "rsstatchem.ui.graph",
