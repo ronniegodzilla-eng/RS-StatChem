@@ -461,6 +461,9 @@ def manova(ds: Dataset, dependents: list[str], factors: list[str],
     wls_note = f"Weighted Least Squares Regression - Weighted by {ds.var(o.wls).title}" \
         if o.wls else None
     section.table(go.between_effects_table(model, dvars, o, wls_note))
+    if o.residual_sscp:
+        for t in residual_sscp_tables(model, dvars, design):
+            section.table(t)
     for t in go.parameter_table(model, dvars, o):
         section.table(t)
     for t in go.contrast_tables(model, dvars, o, names):
@@ -493,6 +496,32 @@ def manova(ds: Dataset, dependents: list[str], factors: list[str],
     saved = go.saved_variables(model, o.save, frame.index, ds.df.index,
                                [v.name for v in dvars]) if o.save else {}
     return done(saved)
+
+
+def residual_sscp_tables(model: LinearModel, dvars, design: str) -> list[Table]:
+    """Residual SSCP Matrix (SSCP, covariance, correlation) and Bartlett's test of sphericity
+    of the residual correlation matrix, as SPSS GLM /PRINT=RSSCP."""
+    E = model.E
+    p = E.shape[0]
+    cov = E / model.ve
+    sd = np.sqrt(np.diag(cov))
+    corr = cov / np.outer(sd, sd)
+    rows = []
+    for name, M in (("Sum-of-Squares and Cross-Products", E), ("Covariance", cov),
+                    ("Correlation", corr)):
+        for i, v in enumerate(dvars):
+            rows.append([name if i == 0 else "", v.title] + [fmt(M[i, j]) for j in range(p)])
+    sscp = Table("Residual SSCP Matrix", ["", ""] + [v.title for v in dvars], rows,
+                 row_header_cols=2, footnotes=["Based on Type III Sum of Squares"])
+    det = float(np.linalg.det(corr))
+    chi = -(model.ve - (2 * p + 5) / 6) * math.log(det) if det > 0 else float("nan")
+    df = p * (p - 1) // 2
+    bart = Table("Bartlett's Test of Sphericity" + sup("a"), ["", ""],
+                 [["Likelihood Ratio", fmt(det)], ["Approx. Chi-Square", fmt(chi)],
+                  ["df", fmt_int(df)], ["Sig.", fmt_p(stats.chi2.sf(chi, df))]],
+                 footnotes=["Tests the null hypothesis that the residual covariance matrix is "
+                            "proportional to an identity matrix.", f"a. Design: {design}"])
+    return [sscp, bart]
 
 
 def _add_mv_power(table: Table, blocks, o) -> None:

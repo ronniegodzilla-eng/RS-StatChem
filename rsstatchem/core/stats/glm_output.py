@@ -71,6 +71,7 @@ class GLMOptions:
     lack_of_fit: bool = False
     het: list[str] = field(default_factory=list)       # mbp, f, bp, white
     robust: str | None = None                          # HC0..HC4
+    residual_sscp: bool = False                        # Multivariate: SSCP + Bartlett
     alpha: float = 0.05
     posthoc_factors: list[str] = field(default_factory=list)
     posthoc_methods: list[str] = field(default_factory=list)

@@ -309,3 +309,55 @@ def test_posthoc_and_profile_in_glm(rcbd):
 def test_old_signature_still_works(unbalanced):
     sec = anova.univariate(Dataset(unbalanced), "y", ["a", "b"], ["x"], descriptives=True)
     assert table(sec, "Tests of Between-Subjects Effects")
+
+
+def test_manova_custom_model_and_sscp(unbalanced):
+    from statsmodels.multivariate.manova import MANOVA
+
+    from rsstatchem.core.stats import manova
+
+    df = unbalanced.copy()
+    df["y2"] = df.y * 0.3 + np.random.default_rng(1).normal(0, 1, len(df))
+    opts = go.GLMOptions(terms=[TermSpec(("a",)), TermSpec(("b",))], residual_sscp=True,
+                         power=True, save=["RES"])
+    res = manova.manova(Dataset(df), ["y", "y2"], ["a", "b"], options=opts)
+    mv = table(res.section, "Multivariate Tests")
+    ref = MANOVA.from_formula("y + y2 ~ C(a, Sum) + C(b, Sum)", df).mv_test()
+    pillai = ref.results["C(a, Sum)"]["stat"].loc["Pillai's trace", "Value"]
+    i = next(k for k, r in enumerate(mv.rows) if r[0] == "a")
+    assert math.isclose(num(mv.rows[i][2]), pillai, abs_tol=5e-4)
+    model = smf.ols("y ~ C(a) + C(b)", df).fit()
+    model2 = smf.ols("y2 ~ C(a) + C(b)", df).fit()
+    r = np.corrcoef(model.resid, model2.resid)[0, 1]
+    bart = table(res.section, "Bartlett's Test of Sphericity")
+    assert math.isclose(num(bart.rows[0][1]), 1 - r * r, abs_tol=5e-4)
+    np.testing.assert_allclose(res.saved["RES_y"][1], model.resid, atol=1e-8)
+
+
+def test_repeated_measures_options():
+    from rsstatchem.core.stats import repeated
+
+    rng = np.random.default_rng(9)
+    n = 24
+    g = np.repeat([1., 2., 3.], 8)
+    base = rng.normal(0, 1, n)
+    df = pd.DataFrame({"t1": base + rng.normal(0, 1, n), "t2": base + 1 + rng.normal(0, 1, n),
+                       "t3": base + 1.5 + rng.normal(0, 1, n), "g": g})
+    opts = go.GLMOptions(effect_size=True, power=True, emm=["time*g"], simple=True,
+                         posthoc_factors=["g"], posthoc_methods=["snk", "t3"],
+                         plots=[("time", "g")], error_bars="se", save=["PRE"])
+    res = repeated.repeated_measures(Dataset(df), [("time", 3)], ["t1", "t2", "t3"], ["g"],
+                                     options=opts, within_contrasts={"time": "repeated"})
+    tc = table(res.section, "Tests of Within-Subjects Contrasts")
+    d = (df.t1 - df.t2).to_numpy()
+    r = next(x for x in tc.rows if x[1] == "Level 1 vs. Level 2")
+    # unnormalized repeated contrast: SS = N * mean(d)^2 adjusted for the g effects (Type III
+    # intercept of d in the effect-coded one-way model = mean of the group means of d)
+    gm = pd.Series(d).groupby(g).mean().mean()
+    assert math.isclose(num(r[2]), n * gm ** 2, rel_tol=2e-3)
+    assert any(t.title.startswith("Pairwise Comparisons — time within g")
+               for t in res.section.items if t.kind == "table")
+    assert table(res.section, "Homogeneous Subsets")
+    w = table(res.section, "Tests of Within-Subjects Effects")
+    assert w.columns[-1].startswith("Observed Power")
+    assert set(res.saved) == {"PRE_t1", "PRE_t2", "PRE_t3"}

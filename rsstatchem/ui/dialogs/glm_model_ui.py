@@ -551,6 +551,11 @@ def options_dialog(owner: VariablePickerDialog, title: str, multivariate: bool =
         dlg._getters[key] = cb.isChecked
         grid.addWidget(cb, i % 5, i // 5)
     box.addLayout(grid)
+    if multivariate:
+        cb = QCheckBox("Residual SSCP matrix (with Bartlett's test of sphericity)")
+        cb.setChecked(bool(o.get("residual_sscp")))
+        dlg._getters["residual_sscp"] = cb.isChecked
+        box.addWidget(cb)
     if not multivariate:
         box = dlg.group("Heteroskedasticity Tests")
         for key, text in (("mbp", "Modified Breusch-Pagan test"), ("f", "F test"),
@@ -569,6 +574,8 @@ def options_dialog(owner: VariablePickerDialog, title: str, multivariate: bool =
     for key, _ in items:
         o[key] = values[key]
     o["alpha"] = values["alpha"]
+    if multivariate:
+        o["residual_sscp"] = values["residual_sscp"]
     if not multivariate:
         o["het"] = [k for k in ("mbp", "f", "bp", "white") if values.get(f"het::{k}")]
         o["robust"] = values["robust_type"] if values["robust_on"] else None
@@ -606,6 +613,7 @@ def glm_options_from(o: dict, factors: list[str], covariates: list[str],
         homogeneity=o.get("homogeneity", False), spread_level=o.get("spread_level", False),
         residual_plot=o.get("residual_plot", False), lack_of_fit=o.get("lack_of_fit", False),
         het=list(o.get("het", [])), robust=o.get("robust"), alpha=o.get("alpha", 0.05),
+        residual_sscp=o.get("residual_sscp", False),
         posthoc_factors=[f for f in o.get("posthoc_factors", []) if f in factors],
         posthoc_methods=list(o.get("posthoc", [])),
         posthoc=posthoc_ext.PostHocOptions(1 - o.get("alpha", 0.05), o.get("control", "last"),
