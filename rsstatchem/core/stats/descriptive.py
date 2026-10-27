@@ -14,12 +14,31 @@ from rsstatchem.core.dataset import (NUMERIC, STRING, Dataset, Variable, format_
                                      format_number)
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats import charts
-from rsstatchem.core.stats.common import fmt, percentile, value_text
+from rsstatchem.core.stats.common import fmt, percentile, sup, value_text
 
 DESCRIPTIVE_STATS = ("mean", "sum", "std", "var", "range", "min", "max", "sem", "kurt", "skew")
 DEFAULT_DESCRIPTIVES = ("mean", "std", "min", "max")
 FREQ_STATS = ("quartiles", "mean", "median", "mode", "sum", "std", "var", "range", "min",
               "max", "sem", "skew", "kurt")
+
+
+class StatSpec(tuple):
+    """The statistic keywords plus the extra sub-dialog options (percentiles, display order,
+    format…). It is a plain tuple for callers that only know the keywords, which is how the
+    Data Editor hands the Frequencies/Descriptives settings to :func:`frequencies` and
+    :func:`descriptives`."""
+
+    def __new__(cls, keys=(), options: dict | None = None):
+        obj = super().__new__(cls, tuple(keys))
+        obj.options = dict(options or {})
+        return obj
+
+    def __reduce__(self):
+        return (StatSpec, (tuple(self), self.options))
+
+
+def _options(stats) -> dict:
+    return dict(getattr(stats, "options", {}) or {})
 
 
 def se_skewness(n: int) -> float:
@@ -66,12 +85,27 @@ def _numeric_vars(ds: Dataset, names: list[str]) -> list[Variable]:
 
 
 # ------------------------------------------------------------------ Descriptives
-def descriptives(ds: Dataset, names: list[str], stats=DEFAULT_DESCRIPTIVES) -> Section:
+def descriptives(ds: Dataset, names: list[str], stats=DEFAULT_DESCRIPTIVES,
+                 order: str | None = None) -> Section:
+    """``order`` (or ``stats.options["order"]``): "variable" (list order), "alpha",
+    "amean" (ascending means) or "dmean" (descending means), as SPSS Display Order."""
+    order = order or _options(stats).get("order", "variable")
     variables = _numeric_vars(ds, names)
+    if order == "alpha":
+        variables.sort(key=lambda v: v.name.lower())
+    elif order in ("amean", "dmean"):
+        means = {v.name: summary(ds.analysis_series(v.name)).get("mean", float("nan"))
+                 for v in variables}
+        variables.sort(key=lambda v: (math.isnan(means[v.name]), means[v.name]),
+                       reverse=order == "dmean")
+        if order == "dmean":   # keep variables without a mean last
+            variables.sort(key=lambda v: math.isnan(means[v.name]))
     stats = [s for s in DESCRIPTIVE_STATS if s in stats]
     section = Section("Descriptives")
+    sort_kw = {"variable": "", "alpha": "\n  /SORT=NAME (A)", "amean": "\n  /SORT=MEAN (A)",
+               "dmean": "\n  /SORT=MEAN (D)"}.get(order, "")
     section.log(f"DESCRIPTIVES VARIABLES={' '.join(v.name for v in variables)}\n"
-                f"  /STATISTICS={' '.join(s.upper() for s in stats)}.")
+                f"  /STATISTICS={' '.join(s.upper() for s in stats)}{sort_kw}.")
     if not variables:
         section.note("Warning", "No numeric variables were selected.", style="warning")
         return section
@@ -145,7 +179,47 @@ def standardize(ds: Dataset, names: list[str]) -> list[str]:
 
 
 # ------------------------------------------------------------------ Frequencies
-def _statistics_table(ds: Dataset, variables: list[Variable], stats) -> Table:
+def grouped_percentile(values: np.ndarray, counts: np.ndarray, p: float) -> float:
+    """Percentile when 'values are group midpoints' (SPSS FREQUENCIES /GROUPED): each value is
+    the midpoint of an interval whose bounds lie halfway between adjacent values."""
+    values = np.asarray(values, float)
+    counts = np.asarray(counts, float)
+    order = np.argsort(values)
+    values, counts = values[order], counts[order]
+    k = len(values)
+    if k == 0:
+        return float("nan")
+    if k == 1:
+        return float(values[0])
+    mids = (values[1:] + values[:-1]) / 2
+    lower = np.concatenate([[values[0] - (mids[0] - values[0])], mids])
+    upper = np.concatenate([mids, [values[-1] + (values[-1] - mids[-1])]])
+    total = counts.sum()
+    target = p / 100 * total
+    cum = np.cumsum(counts)
+    i = int(np.searchsorted(cum, target, side="left"))
+    i = min(i, k - 1)
+    before = cum[i - 1] if i > 0 else 0.0
+    if counts[i] == 0:
+        return float(lower[i])
+    return float(lower[i] + (target - before) / counts[i] * (upper[i] - lower[i]))
+
+
+def _percentile_list(o: dict, stats) -> list[float]:
+    ps: set[float] = set()
+    if "quartiles" in stats:
+        ps |= {25.0, 50.0, 75.0}
+    n_cut = int(o.get("cut_points") or 0)
+    if n_cut >= 2:
+        ps |= {round(100.0 * i / n_cut, 10) for i in range(1, n_cut)}
+    ps |= {float(p) for p in o.get("percentiles", []) if 0 <= float(p) <= 100}
+    return sorted(ps)
+
+
+def _statistics_table(ds: Dataset, variables: list[Variable], stats, o: dict | None = None,
+                      title: str = "Statistics") -> Table:
+    o = o or {}
+    grouped = bool(o.get("grouped"))
     columns = ["", ""] + [v.title for v in variables]
     results = [summary(ds.analysis_series(v.name)) if v.type == NUMERIC else None
                for v in variables]
@@ -157,7 +231,19 @@ def _statistics_table(ds: Dataset, variables: list[Variable], stats) -> Table:
             ("skew", "Skewness", None), ("kurt", "Kurtosis", None), ("range", "Range", 0),
             ("min", "Minimum", 0), ("max", "Maximum", 0), ("sum", "Sum", 0)]
     footnotes = []
-    for key, title, extra in spec:
+    grouped_values = {}
+    if grouped:
+        for var in variables:
+            if var.type != NUMERIC:
+                continue
+            x = pd.to_numeric(ds.analysis_series(var.name), errors="coerce").dropna()
+            vc = x.value_counts().sort_index()
+            grouped_values[var.name] = (vc.index.to_numpy(float), vc.to_numpy(float))
+    multi = "mode" in stats and any(r and r.get("multimode") for r in results)
+    gmark = ""
+    if grouped:
+        gmark = "ᵇ" if multi else "ᵃ"
+    for key, label, extra in spec:
         if key not in stats:
             continue
         cells, se_cells = [], []
@@ -170,25 +256,50 @@ def _statistics_table(ds: Dataset, variables: list[Variable], stats) -> Table:
                 cells.append(fmt(r[key], 3))
                 se_cells.append(fmt(r["se_" + key], 3))
             else:
-                text = fmt(r[key], var.decimals + extra)
+                value = r[key]
+                if key == "median" and grouped and var.name in grouped_values:
+                    value = grouped_percentile(*grouped_values[var.name], 50.0)
+                text = fmt(value, var.decimals + extra)
                 if key == "mode" and r["multimode"]:
                     text += "ᵃ"
                     note = "a. Multiple modes exist. The smallest value is shown"
                     if note not in footnotes:
-                        footnotes.append(note)
+                        footnotes.insert(0, note)
+                if key == "median" and grouped:
+                    text += gmark
                 cells.append(text)
-        rows.append([title, ""] + cells)
+        rows.append([label, ""] + cells)
         if extra is None:
-            rows.append([f"Std. Error of {title}", ""] + se_cells)
-    if "quartiles" in stats:
-        for i, (p, key) in enumerate(((25, "p25"), (50, "p50"), (75, "p75"))):
-            rows.append(["Percentiles" if i == 0 else "", str(p)] +
-                        [fmt(r[key], v.decimals + 2) if r and r["n"] else ""
-                         for v, r in zip(variables, results)])
-    return Table("Statistics", columns, rows, row_header_cols=2, footnotes=footnotes)
+            rows.append([f"Std. Error of {label}", ""] + se_cells)
+    plist = _percentile_list(o, stats)
+    for i, p in enumerate(plist):
+        cells = []
+        for v, r in zip(variables, results):
+            if not r or not r["n"]:
+                cells.append("")
+                continue
+            if grouped and v.name in grouped_values:
+                value = grouped_percentile(*grouped_values[v.name], p)
+            else:
+                x = pd.to_numeric(ds.analysis_series(v.name), errors="coerce").dropna()
+                value = float(percentile(x.to_numpy(float), [p])[0])
+            pmark = ""
+            if grouped:
+                pmark = sup(chr(ord("a") + int(multi) + int("median" in stats)))
+            cells.append(fmt(value, v.decimals + 2) + pmark)
+        rows.append(["Percentiles" if i == 0 else "", f"{p:g}"] + cells)
+    if grouped:
+        letter = "b" if multi else "a"
+        if "median" in stats:
+            footnotes.append(f"{letter}. Calculated from grouped data.")
+        if plist:
+            footnotes.append(f"{chr(ord(letter) + ('median' in stats))}. Percentiles are "
+                             "calculated from grouped data.")
+    return Table(title, columns, rows, row_header_cols=2, footnotes=footnotes)
 
 
-def _frequency_table(ds: Dataset, var: Variable) -> tuple[Table, list[str], list[float]]:
+def _frequency_table(ds: Dataset, var: Variable, order: str = "avalue"
+                     ) -> tuple[Table, list[str], list[float], int]:
     raw = ds.df[var.name]
     total = len(raw)
     clean = ds.analysis_series(var.name)
@@ -196,6 +307,13 @@ def _frequency_table(ds: Dataset, var: Variable) -> tuple[Table, list[str], list
     system_missing = int(raw.isna().sum() + empty.sum())
     user_missing = raw[raw.notna() & clean.isna() & ~empty]
     counts = clean.dropna().value_counts().sort_index()
+    if order == "dvalue":
+        counts = counts.iloc[::-1]
+    elif order in ("afreq", "dfreq"):
+        frame = pd.DataFrame({"v": counts.index, "n": counts.to_numpy()})
+        frame["pos"] = range(len(frame))
+        frame = frame.sort_values(["n", "pos"], ascending=[order == "afreq", True])
+        counts = pd.Series(frame["n"].to_numpy(), index=frame["v"].to_numpy())
     n_valid = int(counts.sum())
 
     columns = ["", "", "Frequency", "Percent", "Valid Percent", "Cumulative Percent"]
@@ -225,39 +343,83 @@ def _frequency_table(ds: Dataset, var: Variable) -> tuple[Table, list[str], list
                          fmt(100.0 * system_missing / total, 1), "", ""])
         rows.append(["", "Total", str(n_missing), fmt(100.0 * n_missing / total, 1), "", ""])
     rows.append(["Total", "", str(total), "100.0" if total else "", "", ""])
-    return Table(var.title, columns, rows, row_header_cols=2), labels, freqs
+    return Table(var.title, columns, rows, row_header_cols=2), labels, freqs, len(counts)
 
 
 def frequencies(ds: Dataset, names: list[str], stats=(), show_tables: bool = True,
-                chart: str = "none", normal_curve: bool = True) -> Section:
+                chart: str = "none", normal_curve: bool = True, **options) -> Section:
+    """FREQUENCIES. Extra options (keyword arguments or ``stats.options``): ``percentiles``
+    (list), ``cut_points`` (n equal groups), ``grouped`` (values are group midpoints),
+    ``chart_values`` ("frequencies" | "percentages"), ``order`` ("avalue" | "dvalue" |
+    "afreq" | "dfreq"), ``organize`` ("compare" | "variable") and ``limit`` (suppress tables
+    with more than n categories)."""
+    o = _options(stats)
+    o.update(options)
     variables = [ds.var(n) for n in names]
     section = Section("Frequencies")
+    order = o.get("order", "avalue")
+    limit = o.get("limit")
     log = f"FREQUENCIES VARIABLES={' '.join(v.name for v in variables)}"
-    if stats:
-        log += f"\n  /STATISTICS={' '.join(s.upper() for s in stats)}"
+    if not show_tables:
+        log += "\n  /FORMAT=NOTABLE"
+    elif order != "avalue" or limit:
+        log += f"\n  /FORMAT={order.upper()}" + (f" LIMIT({int(limit)})" if limit else "")
+    if o.get("cut_points"):
+        log += f"\n  /NTILES={int(o['cut_points'])}"
+    if o.get("percentiles"):
+        log += "\n  /PERCENTILES=" + " ".join(f"{float(p):g}" for p in o["percentiles"])
+    keywords = [s.upper() for s in stats if s != "quartiles"]
+    if "quartiles" in stats:
+        log += "\n  /NTILES=4"
+    if keywords:
+        log += f"\n  /STATISTICS={' '.join(keywords)}"
     if chart != "none":
-        log += f"\n  /{chart.upper()}"
-    section.log(log + ("" if show_tables else "\n  /FORMAT=NOTABLE") + ".")
+        kind = "HISTOGRAM" + (" NORMAL" if normal_curve else "") if chart == "histogram" \
+            else f"{chart.upper()}CHART " + ("PERCENT" if o.get("chart_values") ==
+                                             "percentages" else "FREQ")
+        log += f"\n  /{kind}"
+    if o.get("grouped"):
+        log += f"\n  /GROUPED={' '.join(v.name for v in variables)}"
+    if o.get("organize") == "variable":
+        log += "\n  /ORDER=VARIABLE"
+    section.log(log + ".")
     if not variables:
         return section
 
-    section.table(_statistics_table(ds, variables, stats))
-    tables = [_frequency_table(ds, v) for v in variables]
-    if show_tables:
-        for table, _, _ in tables:
+    by_variable = o.get("organize") == "variable" and len(variables) > 1
+    if not by_variable:
+        section.table(_statistics_table(ds, variables, stats, o))
+    tables = [_frequency_table(ds, v, order) for v in variables]
+    for var, (table, labels, freqs, n_cats) in zip(variables, tables):
+        if by_variable:
+            section.table(_statistics_table(ds, [var], stats, o))
+        if show_tables and not (limit and n_cats > int(limit)):
             section.table(table)
-
-    for var, (_, labels, freqs) in zip(variables, tables):
-        if chart == "bar" and freqs:
-            section.image(var.title, charts.bar_chart(labels, freqs, var.title))
-        elif chart == "pie" and freqs:
-            section.image(var.title, charts.pie_chart(labels, freqs, var.title))
-        elif chart == "histogram" and var.type == NUMERIC:
-            values = pd.to_numeric(ds.analysis_series(var.name), errors="coerce").dropna()
-            if len(values):
-                section.image(var.title, charts.histogram(values.to_numpy(), var.title,
-                                                          var.title, normal_curve))
+        if by_variable:
+            _chart(section, ds, var, labels, freqs, chart, normal_curve, o)
+    if not by_variable:
+        for var, (_, labels, freqs, _) in zip(variables, tables):
+            _chart(section, ds, var, labels, freqs, chart, normal_curve, o)
     return section
 
 
-__all__ = ["descriptives", "frequencies", "standardize", "summary", "format_code"]
+def _chart(section, ds, var, labels, freqs, chart, normal_curve, o) -> None:
+    percent = o.get("chart_values") == "percentages"
+    values = freqs
+    if percent and freqs:
+        total = sum(freqs)
+        values = [100.0 * f / total for f in freqs]
+    if chart == "bar" and freqs:
+        section.image(var.title, charts.bar_chart(labels, values, var.title,
+                                                  "Percent" if percent else "Frequency"))
+    elif chart == "pie" and freqs:
+        section.image(var.title, charts.pie_chart(labels, values, var.title))
+    elif chart == "histogram" and var.type == NUMERIC:
+        x = pd.to_numeric(ds.analysis_series(var.name), errors="coerce").dropna()
+        if len(x):
+            section.image(var.title, charts.histogram(x.to_numpy(), var.title, var.title,
+                                                      normal_curve))
+
+
+__all__ = ["descriptives", "frequencies", "standardize", "summary", "format_code", "StatSpec",
+           "grouped_percentile"]

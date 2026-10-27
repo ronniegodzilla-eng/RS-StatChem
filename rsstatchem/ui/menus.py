@@ -22,6 +22,9 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.pls",
     "rsstatchem.ui.chem_editor",  # before ui.chem so the editors head the Chemistry menu
     "rsstatchem.ui.chem",
+    "rsstatchem.ui.dialogs.agreement",
+    "rsstatchem.ui.dialogs.nptests",
+    "rsstatchem.ui.dialogs.distplots",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
