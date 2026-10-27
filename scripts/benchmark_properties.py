@@ -50,7 +50,7 @@ def load(raw: Path) -> list[dict]:
     for block, rs in groups.items():
         rs.sort(key=lambda r: (not r["inchikey"].endswith("UHFFFAOYSA-N"), r["inchikey"]))
         e = {"block": block, "smiles": rs[0]["smiles"]}
-        for p in ("mp", "bp", "logp", "logs", "tc", "pc", "vc"):
+        for p in ("mp", "bp", "logp", "logs", "logvp", "tc", "pc", "vc"):
             vals = [float(r[p]) for r in rs if r[p]]
             e[p] = float(np.median(vals)) if vals else math.nan
         out.append(e)
@@ -80,8 +80,9 @@ def _gc(smiles: str) -> dict | None:
         sb = P.stein_brown(mol)
         if sb.ok:
             out["bp:sb"] = sb.values.get("tb")
-        for key, second in (("mg1", False), ("mg", True)):
-            mg = P.marrero_gani(mol, second_order=second)
+        for key, second, third in (("mg1", False, False), ("mg", True, False),
+                                   ("mg3", True, True)):
+            mg = P.marrero_gani(mol, second_order=second, third_order=third)
             if mg.ok:
                 for p, k in (("mp", "tm"), ("bp", "tb"), ("tc", "tc"), ("pc", "pc"),
                              ("vc", "vc")):
@@ -91,6 +92,18 @@ def _gc(smiles: str) -> dict | None:
             for p in ("tc", "pc", "vc"):
                 out[f"{p}:ag"] = ag.values.get(p)
     except Exception:  # noqa: BLE001 - a failing estimate is simply missing
+        pass
+    try:
+        from rsstatchem.core.chem_draw import nannoolal as N
+        nan = N.nannoolal(mol)
+        out["bp:nan"] = nan["tb"]
+        out["pc:nan"] = nan["pc"]
+        out["vc:nan"] = nan["vc"]
+        out["_nan_db"] = nan["db"]
+        # Tc = Tb * f(sum): keep f so that Tc can use the experimental Tb (as the app does)
+        if nan["tc"] is not None and nan["tb"]:
+            out["_nan_tcf"] = nan["tc"] / nan["tb"]
+    except Exception:  # noqa: BLE001
         pass
     logp = Crippen.MolLogP(mol)
     out["logp:crippen"] = logp
@@ -166,6 +179,53 @@ def evaluate(entries, prop, methods) -> dict:
     return res
 
 
+def nannoolal_tc_vp(entries) -> None:
+    """Nannoolal Tc and vapour pressure need a normal boiling point. As in the app: the
+    experimental Tb when there is one, else the default Tb estimate (the ML model's held-out
+    prediction here). Variants for the record: 'nan_gc' uses the Nannoolal Tb estimate
+    instead of ML, 'nan_tbexp' only compounds with an experimental Tb, and 'nan_s' adds the
+    melting-point (Walden's rule) conversion to a solid's sublimation pressure."""
+    from rdkit import Chem
+
+    from rsstatchem.core.chem_draw import ml_props
+    from rsstatchem.core.chem_draw import nannoolal as N
+    # compounds with a vapour pressure but no experimental Tb (or Tm) were not in the ML
+    # training sets: the shipped models' predictions are out-of-sample for them
+    for e in entries:
+        if not math.isfinite(e["logvp"]) or e.get("_nan_db") is None:
+            continue
+        mol = None
+        for t in ("bp", "mp"):
+            if not math.isfinite(e[t]) and e.get(f"{t}:ml") is None:
+                mol = mol or Chem.MolFromSmiles(e["smiles"])
+                p = ml_props.predict(mol, t)
+                if p.value is not None:
+                    e[f"{t}:ml"] = p.value
+    for e in entries:
+        tb_exp = e["bp"] if math.isfinite(e["bp"]) else None
+        f = e.get("_nan_tcf")
+        if f is not None:
+            tb = tb_exp if tb_exp is not None else e.get("bp:nan")
+            if tb is not None:
+                e["tc:nan"] = f * tb
+            if e.get("bp:nan") is not None:        # for compounds without an experimental Tb
+                e["tc:nan_tbest"] = f * e["bp:nan"]
+        db = e.get("_nan_db")
+        if db is None:
+            continue
+        for key, tb in (("nan_tbexp", tb_exp),
+                        ("nan", tb_exp if tb_exp is not None else e.get("bp:ml")),
+                        ("nan_gc", tb_exp if tb_exp is not None else e.get("bp:nan"))):
+            if tb:
+                try:
+                    e[f"logvp:{key}"] = math.log10(N.vapour_pressure(298.15, tb, db))
+                except (ValueError, OverflowError, ZeroDivisionError):
+                    pass
+        if e.get("logvp:nan") is not None:
+            tm = e["mp"] if math.isfinite(e["mp"]) else e.get("mp:ml")
+            e["logvp:nan_s"] = e["logvp:nan"] + N.solid_correction(298.15, tm)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--raw", type=Path, default=RAW)
@@ -194,6 +254,7 @@ def main(argv=None) -> int:
         for e in entries:
             if e["block"] in oof:
                 e[f"{t}:ml"], e[f"{t}:sim"] = oof[e["block"]]
+    nannoolal_tc_vp(entries)
     if not args.no_cdk:
         logp_entries = [e for e in entries if math.isfinite(e["logp"])]
         print(f"CDK logP for {len(logp_entries)} compounds")
@@ -217,16 +278,40 @@ def main(argv=None) -> int:
         "of exp_props.tsv.xz (scripts/benchmark_properties.py). Group-contribution and logP "
         "methods were fitted by their authors on data that overlap these sets (optimistic for "
         "them); 'ml' values are 5-fold cross-validated predictions (held out). Units: K for "
-        "mp/bp/tc, bar for pc, cm3/mol for vc, log units for logp/logs."),
+        "mp/bp/tc, bar for pc, cm3/mol for vc, log units for logp/logs, log10(Pa) at 25 C for "
+        "logvp (Nannoolal Tc and vapour pressure use the experimental Tb when known, else the "
+        "ML Tb)."),
         "generated": time.strftime("%Y-%m-%d")}
     for prop in GC_PROPS:
-        methods = ["joback", "sb", "mg1", "mg", "ag"] + (["ml"] if prop in ("mp", "bp") else [])
+        methods = ["joback", "sb", "mg1", "mg", "mg3", "ag"] + \
+            (["ml"] if prop in ("mp", "bp") else [])
+        if prop != "mp":
+            methods.append("nan")
+        if prop == "tc":
+            methods.append("nan_tbest")
         out[prop] = evaluate(entries, prop, methods)
+    # vapour pressure: 'nan_s' is what the app shows (Tb experimental else ML, solids converted
+    # with the melting point); subsets by the source of Tb and by physical state
+    out["logvp"] = evaluate(entries, "logvp", ["nan_s"])
+    out["logvp"]["variants"] = evaluate(entries, "logvp",
+                                        ["nan", "nan_tbexp", "nan_gc"])["methods"]
+    def tm(e):
+        return e["mp"] if math.isfinite(e["mp"]) else (e.get("mp:ml") or math.nan)
+    subsets = {"tb_experimental": [e for e in entries if math.isfinite(e["bp"])],
+               "tb_estimated": [e for e in entries if not math.isfinite(e["bp"])],
+               "liquids": [e for e in entries if tm(e) < 298.15],
+               "solids": [e for e in entries if tm(e) >= 298.15]}
+    for src in ("tb_experimental", "tb_estimated"):
+        for state in ("liquids", "solids"):
+            ids = {id(e) for e in subsets[state]}
+            subsets[f"{src}_{state}"] = [e for e in subsets[src] if id(e) in ids]
+    out["logvp"]["subsets"] = {k: evaluate(v, "logvp", ["nan_s", "nan"])["methods"]
+                               for k, v in subsets.items()}
     out["logp"] = evaluate(entries, "logp", list(LOGP_METHODS) + ["ml", "consensus4",
                                                                    "consensus"])
     out["logs"] = evaluate(entries, "logs", ["esol"])
     args.out.write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
-    for prop in GC_PROPS + ("logp", "logs"):
+    for prop in GC_PROPS + ("logvp", "logp", "logs"):
         print(f"\n== {prop} (n experimental = {out[prop]['n_experimental']})")
         for m, s in out[prop]["methods"].items():
             print(f"  {m:11s} n={s['n']:6d} cov={s['coverage']:.2f} RMSE={s['rmse']:8.3f} "
@@ -235,6 +320,12 @@ def main(argv=None) -> int:
             c = out[prop]["common"]
             print(f"  common subset n={c['n']}: " + ", ".join(
                 f"{m} {s['rmse']:.3f}" for m, s in c["methods"].items()))
+    print("  logvp variants: " + ", ".join(
+        f"{m} n={s['n']} RMSE={s['rmse']:.3f} bias={s['bias']:.3f}"
+        for m, s in out["logvp"]["variants"].items()))
+    for part, ms in out["logvp"]["subsets"].items():
+        print(f"  logvp {part}: " + ", ".join(
+            f"{m} n={s['n']} RMSE={s['rmse']:.3f} bias={s['bias']:.3f}" for m, s in ms.items()))
     print(f"\nwrote {args.out}")
     return 0
 

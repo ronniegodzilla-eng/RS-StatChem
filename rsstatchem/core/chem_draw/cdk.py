@@ -2,7 +2,8 @@
 
 CDK (https://cdk.github.io, LGPL-2.1) implements several published logP methods; RS-StatChem
 runs four of them through a small helper (``scripts/java/CdkProps.java`` compiled into
-``resources/java/rsstatchem-cdk.jar`` next to ``resources/java/cdk.jar`` by
+``resources/java/rsstatchem-cdk.jar`` next to the unmodified CDK module jars in
+``resources/java/cdk/`` (class path in ``resources/java/cdk-classpath.txt``) by
 ``scripts/fetch_cdk.py``):
 
 - JPlogP - J. Plante, S. Werner, J. Cheminform. 10 (2018) 61;
@@ -52,10 +53,20 @@ class CdkError(Exception):
 
 
 def cdk_jars():
-    """(helper jar, CDK jar) in the app resources, or None when either is missing."""
+    """The helper's class path - (helper jar, CDK module jars...) in the app resources, in the
+    order of ``resources/java/cdk-classpath.txt`` - or None when anything is missing."""
     from rsstatchem.paths import resource
-    helper, lib = resource("java/rsstatchem-cdk.jar"), resource("java/cdk.jar")
-    return (helper, lib) if helper.is_file() and lib.is_file() else None
+    helper, listing = resource("java/rsstatchem-cdk.jar"), resource("java/cdk-classpath.txt")
+    if not helper.is_file() or not listing.is_file():
+        return None
+    try:
+        names = [n.strip() for n in listing.read_text("utf-8").splitlines() if n.strip()]
+    except OSError:
+        return None
+    jars = [resource("java/" + n) for n in names]
+    if not jars or not all(j.is_file() for j in jars):
+        return None
+    return (helper, *jars)
 
 
 def cdk_available(allow_system: bool = True) -> bool:
@@ -83,8 +94,8 @@ class CdkHelper:
         jars = self.jars or cdk_jars()
         java = self.java or find_java()
         if jars is None or java is None:
-            raise CdkError("CDK is not available (it needs resources/java/cdk.jar, the helper "
-                           "rsstatchem-cdk.jar and a Java runtime).")
+            raise CdkError("CDK is not available (it needs the CDK jars in resources/java, the "
+                           "helper rsstatchem-cdk.jar and a Java runtime).")
         cp = os.pathsep.join(str(j) for j in jars)
         return [java, CDK_LOGGING, "-Dfile.encoding=UTF-8", "-Xss8m", "-Xshare:auto",
                 "-XX:+UseSerialGC", "-cp", cp, "CdkProps"]

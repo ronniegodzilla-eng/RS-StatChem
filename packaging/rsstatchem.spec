@@ -51,10 +51,11 @@ APP_MODULES = sorted(
 def resource_datas():
     """Every resource file (icons, the offline name database, the experimental property
     database and ML models in resources/properties, the OPSIN jar fetched by
-    scripts/fetch_opsin.py, the CDK jar + helper built by scripts/fetch_cdk.py in
-    resources/java) except a local Java runtime in resources/opsin/jre: the CI workflow
-    copies the jlink runtime into the finished bundle so PyInstaller never rewrites or
-    re-signs the Java binaries. The CDK jar must be present for a release build."""
+    scripts/fetch_opsin.py, the CDK module jars in resources/java/cdk (class path in
+    resources/java/cdk-classpath.txt) and the helper built by scripts/fetch_cdk.py) except a
+    local Java runtime in resources/opsin/jre: the CI workflow copies the jlink runtime into
+    the finished bundle so PyInstaller never rewrites or re-signs the Java binaries. The CDK
+    jars must be present for a release build."""
     out = []
     for path in sorted(RES.rglob("*")):
         rel = path.relative_to(RES)
