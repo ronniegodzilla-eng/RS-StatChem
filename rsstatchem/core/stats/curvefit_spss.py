@@ -9,6 +9,10 @@ so R Square, F and Sig. refer to the transformed equation (e.g. ln Y for Compoun
     Quadratic    Y = b0 + b1*t + b2*t**2    Growth       Y = exp(b0 + b1*t)
     Cubic        ... + b3*t**3              Exponential  Y = b0 * exp(b1*t)
     Logistic     Y = 1 / (1/u + b0 * b1**t)
+
+Save (SPSS /SAVE=PRED RESID CIN): predicted values (FIT_n), residuals (ERR_n) and prediction
+intervals (LCL_n, UCL_n) computed on the linearised scale and transformed back, as CURVEFIT
+does.
 """
 from __future__ import annotations
 
@@ -128,10 +132,43 @@ def predict(model: str, res: dict, t: np.ndarray, upper: float | None = None) ->
     raise ValueError(model)
 
 
+def prediction_interval(model: str, t_fit: np.ndarray, y_fit: np.ndarray, t_new: np.ndarray,
+                        constant: bool = True, upper: float | None = None,
+                        level: float = 0.95) -> tuple[np.ndarray, np.ndarray]:
+    """Individual prediction interval on the linearised scale, transformed back to Y."""
+    X, resp, ok = _transform(model, np.asarray(t_fit, float), np.asarray(y_fit, float), upper)
+    X, resp = X[ok], resp[ok]
+    design = np.column_stack([np.ones(len(X)), X]) if constant else X
+    coef, *_ = np.linalg.lstsq(design, resp, rcond=None)
+    df = len(resp) - design.shape[1]
+    s2 = float(np.sum((resp - design @ coef) ** 2)) / df
+    inv = np.linalg.pinv(design.T @ design)
+    Xn, _, okn = _transform(model, np.asarray(t_new, float), np.ones(len(t_new)), None)
+    Dn = np.column_stack([np.ones(len(Xn)), Xn]) if constant else Xn
+    centre = Dn @ coef
+    half = stats.t.ppf(0.5 + level / 2, df) * np.sqrt(s2 * (1 + np.einsum(
+        "ij,jk,ik->i", Dn, inv, Dn)))
+    lo, hi = centre - half, centre + half
+    with np.errstate(all="ignore"):
+        if model in ("compound", "power", "s", "growth", "exponential"):
+            lo, hi = np.exp(lo), np.exp(hi)
+        elif model == "logistic":
+            inv_u = 0.0 if upper is None else 1 / upper
+            lo, hi = 1 / (inv_u + np.exp(hi)), 1 / (inv_u + np.exp(lo))
+    okn = okn & np.isfinite(np.asarray(t_new, float))
+    lo[~okn], hi[~okn] = np.nan, np.nan
+    return lo, hi
+
+
 def curve_estimation(ds: Dataset, dependents: list[str], independent: str | None,
                      models=("linear",), constant: bool = True, plot: bool = True,
-                     upper: float | None = None, anova: bool = False) -> Section:
-    """``independent`` None uses Time (the case sequence 1..n) as in SPSS."""
+                     upper: float | None = None, anova: bool = False, save=(),
+                     level: float = 0.95):
+    """``independent`` None uses Time (the case sequence 1..n) as in SPSS. ``save`` may hold
+    "pred", "resid" and "cin"; a result with ``.section`` and ``.saved`` is then returned."""
+    from types import SimpleNamespace
+
+    saved: dict = {}
     models = [m for m in MODELS if m in models]
     section = Section("Curve Fit")
     section.log("TSET NEWVAR=NONE.\nCURVEFIT\n  /VARIABLES=" + " ".join(dependents)
@@ -140,8 +177,13 @@ def curve_estimation(ds: Dataset, dependents: list[str], independent: str | None
                 + "\n  /MODEL=" + " ".join(KEYWORDS[m] for m in models)
                 + (f"\n  /UPPERBOUND={upper:g}" if "logistic" in models and upper else "")
                 + ("\n  /PRINT ANOVA" if anova else "")
-                + ("\n  /PLOT FIT" if plot else "\n  /PLOT NONE") + ".")
+                + ("\n  /PLOT FIT" if plot else "\n  /PLOT NONE")
+                + ("\n  /SAVE=" + " ".join({"pred": "PRED", "resid": "RESID",
+                                            "cin": f"CIN({level * 100:g})"}[k]
+                                           for k in ("pred", "resid", "cin") if k in save)
+                   if save else "") + ".")
     ivar_title = ds.var(independent).title if independent else "Sequence"
+    n_fit = 0
     for dep in dependents:
         dvar = ds.var(dep)
         frame = pd.DataFrame({"y": numeric(ds, dep)})
@@ -202,6 +244,30 @@ def curve_estimation(ds: Dataset, dependents: list[str], independent: str | None
             style(ax, dvar.title, ivar_title, "")
             ax.legend(fontsize=8, frameon=False)
             section.image(dvar.title, png(fig))
+        if save:
+            t_all = numeric(ds, independent).to_numpy(float) if independent else \
+                np.arange(1, ds.n_cases + 1, dtype=float)
+            y_all = numeric(ds, dep).to_numpy(float)
+            multi = len(fits) * len(dependents) > 1
+            for m, res in fits:
+                n_fit += 1
+                suffix = str(n_fit) if multi else ""
+                what = f"{dep} with {independent or 'Time'}, MOD {KEYWORDS[m]}"
+                pred = predict(m, res, t_all, upper)
+                idx = ds.df.index
+                saved[f"FIT{suffix}"] = (f"Fit for {what}", pd.Series(pred, index=idx))
+                if "resid" in save:
+                    saved[f"ERR{suffix}"] = (f"Error for {what}",
+                                             pd.Series(y_all - pred, index=idx))
+                if "cin" in save:
+                    lo, hi = prediction_interval(m, t, y, t_all, constant, upper, level)
+                    pc = f"{level * 100:g}%"
+                    saved[f"LCL{suffix}"] = (f"{pc} LCL for {what}", pd.Series(lo, index=idx))
+                    saved[f"UCL{suffix}"] = (f"{pc} UCL for {what}", pd.Series(hi, index=idx))
+                if "pred" not in save:
+                    del saved[f"FIT{suffix}"]
+    if save:
+        return SimpleNamespace(section=section, saved=saved)
     return section
 
 
