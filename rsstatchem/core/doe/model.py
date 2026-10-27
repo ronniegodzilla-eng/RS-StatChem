@@ -14,12 +14,21 @@ BIC. Split-plot designs (hard-to-change factors, whole plots in a Group column) 
 by REML with Kenward-Roger F tests and profile-likelihood variance intervals
 (:class:`SplitPlotFit`); split-plot factorials split their effects into whole-plot and subplot
 sets (:func:`split_plot_effects`).
+
+Also: the curvature test of two-level factorials with centre points (a centre-point indicator
+column, Montgomery §6.8), logit and arcsine square-root transforms, process models up to sixth
+order, Scheffé special quartic and quartic mixture models, Slack-variable mixture models,
+combined mixture-process models (crossed Scheffé x process terms, :func:`combined_terms`),
+several stored analyses per response, Durbin-Watson and covariance-ratio diagnostics, treatment
+means with LSD / Tukey comparisons for categoric factors and the analysis preferences
+(:data:`PREFERENCES`). Logistic and Poisson regression live in :mod:`rsstatchem.core.doe.glm`.
 """
 from __future__ import annotations
 
+import copy
 import itertools
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -28,6 +37,36 @@ from scipy import optimize, stats
 from rsstatchem.core.doe.designs import letter
 
 SUP = {2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶"}
+
+
+# ---------------------------------------------------------------------------- preferences
+@dataclass
+class Preferences:
+    """Analysis preferences shared by the analysis, optimization and post-analysis views
+    (Edit > Preferences): significance level, confidence level of intervals and the
+    tolerance-interval settings (proportion of the population, confidence)."""
+    alpha: float = 0.05
+    ci_level: float = 0.95
+    ti_proportion: float = 0.99
+    ti_confidence: float = 0.95
+
+    def to_meta(self) -> dict:
+        return {"alpha": self.alpha, "ci_level": self.ci_level,
+                "ti_proportion": self.ti_proportion, "ti_confidence": self.ti_confidence}
+
+    def update(self, d: dict | None) -> "Preferences":
+        for key, val in (d or {}).items():
+            if hasattr(self, key) and val is not None:
+                setattr(self, key, float(val))
+        return self
+
+
+PREFERENCES = Preferences()
+
+
+def preferences() -> Preferences:
+    """The current analysis preferences (one object for the session)."""
+    return PREFERENCES
 
 
 # ---------------------------------------------------------------------------- factors
@@ -96,6 +135,7 @@ class Space:
     run_col: str | None = None
     std_col: str | None = None
     group_col: str | None = None  # whole plots of a split-plot design
+    slack: int | None = None      # mixture analysed with a Slack-variable model (left out)
 
     @property
     def split_plot(self) -> bool:
@@ -108,6 +148,36 @@ class Space:
     @property
     def mixture(self) -> bool:
         return self.kind == "mixture"
+
+    @property
+    def combined(self) -> bool:
+        """Combined mixture-process design: mixture components followed by process
+        factors (crossed Scheffé x process models)."""
+        return self.kind == "combined"
+
+    @property
+    def scheffe(self) -> bool:
+        """Models without an intercept whose linear blending terms replace it (Scheffé
+        mixture models and combined mixture-process models)."""
+        return (self.mixture and self.slack is None) or self.combined
+
+    def is_mix(self, j: int) -> bool:
+        return self.mixture or (self.combined and self.factors[j].type == "mixture")
+
+    @property
+    def mix_idx(self) -> list[int]:
+        return [j for j in range(self.k) if self.is_mix(j)]
+
+    @property
+    def proc_idx(self) -> list[int]:
+        return [j for j in range(self.k) if not self.is_mix(j)]
+
+    def coding(self, j: int) -> tuple[float, float]:
+        """(a, b) with coded = a * actual + b for a numeric factor or mixture component."""
+        f = self.factors[j]
+        if self.is_mix(j):
+            return 1 / self.pseudo_span, -f.low / self.pseudo_span
+        return 1 / f.half, -f.center / f.half
 
     @property
     def categoric(self) -> list[bool]:
@@ -127,7 +197,10 @@ class Space:
 
     @property
     def pseudo_span(self) -> float:
-        return self.total - float(self.lower.sum()) if self.mixture else 1.0
+        mix = self.mix_idx
+        if not mix:
+            return 1.0
+        return (self.total - float(self.lower[mix].sum())) or 1.0
 
     def to_coded(self, actual: np.ndarray) -> np.ndarray:
         actual = np.atleast_2d(np.asarray(actual, float))
@@ -139,7 +212,7 @@ class Space:
                 idx = np.array([int(np.argmin(np.abs(lv - v))) if np.isfinite(v) else -1
                                 for v in col])
                 out[:, j] = idx
-            elif self.mixture:
+            elif self.is_mix(j):
                 out[:, j] = (col - f.low) / self.pseudo_span
             else:
                 out[:, j] = (col - f.center) / f.half
@@ -152,7 +225,7 @@ class Space:
             col = coded[:, j]
             if f.categoric:
                 out[:, j] = np.asarray(f.levels, float)[col.astype(int)]
-            elif self.mixture:
+            elif self.is_mix(j):
                 out[:, j] = f.low + col * self.pseudo_span
             else:
                 out[:, j] = f.center + col * f.half
@@ -195,10 +268,11 @@ def space_from_dataset(ds, factor_cols: list[str] | None = None,
                           float(low), float(high), index=j, hard=m.get("changes") == "hard")
         factors.append(f)
     total = 1.0
-    if kind == "mixture":
+    if kind in ("mixture", "combined"):
         total = float((meta.get("mixture") or {}).get("total", 0) or 0)
-        if not total and factors:
-            sums = sum(numeric(ds, f.column) for f in factors).dropna()
+        comps = [f for f in factors if f.type == "mixture"]
+        if not total and comps:
+            sums = sum(numeric(ds, f.column) for f in comps).dropna()
             total = float(np.round(sums.mean(), 10)) if len(sums) else 1.0
         if "mixture" not in meta:
             for f in factors:
@@ -263,44 +337,83 @@ def observations(ds, space: Space, response: str) -> Observations:
 
 # ---------------------------------------------------------------------------- terms
 Term = tuple
+# Terms are tuples of factor indices (a multiset: (0, 0, 1) = A²B). Two markers encode the
+# Scheffé cubic and quartic blending terms: (-1, i, j) = x_i x_j (x_i - x_j) and
+# (-2, i, j) = x_i x_j (x_i - x_j)².
+MARKERS = {-1: 3, -2: 4}
 
 
 def term_degree(t: Term) -> int:
-    return 3 if t and t[0] == -1 else len(t)
+    return MARKERS[t[0]] if t and t[0] < 0 else len(t)
 
 
 def term_factors(t: Term) -> list[int]:
-    return list(t[1:]) if t and t[0] == -1 else list(t)
+    return list(t[1:]) if t and t[0] < 0 else list(t)
 
 
 def term_name(t: Term) -> str:
     if not t:
         return "Intercept"
-    if t[0] == -1:
+    if t[0] < 0:
         a, b = letter(t[1]), letter(t[2])
-        return f"{a}{b}({a}-{b})"
+        return f"{a}{b}({a}-{b})" + ("²" if t[0] == -2 else "")
     counts: dict[int, int] = {}
     for i in t:
         counts[i] = counts.get(i, 0) + 1
-    return "".join(letter(i) + SUP.get(c, "") if c > 1 else letter(i)
+    return "".join(letter(i) + SUP.get(c, f"^{c}") if c > 1 else letter(i)
                    for i, c in sorted(counts.items()))
 
 
 def term_key(t: Term) -> str:
-    return ("d" + ".".join(map(str, t[1:]))) if t and t[0] == -1 else ".".join(map(str, t))
+    if t and t[0] < 0:
+        return ("d" if t[0] == -1 else "q") + ".".join(map(str, t[1:]))
+    return ".".join(map(str, t))
 
 
 def key_term(key: str) -> Term:
     if key.startswith("d"):
         return (-1,) + tuple(int(s) for s in key[1:].split("."))
+    if key.startswith("q"):
+        return (-2,) + tuple(int(s) for s in key[1:].split("."))
     return tuple(int(s) for s in key.split(".")) if key else ()
+
+
+def parse_term(text: str, space: "Space") -> Term:
+    """'A2B', 'A^2B', 'A²B' or 'ABC' -> term tuple (Add Term on the Model tab)."""
+    sup = {v: str(k) for k, v in SUP.items()}
+    s = "".join(sup.get(ch, ch) for ch in text.strip().upper()).replace("^", "")
+    s = s.replace("*", "").replace(" ", "")
+    if not s:
+        raise ValueError("Type a term such as AB, A2B or A^2B.")
+    letters = [letter(j) for j in range(space.k)]
+    out: list[int] = []
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch not in letters:
+            raise ValueError(f"{ch!r} is not a factor letter of this design.")
+        j = letters.index(ch)
+        i += 1
+        digits = ""
+        while i < len(s) and s[i].isdigit():
+            digits += s[i]
+            i += 1
+        power = int(digits) if digits else 1
+        if power < 1 or power > 6:
+            raise ValueError("Powers from 1 to 6 are allowed.")
+        if power > 1 and space.factors[j].categoric:
+            raise ValueError(f"The categoric factor {ch} cannot be raised to a power.")
+        out += [j] * power
+    if len(out) > 6:
+        raise ValueError("Terms up to sixth order are supported.")
+    return tuple(sorted(out))
 
 
 def sort_terms(terms) -> list[Term]:
     def key(t):
         base = sorted(set(term_factors(t)))
-        return term_degree(t), t[0] == -1 if t else False, len(set(term_factors(t))) == 1 \
-            and term_degree(t) > 1, base, t
+        return (term_degree(t), bool(t) and t[0] < 0,
+                len(set(term_factors(t))) == 1 and term_degree(t) > 1, base, t)
     return sorted(set(terms), key=key)
 
 
@@ -308,7 +421,7 @@ def contains(small: Term, big: Term) -> bool:
     """Multiset containment of factor indices (A in AB, A in A², AB in A²B)."""
     if small == big or not small:
         return False
-    if small[0] == -1 or big[0] == -1:
+    if small[0] < 0 or big[0] < 0:
         return False
     rest = list(big)
     for i in small:
@@ -319,12 +432,29 @@ def contains(small: Term, big: Term) -> bool:
     return True
 
 
+PROCESS_DEGREES = {"linear": 1, "2fi": 2, "quadratic": 2, "cubic": 3, "3fi": 3,
+                   "quartic": 4, "fifth": 5, "sixth": 6}
+
+
+def _multisets(k: int, degree: int, categoric: list[bool]) -> list[Term]:
+    """All monomials of total degree 1..degree (categoric factors at most once)."""
+    out = []
+    for d in range(1, degree + 1):
+        for t in itertools.combinations_with_replacement(range(k), d):
+            if any(categoric[i] and t.count(i) > 1 for i in set(t)):
+                continue
+            out.append(t)
+    return out
+
+
 def process_terms(k: int, order: str, categoric: list[bool] | None = None) -> list[Term]:
     categoric = categoric or [False] * k
     num = [i for i in range(k) if not categoric[i]]
     terms: list[Term] = []
     if order == "mean":
         return []
+    if order in ("quartic", "fifth", "sixth"):
+        return sort_terms(_multisets(k, PROCESS_DEGREES[order], categoric))
     terms += [(i,) for i in range(k)]
     if order in ("2fi", "quadratic", "cubic", "3fi"):
         terms += list(itertools.combinations(range(k), 2))
@@ -342,47 +472,150 @@ def process_terms(k: int, order: str, categoric: list[bool] | None = None) -> li
 
 
 def mixture_terms(q: int, order: str) -> list[Term]:
+    """Scheffé polynomials: linear, quadratic, special cubic, cubic, special quartic and
+    quartic (Cornell 2002, ch. 2)."""
     if order == "mean":
         return []
     terms: list[Term] = [(i,) for i in range(q)]
-    if order in ("quadratic", "special_cubic", "cubic"):
-        terms += list(itertools.combinations(range(q), 2))
-    if order in ("special_cubic", "cubic"):
-        terms += list(itertools.combinations(range(q), 3))
-    if order == "cubic":
-        terms += [(-1, i, j) for i, j in itertools.combinations(range(q), 2)]
+    pairs = list(itertools.combinations(range(q), 2))
+    triples = list(itertools.combinations(range(q), 3))
+    if order != "linear":
+        terms += pairs
+    if order in ("special_cubic", "cubic", "quartic"):
+        terms += triples
+    if order in ("cubic", "quartic"):
+        terms += [(-1, i, j) for i, j in pairs]
+    if order in ("special_quartic", "quartic"):
+        for i, j, k in triples:
+            terms += [(i, i, j, k), (i, j, j, k), (i, j, k, k)]
+    if order == "quartic":
+        terms += [(-2, i, j) for i, j in pairs]
+        terms += list(itertools.combinations(range(q), 4))
     return sort_terms(terms)
+
+
+def combined_terms(n_mix: int, n_proc: int, mix_order: str, proc_order: str,
+                   categoric: list[bool] | None = None) -> list[Term]:
+    """Crossed Scheffé x process model of a combined design whose first ``n_mix`` factors
+    are mixture components and the next ``n_proc`` process factors: every mixture term
+    times every process term (and the mixture terms alone). Mixture orders linear,
+    quadratic and special cubic; process orders mean, linear, 2FI, quadratic, cubic.
+    ``categoric`` flags the process factors.
+
+    This is the interface WP-A's ``terms_combined.py`` is expected to match (term tuples
+    index the factors of the whole design)."""
+    mix = mixture_terms(n_mix, mix_order)
+    if any(t and t[0] < 0 for t in mix):
+        raise ValueError("Combined models cross linear, quadratic or special cubic mixture "
+                         "terms with the process terms.")
+    proc = [tuple(n_mix + i for i in t) for t in process_terms(n_proc, proc_order, categoric)]
+    out = list(mix)
+    for m in mix:
+        for p in proc:
+            out.append(tuple(sorted(m + p)))
+    return sort_terms(out)
+
+
+def _combined_split(space: "Space") -> tuple[int, int, list[bool]]:
+    mix = space.mix_idx
+    if mix != list(range(len(mix))):
+        raise ValueError("A combined design lists its mixture components first.")
+    proc = space.proc_idx
+    return len(mix), len(proc), [space.factors[j].categoric for j in proc]
+
+
+def _slack_map(space: "Space") -> list[int]:
+    return [j for j in range(space.k) if j != space.slack]
 
 
 PROCESS_ORDERS = [("Mean", "mean"), ("Linear", "linear"), ("2FI", "2fi"),
                   ("Quadratic", "quadratic"), ("Cubic", "cubic")]
+HIGHER_ORDERS = [("Quartic", "quartic"), ("Fifth", "fifth"), ("Sixth", "sixth")]
 CATEGORIC_ORDERS = [("Mean", "mean"), ("Linear", "linear"), ("2FI", "2fi"), ("3FI", "3fi")]
 MIXTURE_ORDERS = [("Mean", "mean"), ("Linear", "linear"), ("Quadratic", "quadratic"),
                   ("Special Cubic", "special_cubic"), ("Cubic", "cubic")]
+MIXTURE_HIGHER = [("Special Quartic", "special_quartic"), ("Quartic", "quartic")]
+COMBINED_MIX = [("Linear", "linear"), ("Quadratic", "quadratic"),
+                ("Special Cubic", "special_cubic")]
+COMBINED_PROC = [("Mean", "mean"), ("Linear", "linear"), ("2FI", "2fi"),
+                 ("Quadratic", "quadratic"), ("Cubic", "cubic")]
+# nested chain used by the Fit Summary of combined designs
+COMBINED_CHAIN = ["linear*mean", "linear*linear", "quadratic*linear", "quadratic*2fi",
+                  "quadratic*quadratic", "special_cubic*quadratic"]
+
+
+def _combined_name(key: str) -> str:
+    m, p = key.split("*")
+    mix = {k: n for n, k in COMBINED_MIX}
+    proc = {k: n for n, k in COMBINED_PROC}
+    return f"{mix[m]} x {proc[p]}"
 
 
 def model_orders(space: Space) -> list[tuple[str, str]]:
-    if space.mixture:
+    """The model orders of the Fit Summary (a nested sequence)."""
+    if space.combined:
+        return [("Mean", "mean")] + [(_combined_name(k), k) for k in COMBINED_CHAIN]
+    if space.mixture and space.slack is None:
         return MIXTURE_ORDERS
     if all(space.categoric):
         return CATEGORIC_ORDERS
     return PROCESS_ORDERS
 
 
+def all_model_orders(space: Space) -> list[tuple[str, str]]:
+    """Every model order offered on the Model tab (the Fit Summary orders plus higher
+    orders, and every mixture x process combination of a combined design)."""
+    if space.combined:
+        return [("Mean", "mean")] + [(f"{mn} x {pn}", f"{mk}*{pk}")
+                                     for mn, mk in COMBINED_MIX for pn, pk in COMBINED_PROC]
+    if space.mixture and space.slack is None:
+        return MIXTURE_ORDERS + MIXTURE_HIGHER
+    if all(space.categoric):
+        return CATEGORIC_ORDERS
+    return PROCESS_ORDERS + HIGHER_ORDERS
+
+
 def model_terms(space: Space, order: str) -> list[Term]:
+    if order == "mean":
+        return []
+    if space.combined:
+        nm, npr, cat = _combined_split(space)
+        mo, po = order.split("*") if "*" in order else (order, "mean")
+        return combined_terms(nm, npr, mo, po, cat)
+    if space.mixture and space.slack is not None:
+        idx = _slack_map(space)
+        cat = [space.factors[j].categoric for j in idx]
+        return sort_terms(tuple(sorted(idx[i] for i in t))
+                          for t in process_terms(len(idx), order, cat))
     if space.mixture:
         return mixture_terms(space.k, order)
     return process_terms(space.k, order, space.categoric)
 
 
-def candidate_terms(space: Space) -> list[Term]:
-    """Terms offered for manual model selection."""
+def candidate_terms(space: Space, degree: int = 3) -> list[Term]:
+    """Terms offered for manual model selection (``degree`` > 3 adds the monomials of
+    higher process orders)."""
+    if space.combined:
+        return model_terms(space, "special_cubic*cubic")
+    if space.mixture and space.slack is None:
+        return mixture_terms(space.k, "quartic" if degree >= 4 else "cubic")
     if space.mixture:
-        return mixture_terms(space.k, "cubic")
+        idx = _slack_map(space)
+        cat = [space.factors[j].categoric for j in idx]
+        base = process_terms(len(idx), {4: "quartic", 5: "fifth", 6: "sixth"}.get(
+            min(degree, 6), "cubic"), cat)
+        return sort_terms(tuple(sorted(idx[i] for i in t)) for t in base)
     terms = set(process_terms(space.k, "cubic", space.categoric))
     for r in range(4, min(space.k, 6) + 1):
         terms |= set(itertools.combinations(range(space.k), r))
+    if degree >= 4:
+        terms |= set(_multisets(space.k, min(degree, 6), space.categoric))
     return sort_terms(terms)
+
+
+def is_blend_linear(space: Space, t: Term) -> bool:
+    """A linear blending term of a Scheffé or combined model (always in the model)."""
+    return space.scheffe and len(t) == 1 and space.is_mix(t[0])
 
 
 # ---------------------------------------------------------------------------- matrices
@@ -402,9 +635,9 @@ def _effect_codes(idx: np.ndarray, nlev: int, two_level_sign: bool = True) -> np
 
 def term_columns(coded: np.ndarray, t: Term, categoric=None, nlevels=None):
     n = len(coded)
-    if t and t[0] == -1:
+    if t and t[0] < 0:
         a, b = coded[:, t[1]], coded[:, t[2]]
-        return (a * b * (a - b))[:, None], [""]
+        return (a * b * (a - b) ** (-t[0]))[:, None], [""]
     cols = np.ones((n, 1))
     suffixes = [""]
     counts: dict[int, int] = {}
@@ -445,11 +678,37 @@ class Matrix:
     intercept: bool
     block_slice: slice | None
     block_levels: list
+    curv_slice: slice | None = None  # centre-point indicator (curvature) column
+
+
+def center_points(space: Space, obs: Observations) -> np.ndarray:
+    """Runs at the centre of every numeric factor (categoric factors at any level)."""
+    num = [j for j, f in enumerate(space.factors) if not f.categoric]
+    if not num or not len(obs.coded):
+        return np.zeros(len(obs.coded), bool)
+    return np.all(np.abs(obs.coded[:, num]) < 1e-9, axis=1)
+
+
+def curvature_applicable(space: Space, obs: Observations, terms: list[Term]) -> bool:
+    """A two-level factorial with centre points and a factorial model (no pure quadratic
+    terms): Design-Expert tests curvature as a separate source in the ANOVA."""
+    if space.mixture or space.combined or space.split_plot or not len(obs.coded):
+        return False
+    num = [j for j, f in enumerate(space.factors) if not f.categoric]
+    if not num:
+        return False
+    c = center_points(space, obs)
+    if not c.any() or c.all():
+        return False
+    pts = obs.coded[~c][:, num]
+    if not np.all(np.abs(np.abs(pts) - 1) < 1e-6):
+        return False
+    return not any(len(set(term_factors(t))) < term_degree(t) for t in terms)
 
 
 def build_matrix(space: Space, coded: np.ndarray, terms: list[Term],
                  blocks: np.ndarray | None = None) -> Matrix:
-    intercept = not (space.mixture and any(len(t) == 1 for t in terms))
+    intercept = not any(is_blend_linear(space, t) for t in terms)
     parts, groups, labels = [], [], []
     col = 0
     if intercept:
@@ -508,24 +767,41 @@ def pure_error(obs: Observations) -> tuple[float, int]:
 # ---------------------------------------------------------------------------- transforms
 TRANSFORMS = [("none", "None"), ("sqrt", "Square Root"), ("ln", "Natural Log"),
               ("log10", "Base 10 Log"), ("inv_sqrt", "Inverse Sqrt"), ("inverse", "Inverse"),
-              ("power", "Power"), ("boxcox", "Box-Cox (recommended lambda)")]
+              ("power", "Power"), ("boxcox", "Box-Cox (recommended lambda)"),
+              ("logit", "Logit"), ("asin_sqrt", "ArcSin Sqrt")]
+BOUNDED = ("logit", "asin_sqrt")
 
 
 @dataclass
 class Transform:
+    """Response transformation. ``logit`` is ln((y - L) / (U - y)) and ``asin_sqrt`` is
+    arcsin(sqrt((y - L) / (U - L))) with the bounds L = ``lower``, U = ``upper`` (0 and 1
+    for proportions; 0 and 100 for percentages)."""
     kind: str = "none"
     k: float = 0.0
     lam: float = 1.0
+    lower: float = 0.0
+    upper: float = 1.0
 
     @property
     def power(self) -> float | None:
+        if self.kind in BOUNDED:
+            return None
         return {"none": 1.0, "sqrt": 0.5, "ln": 0.0, "log10": 0.0, "inv_sqrt": -0.5,
                 "inverse": -1.0}.get(self.kind, self.lam)
+
+    @property
+    def span(self) -> float:
+        return (self.upper - self.lower) or 1.0
 
     def apply(self, y: np.ndarray) -> np.ndarray:
         y = np.asarray(y, float) + self.k
         if self.kind == "none":
             return y - self.k
+        if self.kind == "logit":
+            return np.log((y - self.lower) / (self.upper - y))
+        if self.kind == "asin_sqrt":
+            return np.arcsin(np.sqrt(np.clip((y - self.lower) / self.span, 0, 1)))
         if self.kind == "log10":
             return np.log10(y)
         lam = self.power
@@ -535,6 +811,11 @@ class Transform:
         z = np.asarray(z, float)
         if self.kind == "none":
             return z
+        if self.kind == "logit":
+            with np.errstate(over="ignore"):
+                return self.lower + self.span / (1 + np.exp(-z)) - self.k
+        if self.kind == "asin_sqrt":
+            return self.lower + self.span * np.sin(np.clip(z, 0, np.pi / 2)) ** 2 - self.k
         if self.kind == "log10":
             return 10 ** z - self.k
         lam = self.power
@@ -545,6 +826,19 @@ class Transform:
         if self.kind == "none":
             return None
         v = np.asarray(y, float) + self.k
+        v = v[np.isfinite(v)]
+        if self.upper <= self.lower and self.kind in BOUNDED:
+            return "The upper bound must be greater than the lower bound."
+        if self.kind == "logit":
+            if np.any(v <= self.lower) or np.any(v >= self.upper):
+                return ("The logit transformation needs every response value strictly between "
+                        f"the lower bound {self.lower:g} and the upper bound {self.upper:g}.")
+            return None
+        if self.kind == "asin_sqrt":
+            if np.any(v < self.lower) or np.any(v > self.upper):
+                return ("The arcsine square root needs every response value between the lower "
+                        f"bound {self.lower:g} and the upper bound {self.upper:g}.")
+            return None
         lam = self.power
         if (lam == 0 or lam < 0 or self.kind == "log10") and np.any(v <= 0):
             return "The transformation needs all response values + k > 0 (increase k)."
@@ -552,10 +846,17 @@ class Transform:
             return "A fractional power needs all response values + k >= 0 (increase k)."
         return None
 
+    def _bounds_text(self) -> str:
+        return f"L = {self.lower:g}, U = {self.upper:g}"
+
     def label(self, name: str) -> str:
         inner = f"{name} + {self.k:g}" if self.k else name
         if self.kind == "none":
             return name
+        if self.kind == "logit":
+            return f"Logit({inner})"
+        if self.kind == "asin_sqrt":
+            return f"ArcSin(Sqrt({inner}))"
         if self.kind == "log10":
             return f"Log10({inner})"
         lam = self.power
@@ -575,15 +876,21 @@ class Transform:
         text = dict(TRANSFORMS).get(self.kind, self.kind)
         if self.kind in ("power", "boxcox"):
             text = f"Power (lambda = {self.lam:g})"
+        if self.kind in BOUNDED:
+            text += f" ({self._bounds_text()})"
         return text + (f", k = {self.k:g}" if self.k else "")
 
     def to_meta(self) -> dict:
-        return {"kind": self.kind, "k": self.k, "lam": self.lam}
+        d = {"kind": self.kind, "k": self.k, "lam": self.lam}
+        if self.kind in BOUNDED:
+            d.update(lower=self.lower, upper=self.upper)
+        return d
 
     @classmethod
     def from_meta(cls, d: dict | None) -> "Transform":
         d = d or {}
-        return cls(d.get("kind", "none"), float(d.get("k", 0.0)), float(d.get("lam", 1.0)))
+        return cls(d.get("kind", "none"), float(d.get("k", 0.0)), float(d.get("lam", 1.0)),
+                   float(d.get("lower", 0.0)), float(d.get("upper", 1.0)))
 
 
 # ---------------------------------------------------------------------------- the fit
@@ -596,7 +903,7 @@ class Fit:
 
     def __init__(self, space: Space, obs: Observations, terms: list[Term],
                  transform: Transform | None = None, response: str = "R1",
-                 response_name: str | None = None):
+                 response_name: str | None = None, curvature: bool = True):
         self.space, self.obs = space, obs
         self.terms = sort_terms(terms)
         self.transform = transform or Transform()
@@ -609,6 +916,12 @@ class Fit:
         self.z = self.transform.apply(obs.y)
         obs.z = self.z
         self.mat = build_matrix(space, obs.coded, self.terms, obs.blocks)
+        self.curvature = bool(curvature) and curvature_applicable(space, obs, self.terms)
+        if self.curvature:  # centre-point indicator: curvature = mean(centre) - mean(factorial)
+            c = center_points(space, obs).astype(float)[:, None]
+            self.mat.curv_slice = slice(self.mat.X.shape[1], self.mat.X.shape[1] + 1)
+            self.mat.X = np.hstack([self.mat.X, c])
+            self.mat.labels = list(self.mat.labels) + ["Curvature"]
         X = self.mat.X
         self.n, self.p = X.shape
         self.rank = int(np.linalg.matrix_rank(X)) if self.p else 0
@@ -655,6 +968,19 @@ class Fit:
         ss_b = _ss_res(Xb, self.z)[0]
         return ss_mean - ss_b, ss_b
 
+    def curvature_test(self) -> dict | None:
+        """Curvature of a two-level factorial with centre points (Montgomery §6.8):
+        SS = nF nC (ybar_F - ybar_C)² / (nF + nC) for a full factorial (in general the
+        Type III SS of the centre-point indicator), 1 df, tested against the residual."""
+        if self.mat.curv_slice is None:
+            return None
+        ss = self._reduced_ss(self.mat.curv_slice) - self.ss_res
+        f = ratio(ss, self.ms_res)
+        j = self.mat.curv_slice.start
+        return {"ss": ss, "df": 1, "f": f, "p": float(stats.f.sf(f, 1, self.df_res)),
+                "estimate": float(self.beta[j]),
+                "se": math.sqrt(max(self.XtX_inv[j, j] * self.ms_res, 0.0))}
+
     # ------------------------------------------------------------------ ANOVA
     def anova(self) -> dict:
         if self._anova is not None:
@@ -665,13 +991,17 @@ class Fit:
         df_model = self.p - (1 if self.mat.intercept else 0) - df_block
         if not self.mat.intercept:
             df_model = self.p - df_block - 1
+        curv = self.curvature_test()
+        if curv is not None:
+            ss_model -= curv["ss"]
+            df_model -= 1
         rows = []
-        lin = [s for t, s in self.mat.groups if len(t) == 1] if self.space.mixture else []
-        if self.space.mixture and lin:
+        lin = [s for t, s in self.mat.groups if is_blend_linear(self.space, t)]
+        if lin:
             ss = self._reduced_ss(lin, add_intercept=True) - self.ss_res
             rows.append(("Linear Mixture", ss, len(lin) - 1, ()))
         for t, s in self.mat.groups:
-            if not t or (self.space.mixture and len(t) == 1):
+            if not t or is_blend_linear(self.space, t):
                 continue
             ss = self._reduced_ss(s) - self.ss_res
             name = self.space.factors[t[0]].source if len(t) == 1 else term_name(t)
@@ -683,6 +1013,7 @@ class Fit:
         self._anova = {"block": (ss_block, df_block) if df_block else None,
                        "model": (ss_model, df_model), "terms": rows,
                        "residual": (self.ss_res, self.df_res), "lof": lof,
+                       "curvature": curv,
                        "pure_error": (ss_pe, df_pe), "cor_total": (self.ss_cor, self.n - 1)}
         return self._anova
 
@@ -711,12 +1042,18 @@ class Fit:
         ss_model, df_model = a["model"]
         ss_tot = ss_model + self.ss_res
         df_tot = df_model + self.df_res
+        fitted = self.fitted
+        if a.get("curvature"):  # curvature is a separate source: neither model nor error
+            ss_tot += a["curvature"]["ss"]
+            df_tot += 1
+            j = self.mat.curv_slice.start
+            fitted = self.fitted - self.mat.X[:, j] * self.beta[j]
         sd = math.sqrt(self.ms_res)
         r2 = ss_model / ss_tot if ss_tot > 0 else float("nan")
         adj = 1 - (self.ss_res / self.df_res) / (ss_tot / df_tot) if ss_tot > 0 else float("nan")
         press = self.press()
         pred = 1 - press / ss_tot if press is not None and ss_tot > 0 else float("nan")
-        prng = float(self.fitted.max() - self.fitted.min())
+        prng = float(fitted.max() - fitted.min())
         adeq = prng / math.sqrt(self.p * self.ms_res / self.n) if self.ms_res > 0 else \
             float("nan")
         return {"std_dev": sd, "mean": self.mean,
@@ -733,7 +1070,9 @@ class Fit:
             rows.append({"label": lab, "estimate": float(self.beta[j]), "se": float(se[j]),
                          "low": float(self.beta[j] - q * se[j]),
                          "high": float(self.beta[j] + q * se[j]), "vif": vif.get(j),
-                         "block": bs is not None and bs.start <= j < bs.stop})
+                         "block": bs is not None and bs.start <= j < bs.stop,
+                         "curvature": self.mat.curv_slice is not None
+                         and j == self.mat.curv_slice.start})
         if bs is not None:  # last block effect = -sum of the others (effect coding)
             c = np.zeros(self.p)
             c[bs] = -1
@@ -747,12 +1086,14 @@ class Fit:
     def vif(self) -> dict:
         X = self.mat.X
         bs = self.mat.block_slice
+        cs = self.mat.curv_slice
         cols = [j for j in range(self.p) if not (self.mat.intercept and j == 0)
-                and not (bs is not None and bs.start <= j < bs.stop)]
+                and not (bs is not None and bs.start <= j < bs.stop)
+                and not (cs is not None and j == cs.start)]
         if not cols:
             return {}
         out = {}
-        if self.space.mixture:
+        if not self.mat.intercept:
             inv = self.XtX_inv
             for j in cols:
                 out[j] = float(inv[j, j] * (X[:, j] @ X[:, j]))
@@ -775,6 +1116,11 @@ class Fit:
                     "predicted": self.fitted, "residual": self.resid,
                     "labels": list(self.mat.labels)})
         return out
+
+    def durbin_watson(self) -> float:
+        """Durbin-Watson statistic of the residuals in run order (near 2: no serial
+        correlation; toward 0: positive, toward 4: negative autocorrelation)."""
+        return durbin_watson(self.resid, self.obs.run)
 
     def information(self) -> dict:
         """Likelihood statistics of the (normal, maximum-likelihood) fit for model selection:
@@ -800,7 +1146,9 @@ class Fit:
             if t:
                 parts.append(term_columns(coded, t, self.space.categoric,
                                           self.space.nlevels)[0])
-        return np.hstack(parts)
+        if self.mat.curv_slice is not None:  # predictions use the factorial model
+            parts.append(np.zeros((len(coded), 1)))
+        return np.hstack(parts) if parts else np.zeros((len(coded), 0))
 
     def predict_coded(self, coded: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Prediction on the transformed scale and the variance factor x'(X'X)^-1 x."""
@@ -844,9 +1192,11 @@ class Fit:
 
     def actual_equations(self) -> list[tuple[str, list[tuple[float, str]]]]:
         """[(heading, [(coefficient, term)])] — one per categoric level combination."""
-        if self.space.mixture:
+        if self.space.mixture and self.space.slack is None:
             eq = mixture_actual_equation(self)
             return [("", eq)] if eq is not None else []
+        if any(t and t[0] < 0 for t in self.terms):
+            return []
         cat = [j for j, f in enumerate(self.space.factors) if f.categoric]
         if len(cat) == self.space.k:
             return []
@@ -870,8 +1220,7 @@ class Fit:
                 for i in t:
                     if self.space.factors[i].categoric:
                         continue
-                    f = self.space.factors[i]
-                    a, b = 1 / f.half, -f.center / f.half
+                    a, b = self.space.coding(i)
                     new: dict[tuple, float] = {}
                     for e, c in term_poly.items():
                         e2 = list(e)
@@ -1238,8 +1587,30 @@ def case_statistics(X: np.ndarray, resid: np.ndarray, XtX_inv: np.ndarray, s2: f
         s_i2 = np.clip((df * s2 - resid ** 2 / (1 - hc)) / max(df - 1, 1), 1e-300, None)
         C = XtX_inv @ X.T                                   # p x n
         dfbetas = (C * (resid / (1 - hc))).T / np.sqrt(np.outer(s_i2, np.diag(XtX_inv)))
+        # covariance ratio det(cov without run i) / det(cov): (s_(i)^2 / s^2)^p / (1 - h)
+        covratio = (np.clip(df - r ** 2, 1e-12, None) / max(df - 1, 1)) ** p / (1 - hc) \
+            if df > 1 else np.full(n, np.nan)
     return {"leverage": h, "int_stud": r, "ext_stud": t, "cooks": cook, "dffits": dffits,
-            "dfbetas": dfbetas}
+            "dfbetas": dfbetas, "covratio": covratio}
+
+
+def durbin_watson(resid: np.ndarray, run: np.ndarray | None = None) -> float:
+    """Durbin-Watson d = sum (e_t - e_t-1)² / sum e_t² with the residuals in run order."""
+    e = np.asarray(resid, float)
+    if run is not None:
+        e = e[np.argsort(np.asarray(run, float), kind="stable")]
+    den = float(e @ e)
+    return float(np.sum(np.diff(e) ** 2) / den) if den > 0 else float("nan")
+
+
+def residuals_of_type(d: dict, kind: str = "external") -> tuple[np.ndarray, str]:
+    """Residuals of the chosen type from :meth:`Fit.diagnostics`: externally or internally
+    studentized, or raw (on the analysed scale)."""
+    if kind == "internal":
+        return d["int_stud"], "Internally Studentized Residuals"
+    if kind == "raw":
+        return d["residual"], "Residuals"
+    return d["ext_stud"], "Externally Studentized Residuals"
 
 
 def _actual_label(space: Space, exps: tuple) -> str:
@@ -1250,26 +1621,38 @@ def _actual_label(space: Space, exps: tuple) -> str:
     return " * ".join(parts)
 
 
-def mixture_actual_equation(fit: Fit) -> list[tuple[float, str]] | None:
-    """Scheffé equation in actual component amounts (exact refit on the simplex plane)."""
+def mixture_actual_equation(fit: Fit, scale: str = "actual"
+                            ) -> list[tuple[float, str]] | None:
+    """Scheffé equation in other component units by an exact refit on the simplex plane:
+    ``actual`` amounts, ``real`` proportions (amount / total) or ``upseudo`` U_Pseudo
+    components u_i = (U_i - x_i) / (sum U - total). None when the model form does not carry
+    over exactly (or U_Pseudo coding is not defined)."""
     sp = fit.space
     q = sp.k
+    if fit.mat.intercept:
+        return None
     rng = np.random.default_rng(0)
     pts = rng.dirichlet(np.ones(q), size=max(200, 20 * fit.p)) * sp.total
     z, _ = fit.predict_coded(sp.to_coded(pts))
     terms = [t for t, _ in fit.mat.groups if t]
-    if not fit.mat.intercept:
-        A = raw_matrix(pts, terms, mixture=True, intercept=False)
+    if scale == "real":
+        X = pts / sp.total
+    elif scale == "upseudo":
+        span = float(sp.upper.sum()) - sp.total
+        if span <= 1e-12:
+            return None
+        X = (sp.upper - pts) / span
     else:
-        return None
+        X = pts
+    A = raw_matrix(X, terms, mixture=True, intercept=False)
     coef, *_ = np.linalg.lstsq(A, z, rcond=None)
     if np.max(np.abs(A @ coef - z)) > 1e-6 * max(1.0, np.max(np.abs(z))):
         return None
     out = []
     for c, t in zip(coef, terms):
-        if t[0] == -1:
+        if t[0] < 0:
             a, b = sp.factors[t[1]].name, sp.factors[t[2]].name
-            label = f"{a} * {b} * ({a} - {b})"
+            label = f"{a} * {b} * ({a} - {b})" + ("²" if t[0] == -2 else "")
         else:
             label = " * ".join(sp.factors[i].name for i in t)
         out.append((float(c), label))
@@ -1296,9 +1679,9 @@ def drop_aliased(space: Space, obs: Observations, terms: list[Term]) -> tuple[li
 def removable(t: Term, terms: list[Term], space: Space, hierarchy: bool) -> bool:
     if not t:
         return False
-    if space.mixture and len(t) == 1:
+    if is_blend_linear(space, t):
         return False
-    if hierarchy and not space.mixture:
+    if hierarchy and not space.scheffe:
         return not any(contains(t, u) for u in terms if u != t)
     return True
 
@@ -1310,7 +1693,7 @@ def fit_class(space: Space):
 
 def missing_parents(terms: list[Term], candidates: list[Term], space: Space) -> list[Term]:
     """Lower-order terms that a hierarchical model needs but ``terms`` lacks."""
-    if space.mixture:
+    if space.scheffe:
         return []
     return sort_terms({u for t in terms for u in candidates if contains(u, t)
                        and u not in terms})
@@ -1323,7 +1706,7 @@ SELECTION_METHODS = [("backward", "Backward"), ("forward", "Forward"), ("stepwis
 def auto_select(space: Space, obs: Observations, terms: list[Term], transform: Transform,
                 method: str = "backward", criterion: str = "p", alpha_in: float = 0.10,
                 alpha_out: float = 0.10, hierarchy: bool = True, response: str = "R1",
-                forced: list[Term] | None = None):
+                forced: list[Term] | None = None, curvature: bool = True, fit_factory=None):
     """Design-Expert's Auto Select. ``terms`` are the candidates (the model chosen on the
     Model tab); blocks, forced terms and (mixtures) the linear blending terms always stay in.
 
@@ -1340,10 +1723,13 @@ def auto_select(space: Space, obs: Observations, terms: list[Term], transform: T
     cls = fit_class(space)
     candidates = sort_terms(terms)
     keep = set(forced or [])
-    if space.mixture:
-        keep |= {t for t in candidates if len(t) == 1}
+    keep |= {t for t in candidates if is_blend_linear(space, t)}
 
     def make(ts):
+        if fit_factory is not None:  # e.g. logistic / Poisson regression
+            return fit_factory(sort_terms(ts))
+        if cls is Fit:
+            return Fit(space, obs, sort_terms(ts), transform, response, curvature=curvature)
         return cls(space, obs, sort_terms(ts), transform, response)
 
     def score(fit):
@@ -1465,6 +1851,8 @@ class FitSummary:
     suggested_order: str
     pure_error: tuple
     aliased: dict
+    kind: str = "normal"   # normal | glm (likelihood-ratio tests)
+    extra: list = field(default_factory=list)  # glm: (source, -2LL, AICc, BIC, pseudo R², remark)
 
 
 def fit_summary(space: Space, obs: Observations, transform: Transform | None = None
@@ -1689,7 +2077,103 @@ def is_two_level(space: Space, obs: Observations) -> bool:
     return len(pts) > 0 and bool(np.all(np.abs(np.abs(pts) - 1) < 1e-6))
 
 
+def effects_shapiro(effects: list[dict], selected: set | None = None) -> dict | None:
+    """Shapiro-Wilk test of the effects left for error (not selected for the model): on a
+    half-normal plot these should look like noise, so a small p-value warns that a real
+    effect is still among them. None with fewer than 3 error effects."""
+    selected = selected or set()
+    vals = [e["effect"] for e in effects if e["name"] not in selected
+            and e.get("term") not in selected]
+    if len(vals) < 3 or np.ptp(vals) == 0:
+        return None
+    w, p = stats.shapiro(vals)
+    return {"w": float(w), "p": float(p), "n": len(vals)}
+
+
+def normal_effect_scores(effects: list[dict]) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Signed effects sorted, their normal scores (Blom positions) and names for the full
+    normal plot of effects."""
+    order = sorted(effects, key=lambda e: e["effect"])
+    m = len(order)
+    pos = (np.arange(1, m + 1) - 0.375) / (m + 0.25)
+    return (np.array([e["effect"] for e in order], float), stats.norm.ppf(pos),
+            [e["name"] for e in order])
+
+
+# ---------------------------------------------------------------------------- treatment means
+def categoric_in_model(fit) -> list[int]:
+    """Categoric factors that appear in the model terms."""
+    sp = fit.space
+    return [j for j, f in enumerate(sp.factors) if f.categoric
+            and any(j in term_factors(t) for t in fit.terms)]
+
+
+def treatment_means(fit, j: int, level: float | None = None) -> dict:
+    """Treatment means of categoric factor ``j`` (model predictions on the analysed scale,
+    numeric factors at their centre, other categoric factors averaged over their levels)
+    with standard errors, and all pairwise differences with the LSD (unadjusted t) and
+    Tukey HSD p-values (Design-Expert's one-categoric-factor ANOVA)."""
+    level = level if level is not None else PREFERENCES.ci_level
+    sp = fit.space
+    f = sp.factors[j]
+    if not f.categoric:
+        raise ValueError(f"{f.name} is not a categoric factor.")
+    other = [i for i, g in enumerate(sp.factors) if g.categoric and i != j]
+    combos = list(itertools.product(*[range(len(sp.factors[i].levels)) for i in other])) \
+        or [()]
+    base = sp.to_coded(_center_actual(sp)[None, :])[0]
+    vectors = []
+    for a in range(len(f.levels)):
+        rows = []
+        for combo in combos:
+            pt = base.copy()
+            pt[j] = a
+            for i, lv in zip(other, combo):
+                pt[i] = lv
+            rows.append(fit.row(pt[None, :])[0])
+        vectors.append(np.mean(rows, axis=0))
+    V = fit.XtX_inv * fit.ms_res
+    df = max(fit.df_res, 1)
+    q = stats.t.ppf(0.5 + level / 2, df)
+    means = []
+    for a, c in enumerate(vectors):
+        est = float(c @ fit.beta)
+        se = math.sqrt(max(float(c @ V @ c), 0.0))
+        means.append({"level": f.level_label(a), "mean": est, "se": se,
+                      "low": est - q * se, "high": est + q * se})
+    pairs = []
+    nlev = len(f.levels)
+    for a, b in itertools.combinations(range(nlev), 2):
+        c = vectors[a] - vectors[b]
+        d = float(c @ fit.beta)
+        se = math.sqrt(max(float(c @ V @ c), 0.0))
+        t = d / se if se > 0 else float("nan")
+        p_lsd = float(2 * stats.t.sf(abs(t), df)) if math.isfinite(t) else float("nan")
+        p_tukey = float(stats.studentized_range.sf(abs(t) * math.sqrt(2), nlev, df)) \
+            if math.isfinite(t) and nlev > 1 else float("nan")
+        pairs.append({"a": f.level_label(a), "b": f.level_label(b), "diff": d, "se": se,
+                      "t": t, "p_lsd": p_lsd, "p_tukey": p_tukey, "lsd": q * se,
+                      "low": d - q * se, "high": d + q * se})
+    return {"factor": f, "means": means, "pairs": pairs, "df": df, "level": level}
+
+
+def _center_actual(sp: Space) -> np.ndarray:
+    x = np.empty(sp.k)
+    for i, g in enumerate(sp.factors):
+        x[i] = g.levels[0] if g.categoric else g.center
+    mix = sp.mix_idx
+    if mix:
+        x[mix] = sp.lower[mix] + sp.pseudo_span / len(mix)
+    return x
+
+
 # ---------------------------------------------------------------------------- top level
+FAMILIES = [("normal", "Normal (least squares)"), ("binomial", "Binomial (logistic)"),
+            ("poisson", "Poisson (log link)")]
+CURVATURE_CHOICES = [("model", "Curvature as a separate term"),
+                     ("residual", "Curvature pooled into the residual")]
+
+
 @dataclass
 class AnalysisSpec:
     response: str
@@ -1703,24 +2187,114 @@ class AnalysisSpec:
     criterion: str = "p"           # p | aicc | bic (Auto Select criterion)
     alpha_in: float = 0.10
     selection: dict | None = None  # last Auto Select settings shown on the Model tab
+    family: str = "normal"         # normal | binomial (logistic) | poisson
+    trials: float | str | None = None  # binomial: trials per run (number or column)
+    curvature: str = "model"       # model | residual (two-level factorials + centre points)
+    slack: int | None = None       # mixtures: index of the Slack component
+    name: str = ""                 # analysis name (several analyses per response)
+    analyses: list | None = None   # every analysis of the response (base meta dicts)
+    active: int = 0                # index of this analysis in ``analyses``
 
-    def to_meta(self) -> dict:
+    def base_meta(self) -> dict:
         d = {"model": self.model, "terms": self.terms, "reduction": self.reduction,
              "alpha_out": self.alpha_out, "hierarchy": self.hierarchy,
              "transform": self.transform.to_meta(), "factors": self.factors,
              "criterion": self.criterion, "alpha_in": self.alpha_in}
         if self.selection:
             d["selection"] = dict(self.selection)
+        if self.family != "normal":
+            d["family"] = self.family
+            if self.trials is not None:
+                d["trials"] = self.trials
+        if self.curvature != "model":
+            d["curvature"] = self.curvature
+        if self.slack is not None:
+            d["slack"] = int(self.slack)
+        if self.name:
+            d["name"] = self.name
+        return d
+
+    def to_meta(self) -> dict:
+        d = self.base_meta()
+        if self.analyses and len(self.analyses) > 1:
+            lst = [dict(m) for m in self.analyses]
+            lst[self.active] = self.base_meta()
+            d["analyses"] = lst
+            d["active"] = self.active
         return d
 
     @classmethod
     def from_meta(cls, response: str, d: dict | None) -> "AnalysisSpec":
         d = d or {}
-        return cls(response, d.get("factors"), d.get("model", "suggested"), d.get("terms"),
+        slack = d.get("slack")
+        spec = cls(response, d.get("factors"), d.get("model", "suggested"), d.get("terms"),
                    d.get("reduction", "none"), float(d.get("alpha_out", 0.10)),
                    bool(d.get("hierarchy", True)), Transform.from_meta(d.get("transform")),
                    d.get("criterion", "p"), float(d.get("alpha_in", 0.10)),
-                   d.get("selection"))
+                   d.get("selection"), d.get("family", "normal"), d.get("trials"),
+                   d.get("curvature", "model"), int(slack) if slack is not None else None,
+                   d.get("name", ""))
+        lst = d.get("analyses")
+        if isinstance(lst, list) and len(lst) > 1:
+            spec.analyses = [dict(m) for m in lst]
+            spec.active = min(max(int(d.get("active", 0)), 0), len(lst) - 1)
+        return spec
+
+
+# ---------------------------------------------------------------------------- several analyses
+def analysis_list(spec: AnalysisSpec) -> list[dict]:
+    """The base meta of every analysis of the response (the active one up to date)."""
+    if spec.analyses and len(spec.analyses) > 1:
+        lst = [dict(m) for m in spec.analyses]
+        lst[spec.active] = spec.base_meta()
+        return lst
+    return [spec.base_meta()]
+
+
+def analysis_names(spec: AnalysisSpec) -> list[str]:
+    return [m.get("name") or f"Analysis {i + 1}" for i, m in enumerate(analysis_list(spec))]
+
+
+def _with_list(response: str, lst: list[dict], active: int) -> AnalysisSpec:
+    d = dict(lst[active])
+    if len(lst) > 1:
+        d["analyses"], d["active"] = lst, active
+    return AnalysisSpec.from_meta(response, d)
+
+
+def add_analysis(spec: AnalysisSpec, meta: dict | None = None) -> AnalysisSpec:
+    """A new analysis of the same response (a copy of the current one unless ``meta`` is
+    given), made active."""
+    lst = analysis_list(spec)
+    if not lst[0].get("name"):
+        lst[0]["name"] = "Analysis 1"
+    new = copy.deepcopy(meta if meta is not None else lst[spec.active if spec.analyses else 0])
+    new["name"] = (meta or {}).get("name") or f"Analysis {len(lst) + 1}"
+    new.pop("selection", None)
+    lst.append(new)
+    return _with_list(spec.response, lst, len(lst) - 1)
+
+
+def select_analysis(spec: AnalysisSpec, i: int) -> AnalysisSpec:
+    lst = analysis_list(spec)
+    return _with_list(spec.response, lst, min(max(i, 0), len(lst) - 1))
+
+
+def remove_analysis(spec: AnalysisSpec, i: int) -> AnalysisSpec:
+    lst = analysis_list(spec)
+    if len(lst) < 2:
+        raise ValueError("A response keeps at least one analysis.")
+    active = spec.active if spec.analyses else 0
+    lst.pop(i)
+    if active >= i and active > 0:
+        active -= 1
+    return _with_list(spec.response, lst, min(active, len(lst) - 1))
+
+
+def spec_of(spec: AnalysisSpec, i: int) -> AnalysisSpec:
+    """Analysis ``i`` of the response as a plain spec (for analysing it without making it
+    active)."""
+    return AnalysisSpec.from_meta(spec.response, analysis_list(spec)[i])
 
 
 @dataclass
@@ -1753,14 +2327,28 @@ def stored_spec(ds, response: str) -> AnalysisSpec:
     return AnalysisSpec.from_meta(response, meta.get(ds.var(response).name))
 
 
-def analyze(ds, spec: AnalysisSpec, space: Space | None = None) -> Analysis:
+def analysis_space(ds, spec: AnalysisSpec, space: Space | None = None) -> Space:
+    """The coding of the analysis (a Slack model leaves one mixture component out)."""
     space = space or space_from_dataset(ds, spec.factors)
+    if spec.slack is not None and space.mixture:
+        if not 0 <= spec.slack < space.k:
+            raise ValueError("The Slack component is not a component of this mixture.")
+        space = replace(space, slack=int(spec.slack))
+    return space
+
+
+def analyze(ds, spec: AnalysisSpec, space: Space | None = None) -> Analysis:
+    space = analysis_space(ds, spec, space)
     if space.k == 0:
         raise ValueError("Select at least one factor.")
     obs = observations(ds, space, spec.response)
     if len(obs.y) < 2:
         raise ValueError(f"Response {spec.response} has fewer than 2 values. Enter the "
                          "measured responses in the Data Editor first.")
+    if spec.family in ("binomial", "poisson"):
+        from rsstatchem.core.doe import glm
+
+        return glm.analyze_glm(ds, spec, space, obs)
     summary = fit_summary(space, obs, spec.transform)
     if spec.model == "manual" and spec.terms is not None:
         terms = [key_term(k) for k in spec.terms]
@@ -1769,11 +2357,14 @@ def analyze(ds, spec: AnalysisSpec, space: Space | None = None) -> Analysis:
     else:
         terms = model_terms(space, spec.model)
     terms, dropped = drop_aliased(space, obs, terms)
+    curv = spec.curvature != "residual"
     steps: list = []
     if spec.reduction in ("backward", "forward", "stepwise"):
         fit, steps = auto_select(space, obs, terms, spec.transform, spec.reduction,
                                  spec.criterion, spec.alpha_in, spec.alpha_out,
-                                 spec.hierarchy, spec.response)
+                                 spec.hierarchy, spec.response, curvature=curv)
+    elif fit_class(space) is Fit:
+        fit = Fit(space, obs, terms, spec.transform, spec.response, curvature=curv)
     else:
         fit = fit_class(space)(space, obs, terms, spec.transform, spec.response)
     fit.response_name = response_name(ds, spec.response)
@@ -1784,8 +2375,31 @@ def analyze(ds, spec: AnalysisSpec, space: Space | None = None) -> Analysis:
 def save_spec(ds, spec: AnalysisSpec, fit: Fit | None = None) -> None:
     """Remember the chosen model for Model Graphs / Optimization / Point Prediction."""
     meta = ds.meta.setdefault("doe", {})
-    d = spec.to_meta()
+    spec = copy.deepcopy(spec)
     if fit is not None:
-        d["terms"] = [term_key(t) for t in fit.terms]
-        d["model"] = "manual"
-    meta.setdefault("analysis", {})[ds.var(spec.response).name] = d
+        spec.terms = [term_key(t) for t in fit.terms]
+        spec.model = "manual"
+    meta.setdefault("analysis", {})[ds.var(spec.response).name] = spec.to_meta()
+
+
+def all_analyses(ds, responses: list[str] | None = None) -> list[dict]:
+    """Every stored analysis of every response, fitted: [{"response", "index", "name",
+    "active", "spec", "analysis" (or None), "error"}] (the Analysis Summary)."""
+    meta = ds.meta.get("doe") or {}
+    cols = responses if responses is not None else [r["column"] for r in
+                                                    meta.get("responses", [])]
+    out = []
+    for col in cols:
+        spec = stored_spec(ds, col)
+        names = analysis_names(spec)
+        active = spec.active if spec.analyses else 0
+        for i, nm in enumerate(names):
+            sp_i = spec_of(spec, i)
+            entry = {"response": col, "index": i, "name": nm, "active": i == active,
+                     "spec": sp_i, "analysis": None, "error": ""}
+            try:
+                entry["analysis"] = analyze(ds, sp_i)
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                entry["error"] = str(exc)
+            out.append(entry)
+    return out

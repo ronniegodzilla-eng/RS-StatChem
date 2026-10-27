@@ -26,6 +26,37 @@ LINE = "#1f1f1f"
 LIMIT = "#d32f2f"
 SERIES = ["#1f3fbf", "#C62828", "#2e7d32", "#ef6c00", "#6a1b9a", "#00838f", "#5d4037",
           "#ad1457", "#455a64", "#9e9d24"]
+# colour maps offered for contour / 3D graphs (perceptually uniform ones from matplotlib)
+COLORMAPS = [("default", "Blue-green-red (default)"), ("viridis", "Viridis"),
+             ("cividis", "Cividis"), ("plasma", "Plasma"), ("inferno", "Inferno"),
+             ("magma", "Magma"), ("turbo", "Turbo"), ("coolwarm", "Cool-warm"),
+             ("Greys", "Greyscale")]
+
+
+def get_cmap(name: str | None):
+    if not name or name == "default":
+        return DE_CMAP
+    import matplotlib
+
+    try:
+        return matplotlib.colormaps[name]
+    except KeyError:
+        return DE_CMAP
+
+
+def _scatter_colored(ax, x, y, colors=None, color_labels=None, size=28):
+    """Points in the default red, or coloured by group (``colors`` = a value per point)."""
+    if colors is None:
+        ax.scatter(x, y, s=size, color=POINT, edgecolor="#7f1010", zorder=3)
+        return
+    colors = np.asarray(colors)
+    groups = list(dict.fromkeys(colors.tolist()))
+    for i, g in enumerate(groups):
+        sel = colors == g
+        lab = (color_labels or {}).get(g, str(g))
+        ax.scatter(np.asarray(x)[sel], np.asarray(y)[sel], s=size,
+                   color=SERIES[i % len(SERIES)], edgecolor="#333333", zorder=3, label=lab)
+    ax.legend(fontsize=7, frameon=False, loc="best")
 
 
 def _figure(width=6.0, height=4.5) -> Figure:
@@ -60,13 +91,16 @@ def _png(fig: Figure) -> bytes:
 
 # ---------------------------------------------------------------------------- diagnostics
 def normal_plot(resid: np.ndarray, title: str = "Normal Plot of Residuals",
-                xlabel: str = "Externally Studentized Residuals") -> bytes:
+                xlabel: str = "Externally Studentized Residuals", colors=None,
+                color_labels: dict | None = None) -> bytes:
     fig = _figure()
     ax = fig.add_subplot()
-    r = np.sort(np.asarray(resid, float))
+    order = np.argsort(np.asarray(resid, float), kind="stable")
+    r = np.asarray(resid, float)[order]
     n = len(r)
     q = stats.norm.ppf((np.arange(1, n + 1) - 0.5) / n)
-    ax.scatter(r, q, s=28, color=POINT, edgecolor="#7f1010", zorder=3)
+    _scatter_colored(ax, r, q, None if colors is None else np.asarray(colors)[order],
+                     color_labels)
     if n > 1:
         slope, icpt = np.polyfit(q, r, 1) if np.ptp(r) > 0 else (1, 0)
         qq = np.array([q.min(), q.max()])
@@ -79,14 +113,15 @@ def normal_plot(resid: np.ndarray, title: str = "Normal Plot of Residuals",
 
 def residual_plot(x: np.ndarray, resid: np.ndarray, limit: float | None, title: str,
                   xlabel: str, ylabel: str = "Externally Studentized Residuals",
-                  connect: bool = False) -> bytes:
+                  connect: bool = False, colors=None, color_labels: dict | None = None
+                  ) -> bytes:
     fig = _figure()
     ax = fig.add_subplot()
     x = np.asarray(x, float)
     order = np.argsort(x, kind="stable")
     if connect:
         ax.plot(x[order], np.asarray(resid)[order], color="#9e9e9e", linewidth=0.8, zorder=2)
-    ax.scatter(x, resid, s=28, color=POINT, edgecolor="#7f1010", zorder=3)
+    _scatter_colored(ax, x, resid, colors, color_labels)
     ax.axhline(0, color=LINE, linewidth=0.8)
     if limit is not None and np.isfinite(limit):
         for s in (-1, 1):
@@ -101,10 +136,11 @@ def residual_plot(x: np.ndarray, resid: np.ndarray, limit: float | None, title: 
     return _png(fig)
 
 
-def predicted_vs_actual(actual: np.ndarray, predicted: np.ndarray, label: str) -> bytes:
+def predicted_vs_actual(actual: np.ndarray, predicted: np.ndarray, label: str, colors=None,
+                        color_labels: dict | None = None) -> bytes:
     fig = _figure()
     ax = fig.add_subplot()
-    ax.scatter(actual, predicted, s=28, color=POINT, edgecolor="#7f1010", zorder=3)
+    _scatter_colored(ax, actual, predicted, colors, color_labels)
     lo = float(min(np.min(actual), np.min(predicted)))
     hi = float(max(np.max(actual), np.max(predicted)))
     pad = 0.05 * (hi - lo or 1)
@@ -147,12 +183,13 @@ def box_cox_plot(bc: dict, label: str) -> bytes:
 
 
 def index_plot(run: np.ndarray, values: np.ndarray, title: str, ylabel: str,
-               limits: list[float] | None = None) -> bytes:
+               limits: list[float] | None = None, colors=None,
+               color_labels: dict | None = None) -> bytes:
     fig = _figure()
     ax = fig.add_subplot()
     order = np.argsort(run, kind="stable")
     ax.plot(np.asarray(run)[order], np.asarray(values)[order], color="#9e9e9e", linewidth=0.8)
-    ax.scatter(run, values, s=28, color=POINT, edgecolor="#7f1010", zorder=3)
+    _scatter_colored(ax, run, values, colors, color_labels)
     for lim in limits or []:
         ax.axhline(lim, color=LIMIT, linewidth=1.2)
     if limits:
@@ -179,34 +216,49 @@ def _design_points(ax, pts, color=POINT, size=26):
 
 def contour_plot(gx, gy, Z, xlabel: str, ylabel: str, title: str, points=None,
                  n_levels: int = 10, solution=None, zlabel: str = "", filled: bool = True,
-                 mask=None) -> bytes:
+                 mask=None, levels=None, cmap=None, grid: bool = False) -> bytes:
     return _png(contour_figure(gx, gy, Z, xlabel, ylabel, title, points, n_levels, solution,
-                               zlabel, filled, mask))
+                               zlabel, filled, mask, levels, cmap, grid))
 
 
 def contour_figure(gx, gy, Z, xlabel: str, ylabel: str, title: str, points=None,
                    n_levels: int = 10, solution=None, zlabel: str = "", filled: bool = True,
-                   mask=None) -> Figure:
-    """2D contour plot with the design points (the live Model Graphs view adds flags)."""
+                   mask=None, levels=None, cmap=None, grid: bool = False) -> Figure:
+    """2D contour plot with the design points (the live Model Graphs view adds flags).
+    ``levels``: explicit contour values (custom contours); ``cmap``: a :data:`COLORMAPS`
+    name; ``grid``: 2D grid lines."""
     fig = _figure(6.2, 4.8)
     ax = fig.add_subplot()
     Zm = np.ma.masked_invalid(Z if mask is None else np.where(mask, Z, np.nan))
-    levels = np.linspace(float(Zm.min()), float(Zm.max()), n_levels + 1) \
-        if Zm.count() and Zm.max() > Zm.min() else n_levels
+    custom = levels is not None and len(levels) > 0
+    if custom:
+        levels = np.unique(np.asarray(levels, float))
+    else:
+        levels = np.linspace(float(Zm.min()), float(Zm.max()), n_levels + 1) \
+            if Zm.count() and Zm.max() > Zm.min() else n_levels
     if filled:
-        cf = ax.contourf(gx, gy, Zm, levels=levels, cmap=DE_CMAP, alpha=0.9)
+        fill_levels = levels
+        if custom and Zm.count():  # fill the whole range, draw only the chosen lines
+            lo, hi = float(Zm.min()), float(Zm.max())
+            fill_levels = np.unique(np.concatenate([[lo], levels[(levels > lo) & (levels < hi)],
+                                                    [hi]])) if hi > lo else levels
+        cf = ax.contourf(gx, gy, Zm, levels=fill_levels, cmap=get_cmap(cmap), alpha=0.9)
         cbar = fig.colorbar(cf, ax=ax, shrink=0.85)
         cbar.ax.tick_params(labelsize=7)
         if zlabel:
             cbar.set_label(zlabel, fontsize=8)
     cs = ax.contour(gx, gy, Zm, levels=levels, colors="#202020", linewidths=0.7)
-    ax.clabel(cs, fmt="%.4g", fontsize=7, inline=True)
+    if len(cs.levels):
+        ax.clabel(cs, fmt="%.4g", fontsize=7, inline=True)
     _design_points(ax, points)
     if solution is not None:
         ax.scatter([solution[0]], [solution[1]], marker="X", s=90, color="#ffffff",
                    edgecolor="#000000", zorder=7)
     _style(ax, title, xlabel, ylabel)
-    ax.grid(False)
+    if grid:
+        ax.grid(True, color="#ffffff", linewidth=0.5, alpha=0.7)
+    else:
+        ax.grid(False)
     fig.tight_layout()
     return fig
 
@@ -220,12 +272,12 @@ SURFACE_VIEW = (28.0, -130.0)  # Design-Expert-like default elevation / azimuth
 
 
 def surface_figure(gx, gy, Z, xlabel: str, ylabel: str, zlabel: str, title: str,
-                   points=None) -> Figure:
+                   points=None, cmap=None) -> Figure:
     """3D response surface (mplot3d); in the program it is shown on a live canvas that the
     user rotates and zooms with the mouse."""
     fig = _figure(6.4, 5.0)
     ax = fig.add_subplot(projection="3d")
-    ax.plot_surface(gx, gy, Z, cmap=DE_CMAP, linewidth=0.2, edgecolor="#555555",
+    ax.plot_surface(gx, gy, Z, cmap=get_cmap(cmap), linewidth=0.2, edgecolor="#555555",
                     antialiased=True, alpha=0.95)
     if points is not None and len(points):
         p = np.asarray(points)
@@ -241,8 +293,8 @@ def surface_figure(gx, gy, Z, xlabel: str, ylabel: str, zlabel: str, title: str,
 
 
 def ternary_surface_figure(fn, lows, span: float, names: list[str], title: str,
-                           zlabel: str = "", feasible=None, points=None, n: int = 40
-                           ) -> Figure:
+                           zlabel: str = "", feasible=None, points=None, n: int = 40,
+                           cmap=None) -> Figure:
     """Mixture 3D surface: the response over the (pseudo-component) simplex of three
     components, drawn above the ternary triangle."""
     fig = _figure(6.4, 5.0)
@@ -258,7 +310,7 @@ def ternary_surface_figure(fn, lows, span: float, names: list[str], title: str,
         ok &= np.asarray(feasible(actual), bool)
     tri.set_mask(~np.all(ok[tri.triangles], axis=1))
     Zf = np.where(ok, Z, np.nanmin(np.where(ok, Z, np.inf)) if ok.any() else 0.0)
-    ax.plot_trisurf(tri, Zf, cmap=DE_CMAP, linewidth=0.15, edgecolor="#555555",
+    ax.plot_trisurf(tri, Zf, cmap=get_cmap(cmap), linewidth=0.15, edgecolor="#555555",
                     antialiased=True, alpha=0.95)
     zmin = float(np.min(Zf[ok])) if ok.any() else 0.0
     h = math.sqrt(3) / 2
@@ -299,9 +351,10 @@ def perturbation_plot(curves: list[tuple[str, np.ndarray, np.ndarray]], ylabel: 
 
 def line_plot(x: np.ndarray, curves: list[tuple[str, np.ndarray, np.ndarray | None,
                                                 np.ndarray | None]],
-              xlabel: str, ylabel: str, title: str, points=None, legend_title: str = ""
-              ) -> bytes:
-    """One-factor and interaction plots: lines with optional CI bands and design points."""
+              xlabel: str, ylabel: str, title: str, points=None, legend_title: str = "",
+              pi_bands: list | None = None) -> bytes:
+    """One-factor and interaction plots: lines with optional CI bands (dashed), optional
+    prediction-interval bands (dotted, shaded) and design points."""
     fig = _figure()
     ax = fig.add_subplot()
     for i, (name, y, lo, hi) in enumerate(curves):
@@ -310,6 +363,11 @@ def line_plot(x: np.ndarray, curves: list[tuple[str, np.ndarray, np.ndarray | No
         if lo is not None and hi is not None:
             ax.plot(x, lo, color=color, linewidth=0.8, linestyle="--")
             ax.plot(x, hi, color=color, linewidth=0.8, linestyle="--")
+        if pi_bands and i < len(pi_bands) and pi_bands[i] is not None:
+            plo, phi = pi_bands[i]
+            ax.fill_between(x, plo, phi, color=color, alpha=0.08, linewidth=0)
+            ax.plot(x, plo, color=color, linewidth=0.7, linestyle=":")
+            ax.plot(x, phi, color=color, linewidth=0.7, linestyle=":")
     if points is not None:
         for i, pts in enumerate(points):
             if pts is not None and len(pts):
@@ -374,14 +432,14 @@ def _ternary_xy(p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def ternary_contour(fn, lows, span: float, names: list[str], title: str, zlabel: str = "",
                     feasible=None, points=None, n: int = 70, n_levels: int = 10,
-                    vertex_values: list[str] | None = None) -> bytes:
+                    vertex_values: list[str] | None = None, levels=None, cmap=None) -> bytes:
     return _png(ternary_figure(fn, lows, span, names, title, zlabel, feasible, points, n,
-                               n_levels, vertex_values))
+                               n_levels, vertex_values, levels, cmap))
 
 
 def ternary_figure(fn, lows, span: float, names: list[str], title: str, zlabel: str = "",
                    feasible=None, points=None, n: int = 70, n_levels: int = 10,
-                   vertex_values: list[str] | None = None) -> Figure:
+                   vertex_values: list[str] | None = None, levels=None, cmap=None) -> Figure:
     """Contours over the (pseudo-component) simplex of three components.
 
     ``fn(actual (m x 3)) -> values``; ``lows`` the lower bounds and ``span`` the amount shared
@@ -407,11 +465,16 @@ def ternary_figure(fn, lows, span: float, names: list[str], title: str, zlabel: 
     Zf = np.where(ok, Z, np.nan)
     zmin, zmax = np.nanmin(Zf), np.nanmax(Zf)
     if np.isfinite(zmin) and zmax > zmin:
-        levels = np.linspace(zmin, zmax, n_levels + 1)
+        lines = np.unique(np.asarray(levels, float)) if levels is not None and len(levels) \
+            else np.linspace(zmin, zmax, n_levels + 1)
+        fill = np.unique(np.concatenate([[zmin], lines[(lines > zmin) & (lines < zmax)],
+                                         [zmax]])) if levels is not None and len(levels) \
+            else lines
         Zc = np.where(ok, Z, zmin)
-        cf = ax.tricontourf(tri, Zc, levels=levels, cmap=DE_CMAP, alpha=0.9)
-        cs = ax.tricontour(tri, Zc, levels=levels, colors="#202020", linewidths=0.7)
-        ax.clabel(cs, fmt="%.4g", fontsize=7, inline=True)
+        cf = ax.tricontourf(tri, Zc, levels=fill, cmap=get_cmap(cmap), alpha=0.9)
+        cs = ax.tricontour(tri, Zc, levels=lines, colors="#202020", linewidths=0.7)
+        if len(cs.levels):
+            ax.clabel(cs, fmt="%.4g", fontsize=7, inline=True)
         cbar = fig.colorbar(cf, ax=ax, shrink=0.75)
         cbar.ax.tick_params(labelsize=7)
         if zlabel:
@@ -583,6 +646,89 @@ def half_normal_figure(effects: list[dict], title: str = "Half-Normal Plot",
     _style(ax, title, "|Standardized Effect|", "Half-Normal % Probability")
     fig.tight_layout()
     return fig
+
+
+def normal_effects_figure(effects: list[dict], title: str = "Normal Plot",
+                          selected: set[str] | None = None, shapiro: dict | None = None
+                          ) -> Figure:
+    """Full normal probability plot of the signed effects (positive effects in orange,
+    negative in blue when selected), with the error line through the unselected effects
+    and the Shapiro-Wilk test of the error effects."""
+    fig = _figure()
+    ax = fig.add_subplot()
+    fig.effect_points = []
+    if not effects:
+        ax.text(0.5, 0.5, "No effects to plot", ha="center", va="center",
+                transform=ax.transAxes, color="#666666")
+        _style(ax, title, "Standardized Effect", "Normal % Probability")
+        fig.tight_layout()
+        return fig
+    order = sorted(effects, key=lambda e: e["effect"])
+    m = len(order)
+    q = stats.norm.ppf((np.arange(1, m + 1) - 0.375) / (m + 0.25))
+    big = (set(selected) if selected is not None else
+           {e["name"] for e in effects if e.get("t", 0) > e.get("t_limit", np.inf)})
+    vals = np.array([e["effect"] for e in order])
+    for i, e in enumerate(order):
+        sig = e["name"] in big
+        color = ("#ef6c00" if e["effect"] > 0 else "#1f3fbf") if sig else "#9e9e9e"
+        fig.effect_points.append((float(vals[i]), float(q[i]), e["name"]))
+        ax.scatter(vals[i], q[i], s=30, color=color, edgecolor="#333333", zorder=3)
+        if sig:
+            ax.annotate(e["name"], (vals[i], q[i]), xytext=(4, 2), textcoords="offset points",
+                        fontsize=8)
+    err = np.array([e["name"] not in big for e in order])
+    if err.sum() > 1 and np.ptp(vals[err]) > 0:
+        slope, icpt = np.polyfit(q[err], vals[err], 1)
+        qq = np.array([q.min(), q.max()])
+        ax.plot(slope * qq + icpt, qq, color=LINE, linewidth=1)
+    ticks = [1, 5, 10, 20, 30, 50, 70, 80, 90, 95, 99]
+    ax.set_yticks(stats.norm.ppf(np.array(ticks) / 100), [str(t) for t in ticks])
+    if shapiro:
+        ax.text(0.02, 0.98, f"Shapiro-Wilk (error effects): W = {shapiro['w']:.4f}, "
+                f"p = {shapiro['p']:.4f}", transform=ax.transAxes, fontsize=7, va="top",
+                color="#444444")
+    _style(ax, title, "Standardized Effect", "Normal % Probability")
+    fig.tight_layout()
+    return fig
+
+
+def all_factors_plot(panels: list[dict], ylabel: str, title: str) -> bytes:
+    """Design-Expert's All Factors graph: one small one-factor plot per factor, all at the
+    same reference point and on a common response axis. ``panels``: [{"x", "y", "lo", "hi",
+    "xlabel", "ticks" (optional categoric labels)}]."""
+    k = len(panels)
+    cols = min(3, k) or 1
+    rows = int(math.ceil(k / cols)) or 1
+    fig = _figure(3.0 * cols + 0.6, 2.5 * rows + 0.6)
+    ys = [v for p in panels for key in ("y", "lo", "hi") if p.get(key) is not None
+          for v in np.asarray(p[key], float).ravel() if np.isfinite(v)]
+    lo_all, hi_all = (min(ys), max(ys)) if ys else (0, 1)
+    pad = 0.05 * ((hi_all - lo_all) or 1)
+    for i, p in enumerate(panels):
+        ax = fig.add_subplot(rows, cols, i + 1)
+        x = np.asarray(p["x"], float)
+        if p.get("ticks"):
+            ax.errorbar(x, p["y"], yerr=[np.asarray(p["y"]) - p["lo"],
+                                         np.asarray(p["hi"]) - p["y"]],
+                        fmt="-o", color="#1f3fbf", capsize=3, markersize=4)
+            ax.set_xticks(x, p["ticks"], fontsize=7)
+        else:
+            ax.plot(x, p["y"], color="#1f3fbf", linewidth=1.6)
+            if p.get("lo") is not None:
+                ax.plot(x, p["lo"], color="#1f3fbf", linewidth=0.7, linestyle="--")
+                ax.plot(x, p["hi"], color="#1f3fbf", linewidth=0.7, linestyle="--")
+        ax.set_ylim(lo_all - pad, hi_all + pad)
+        ax.set_xlabel(p["xlabel"], fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, color="#e6e6e6", linewidth=0.6)
+        if i % cols == 0:
+            ax.set_ylabel(ylabel, fontsize=8)
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="white")
+    return buf.getvalue()
 
 
 def pareto_chart(effects: list[dict], title: str = "Pareto Chart") -> bytes:
