@@ -22,6 +22,8 @@ from rsstatchem.core.stats.anova import (POSTHOC, POSTHOC_ORDER, multiple_compar
                                          posthoc)
 from rsstatchem.core.stats.common import (Group, fmt, fmt_df, fmt_int, fmt_p, levene_rows,
                                           numeric, pct, sup, value_text)
+from rsstatchem.core.stats.glm_model import (GLMFit, Term, TermSpec, full_factorial,
+                                             main_effects)
 
 ADJUST = {"lsd": "Least Significant Difference (equivalent to no adjustments)",
           "bonferroni": "Bonferroni", "sidak": "Sidak"}
@@ -51,109 +53,20 @@ def make_factor(ds: Dataset, name: str, series: pd.Series) -> Factor:
                   series.map(index).to_numpy(int))
 
 
-def _effect_columns(codes: np.ndarray, m: int) -> np.ndarray:
-    cols = np.zeros((len(codes), m - 1))
-    for j in range(m - 1):
-        cols[:, j] = (codes == j).astype(float) - (codes == m - 1).astype(float)
-    return cols
-
-
-@dataclass
-class Term:
-    label: str
-    idx: list[int]
-    factors: tuple[int, ...] = ()   # factor indices (empty for intercept / covariate)
-    covariate: str | None = None
-
-
-class LinearModel:
-    """Multivariate OLS ``Y = X B + E`` with an SPSS-style full-factorial effect-coded design."""
+class LinearModel(GLMFit):
+    """Multivariate (W)LS ``Y = X B + E`` with SPSS's coding. By default the full-factorial
+    design with covariate main effects and Type III SS; ``terms`` / ``intercept`` /
+    ``ss_type`` / ``weights`` give a custom GLM model (see :mod:`glm_model`)."""
 
     def __init__(self, Y: np.ndarray, factors: list[Factor], covariates: dict[str, np.ndarray],
-                 main_effects_only: bool = False):
-        self.Y = np.asarray(Y, float)
-        if self.Y.ndim == 1:
-            self.Y = self.Y[:, None]
-        self.n = self.Y.shape[0]
-        self.factors = factors
-        self.covariates = covariates
-        self.cov_means = {k: float(np.mean(v)) for k, v in covariates.items()}
-        blocks = [np.ones((self.n, 1))]
-        self.terms = [Term("Intercept", [0])]
-        pos = 1
-        for name, x in covariates.items():  # SPSS lists covariates before factors
-            blocks.append(np.asarray(x, float)[:, None])
-            self.terms.append(Term(name, [pos], covariate=name))
-            pos += 1
-        main = [_effect_columns(f.codes, len(f.levels)) for f in factors]
-        max_order = 1 if main_effects_only else len(factors)
-        for r in range(1, max_order + 1):
-            for combo in itertools.combinations(range(len(factors)), r):
-                cols = main[combo[0]]
-                for c in combo[1:]:
-                    cols = np.einsum("ni,nj->nij", cols, main[c]).reshape(self.n, -1)
-                blocks.append(cols)
-                width = cols.shape[1]
-                self.terms.append(Term(" * ".join(factors[c].name for c in combo),
-                                       list(range(pos, pos + width)), combo))
-                pos += width
+                 main_effects_only: bool = False, terms: list[TermSpec] | None = None,
+                 intercept: bool = True, ss_type: int = 3, weights: np.ndarray | None = None):
+        if terms is None:
+            names = [f.name for f in factors]
+            terms = main_effects(names, list(covariates)) if main_effects_only else \
+                full_factorial(names, list(covariates))
+        super().__init__(Y, factors, covariates, terms, intercept, ss_type, weights)
         self.main_effects_only = main_effects_only
-        self.X = np.hstack(blocks)
-        self.XtX_inv = np.linalg.pinv(self.X.T @ self.X)
-        self.B = self.XtX_inv @ self.X.T @ self.Y
-        resid = self.Y - self.X @ self.B
-        self.resid = resid
-        self.E = resid.T @ resid
-        self.rank = int(np.linalg.matrix_rank(self.X))
-        self.ve = self.n - self.rank
-        self.deficient = self.rank < self.X.shape[1]
-
-    @property
-    def design_text(self) -> str:
-        return " + ".join(t.label for t in self.terms)
-
-    def hypothesis(self, term: Term, M: np.ndarray | None = None) -> np.ndarray:
-        """Type III hypothesis SSCP for ``term`` on the transformed responses ``Y M``."""
-        B = self.B if M is None else self.B @ M
-        bt = B[term.idx, :]
-        V = self.XtX_inv[np.ix_(term.idx, term.idx)]
-        return bt.T @ np.linalg.pinv(V) @ bt
-
-    def error(self, M: np.ndarray | None = None) -> np.ndarray:
-        return self.E if M is None else M.T @ self.E @ M
-
-    # ---------------------------------------------------------------- marginal means
-    def cell_row(self, levels: tuple[int, ...]) -> np.ndarray:
-        """Design row for a between-subjects cell (level index per factor), covariates at
-        their means."""
-        row = [1.0] + [self.cov_means[k] for k in self.covariates]
-        mains = []
-        for f, lv in zip(self.factors, levels):
-            m = len(f.levels)
-            mains.append(np.array([(1.0 if lv == j else 0.0) - (1.0 if lv == m - 1 else 0.0)
-                                   for j in range(m - 1)]))
-        for t in self.terms:
-            if not t.factors:
-                continue
-            v = mains[t.factors[0]]
-            for c in t.factors[1:]:
-                v = np.outer(v, mains[c]).ravel()
-            row.extend(v.tolist())
-        return np.array(row)
-
-    def average_row(self, fixed: dict[int, int]) -> np.ndarray:
-        """Unweighted average of cell rows over factors not fixed (factor index -> level)."""
-        ranges = [[fixed[i]] if i in fixed else range(len(f.levels))
-                  for i, f in enumerate(self.factors)]
-        rows = [self.cell_row(cell) for cell in itertools.product(*ranges)]
-        return np.mean(rows, axis=0) if rows else self.cell_row(())
-
-    def estimate(self, l: np.ndarray, c: np.ndarray) -> tuple[float, float]:
-        """Estimate ``l' B c`` and its standard error (``df = ve``)."""
-        est = float(l @ self.B @ c)
-        sigma = self.E / self.ve if self.ve > 0 else self.E * np.nan
-        var = float(l @ self.XtX_inv @ l) * float(c @ sigma @ c)
-        return est, math.sqrt(max(var, 0.0))
 
 
 # ------------------------------------------------------------------ multivariate tests

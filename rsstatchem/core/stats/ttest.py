@@ -219,14 +219,23 @@ def independent(ds: Dataset, names: list[str], group_var: str, groups=None, cut=
 
 
 # ------------------------------------------------------------------ paired
-def paired(ds: Dataset, pairs: list[tuple[str, str]], level: float = 0.95) -> Section:
+def paired(ds: Dataset, pairs: list[tuple[str, str]], level: float = 0.95,
+           listwise: bool = False) -> Section:
     section = Section("T-Test")
     section.log("T-TEST PAIRS=" + " ".join(a for a, _ in pairs) + " WITH "
-                + " ".join(b for _, b in pairs) + f" (PAIRED)\n  /CRITERIA=CI({level:.2f}).")
+                + " ".join(b for _, b in pairs) + f" (PAIRED)\n  /CRITERIA=CI({level:.2f})"
+                + f"\n  /MISSING={'LISTWISE' if listwise else 'ANALYSIS'}.")
     srows, crows, trows, erows = [], [], [], []
+    keep = None
+    if listwise:
+        names = sorted({n for pair in pairs for n in pair})
+        keep = pd.DataFrame({n: numeric(ds, n) for n in names}).notna().all(axis=1)
     for k, (an, bn) in enumerate(pairs, start=1):
         va, vb = ds.var(an), ds.var(bn)
-        frame = pd.DataFrame({"a": numeric(ds, an), "b": numeric(ds, bn)}).dropna()
+        frame = pd.DataFrame({"a": numeric(ds, an), "b": numeric(ds, bn)})
+        if keep is not None:
+            frame = frame[keep]
+        frame = frame.dropna()
         a, b = frame["a"].to_numpy(float), frame["b"].to_numpy(float)
         n = len(a)
         label = f"Pair {k}"
@@ -280,4 +289,78 @@ def paired(ds: Dataset, pairs: list[tuple[str, str]], level: float = 0.95) -> Se
                                 "Cohen's d uses the sample standard deviation of the mean "
                                 "difference. Hedges' correction uses the sample standard "
                                 "deviation of the mean difference, plus a correction factor."]))
+    return section
+
+
+# ------------------------------------------------------------------ from summary statistics
+def summary_independent(n1: float, m1: float, s1: float, n2: float, m2: float, s2: float,
+                        level: float = 0.95, label1: str = "Sample 1",
+                        label2: str = "Sample 2", title: str = "") -> Section:
+    """Independent-samples t test from group sizes, means and standard deviations (SPSS
+    Compare Means > Summary Independent-Samples T Test)."""
+    section = Section("T-Test from Summary Statistics")
+    section.log(f"T-TEST SUMMARY\n  /SAMPLE1 N={n1:g} MEAN={m1:g} SD={s1:g} LABEL='{label1}'"
+                f"\n  /SAMPLE2 N={n2:g} MEAN={m2:g} SD={s2:g} LABEL='{label2}'"
+                f"\n  /CRITERIA=CI({level:.2f}).")
+    if n1 < 2 or n2 < 2 or s1 < 0 or s2 < 0:
+        section.note("Warning", "Each sample needs N >= 2 and a non-negative standard "
+                     "deviation.", style="warning")
+        return section
+    v1, v2 = s1 * s1, s2 * s2
+    rows = []
+    for lab, n, m, s in ((label1, n1, m1, s1), (label2, n2, m2, s2)):
+        se = s / math.sqrt(n)
+        lo, hi = t_interval(m, se, n - 1, level)
+        rows.append([lab, fmt_int(n), fmt(m), fmt(s), fmt(se), fmt(lo), fmt(hi)])
+    section.table(Table("Summary Data", ["", "N", "Mean", "Std. Deviation", "Std. Error Mean",
+                                         (f"{pct(level)} Confidence Interval", "Lower Bound"),
+                                         (f"{pct(level)} Confidence Interval", "Upper Bound")],
+                        rows, footnotes=[title] if title else []))
+    diff = m1 - m2
+    df_p = n1 + n2 - 2
+    sp2 = ((n1 - 1) * v1 + (n2 - 1) * v2) / df_p
+    se_p = math.sqrt(sp2 * (1 / n1 + 1 / n2))
+    se_w = math.sqrt(v1 / n1 + v2 / n2)
+    df_w = se_w ** 4 / ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1)) \
+        if se_w > 0 else float("nan")
+    trows = []
+    for name, se, df in (("Equal variances assumed", se_p, df_p),
+                         ("Equal variances not assumed", se_w, df_w)):
+        t = diff / se if se > 0 else float("nan")
+        one, two = _p_sides(t, df)
+        lo, hi = t_interval(diff, se, df, level)
+        trows.append([name, fmt(diff), fmt(se), fmt(t), fmt_df(df), fmt_p(one), fmt_p(two),
+                      fmt(lo), fmt(hi)])
+    section.table(Table("Independent Samples Test",
+                        ["", "Mean Difference", "Std. Error Difference", "t", "df",
+                         ("Significance", "One-Sided p"), ("Significance", "Two-Sided p"),
+                         (f"{pct(level)} Confidence Interval of the Difference", "Lower"),
+                         (f"{pct(level)} Confidence Interval of the Difference", "Upper")],
+                        trows))
+    big, small = (v1, v2) if v1 >= v2 else (v2, v1)
+    d1, d2 = (n1 - 1, n2 - 1) if v1 >= v2 else (n2 - 1, n1 - 1)
+    F = big / small if small > 0 else float("nan")
+    p = min(1.0, 2 * stats.f.sf(F, d1, d2)) if small > 0 else float("nan")
+    section.table(Table("Test of Homogeneity of Variances",
+                        ["", "F", "df1", "df2", "Sig."],
+                        [["Hartley test of equal variance", fmt(F), fmt_int(d1), fmt_int(d2),
+                          fmt_p(p)]],
+                        footnotes=["F is the ratio of the larger to the smaller variance; the "
+                                   "significance is two-sided."]))
+    t_p = diff / se_p if se_p > 0 else float("nan")
+    sp = math.sqrt(sp2)
+    factor = math.sqrt(1 / n1 + 1 / n2)
+    j = hedges_j(df_p)
+    erows = [_effect_row("Cohen's d", sp, t_p, df_p, factor, level),
+             _effect_row("Hedges' correction", sp / j, t_p, df_p, factor, level, j)]
+    if s2 > 0:
+        lo, hi = ncp_interval(diff / (s2 * factor), n2 - 1, level)
+        erows.append(["Glass's delta", fmt(s2), fmt(diff / s2), fmt(lo * factor),
+                      fmt(hi * factor)])
+    section.table(Table("Independent Samples Effect Sizes", _effect_columns(level)[1:], erows,
+                        footnotes=["a. The denominator used in estimating the effect sizes. "
+                                   "Cohen's d uses the pooled standard deviation. Hedges' "
+                                   "correction uses the pooled standard deviation, plus a "
+                                   "correction factor. Glass's delta uses the sample standard "
+                                   "deviation of the second sample."]))
     return section
