@@ -17,19 +17,20 @@ def ctx(qapp, tmp_path, monkeypatch):
 def test_four_modules_and_file_routing():
     from rsstatchem.ui.modules import MODULES, module_for_path
 
-    assert [m.key for m in MODULES] == ["stats", "rsm", "graph", "chem"]
+    assert [m.key for m in MODULES] == ["stats", "rsm", "graph", "chem", "image"]
     assert module_for_path("data.SAV").key == "stats"
     assert module_for_path("design.rsx").key == "rsm"
     assert module_for_path("project.rsop").key == "graph"
     assert module_for_path("aspirin.rsc").key == "chem"
     assert module_for_path("output.rso").key == "stats"
     assert module_for_path("survey.dta").key == "stats"
+    assert module_for_path("cells.TIF").key == "image"
     assert module_for_path("notes.docx") is None
 
 
 def test_launcher_opens_module_and_hides(ctx):
     launcher = ctx.show_launcher()
-    assert set(launcher.tiles) == {"stats", "rsm", "graph", "chem"}
+    assert set(launcher.tiles) == {"stats", "rsm", "graph", "chem", "image"}
     launcher.choose("stats")
     assert not launcher.isVisible()
     assert ctx.windows == ctx.editors and len(ctx.editors) == 1
@@ -40,9 +41,9 @@ def test_launcher_opens_module_and_hides(ctx):
 
 
 def test_last_window_closing_quits(ctx):
-    for key in ("stats", "rsm", "graph", "chem"):
+    for key in ("stats", "rsm", "graph", "chem", "image"):
         ctx.open_module(key)
-    assert len(ctx.windows) == 4
+    assert len(ctx.windows) == 5
     for window in list(ctx.windows):
         window.close()
     assert ctx.windows == [] and ctx.quits == [True]

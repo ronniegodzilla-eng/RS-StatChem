@@ -1,4 +1,4 @@
-"""The four modules of RS-StatChem and how their main windows are opened.
+"""The five modules of RS-StatChem and how their main windows are opened.
 
 Each module is a separate workspace with its own window style and data entry:
 
@@ -6,6 +6,7 @@ Each module is a separate workspace with its own window style and data entry:
 * ``rsm``    - Design-Expert-style design of experiments / response surfaces
 * ``graph``  - OriginLab-style workbooks, graphs and curve fitting
 * ``chem``   - ChemDraw-style structure and reaction drawing
+* ``image``  - ImageJ-style image processing and measurement
 
 A module package exposes ``open_workspace(ctx, path=None)`` returning its (shown) main
 window. Contract for module windows: keep ``self.ctx = ctx``; in ``closeEvent``, once the close
@@ -44,6 +45,11 @@ MODULES: tuple[ModuleInfo, ...] = (
     ModuleInfo("chem", "Chemical Drawing", "Structures, reactions, names to structures, "
                "chemical properties", "ChemDraw", "rsstatchem.ui.chemdraw:open_workspace",
                (".rsc", ".mol", ".sdf", ".rxn", ".cdxml"), "chem"),
+    ModuleInfo("image", "Image Analysis", "Open, process and measure images and stacks: "
+               "filters, thresholds, particles, ROIs", "ImageJ",
+               "rsstatchem.ui.imagej:open_workspace",
+               (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".dcm", ".fits",
+                ".roi"), "image"),
 )
 BY_KEY = {m.key: m for m in MODULES}
 

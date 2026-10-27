@@ -36,6 +36,11 @@ TILE_ICONS = {
             f'stroke="{R}" stroke-width="2.2"/><path d="M38 14l7-4M24 38v6" stroke="{D}" '
             f'stroke-width="2.2"/><text x="33" y="10" font-size="8" font-family="Arial" '
             f'font-weight="bold" fill="{R}">OH</text>',
+    "image": f'<rect x="4" y="7" width="40" height="34" rx="3" fill="#fff" stroke="{D}" '
+             f'stroke-width="2"/><circle cx="17" cy="19" r="5" fill="{L}" stroke="{R}" '
+             f'stroke-width="1.8"/><circle cx="31" cy="27" r="7" fill="{L}" stroke="{R}" '
+             f'stroke-width="1.8"/><circle cx="15" cy="32" r="3.5" fill="{L}" stroke="{R}" '
+             f'stroke-width="1.6"/><path d="M36 10l6 0M39 7v6" stroke="{D}" stroke-width="1.6"/>',
 }
 
 
@@ -123,7 +128,7 @@ class LauncherWindow(QWidget):
         self.ctx = ctx
         self.setWindowTitle(f"{APP_NAME} — Choose a Module")
         self.setStyleSheet(self.STYLE)
-        self.resize(940, 620)
+        self.resize(1080, 640)
 
         logo = QLabel()
         pix = QPixmap(str(resource("icon.png")))
@@ -148,9 +153,9 @@ class LauncherWindow(QWidget):
         self.tiles: dict[str, ModuleTile] = {}
         for i, info in enumerate(MODULES):
             tile = ModuleTile(info, i + 1, info.key == last)
-            tile.setMinimumSize(QSize(380, 128))
+            tile.setMinimumSize(QSize(320, 128))
             tile.clicked.connect(self.choose)
-            grid.addWidget(tile, i // 2, i % 2)
+            grid.addWidget(tile, i // 3, i % 3)
             self.tiles[info.key] = tile
             QShortcut(QKeySequence(str(i + 1)), self,
                       activated=lambda k=info.key: self.choose(k))
