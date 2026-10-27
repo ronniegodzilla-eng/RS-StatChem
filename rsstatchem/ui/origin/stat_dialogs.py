@@ -251,7 +251,8 @@ class StatDialog(QDialog):
     ``level`` (a :class:`LevelCombo` of factor levels; extra = {"source": key of
     :func:`stat_tests.factor_levels`, "fallback": settings key of a control stored as
     text}). The Dunnett options are enabled only while Dunnett is checked.
-    A field may end with ``{"when": (key, value)}`` to show it only for that choice.
+    A field may end with ``{"when": (key, value)}`` to show it only for that choice (a tuple
+    of values shows it for any of them).
 
     A range picker's ▸ button rolls the dialog up (:meth:`start_pick`): the dialog shrinks
     to a bar and stops being modal so the user can drag-select in a worksheet; ▸ (or Enter)
@@ -525,8 +526,9 @@ class StatDialog(QDialog):
                 continue
             key, val = cond
             src = self.widgets.get(key)
-            show = src is None or (src.currentData() if isinstance(src, QComboBox) else
-                                   None) == val
+            current = src.currentData() if isinstance(src, QComboBox) else None
+            show = src is None or (current in val if isinstance(val, (tuple, list))
+                                   else current == val)
             w.setVisible(show)
             if lab is not None:
                 lab.setVisible(show)
@@ -723,6 +725,10 @@ def spec(key: str, sel: list[str]) -> tuple[str, list, str, str]:
                            "lower": "Lower-tailed"})])],
             "Mann-Whitney and Kruskal-Wallis accept raw or indexed data; Wilcoxon and "
             "Friedman use one column per paired sample / treatment.", "report sheet")
+    if key not in st.DIALOG_SPECS:
+        st.load_extensions()
+    if key in st.DIALOG_SPECS:
+        return st.DIALOG_SPECS[key](sel)
     raise KeyError(key)
 
 

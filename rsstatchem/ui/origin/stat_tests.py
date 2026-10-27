@@ -98,8 +98,29 @@ def read_range(books: dict, text: str, book: str = "", sheet: str = "") -> Range
     lo, hi = row_window(n, rows)
     hi = max(hi, lo)
     c = ws.columns[col]
-    return RangeData(wb, ws, col, (lo + 1, hi) if rows else None,
-                     c.numeric(max(hi, 1))[lo:hi], c.texts(max(hi, 1))[lo:hi])
+    values = c.numeric(max(hi, 1))[lo:hi]
+    texts = c.texts(max(hi, 1))[lo:hi]
+    masked = _masked_rows(ws, col)
+    if masked:   # masked cells are left out of the analysis (Origin's mask)
+        values = np.array(values, float)
+        texts = list(texts)
+        for r in masked:
+            if lo <= r < hi:
+                values[r - lo] = np.nan
+                texts[r - lo] = ""
+    return RangeData(wb, ws, col, (lo + 1, hi) if rows else None, values, texts)
+
+
+def _masked_rows(ws: Worksheet, col: int) -> set[int]:
+    """0-based masked rows of a column through the worksheet mask API
+    (``Worksheet.masked_rows(col)``) when the model provides it."""
+    fn = getattr(ws, "masked_rows", None)
+    if fn is None:
+        return set()
+    try:
+        return {int(r) for r in (fn(col) or ())}
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+        return set()
 
 
 def read_ranges(books: dict, texts: list[str]) -> list[RangeData]:
@@ -1041,6 +1062,23 @@ def _means_tables(fresh: ReportSheet, groups, methods, mse, df_error, alpha,
                         notes, group="Means Comparisons")
 
 
+def centered_groups(groups: list[tuple[str, np.ndarray]]) -> list[np.ndarray]:
+    """The group values minus a common shift, the subtraction done in exact decimal
+    arithmetic on each value's shortest round-trip text, so data with many constant leading
+    digits (NIST StRD SmLs07–09: 1000000000000.4 …) keep their full precision in the sums
+    of squares."""
+    from decimal import Decimal, InvalidOperation
+    allv = np.concatenate([v for _, v in groups])
+    if not len(allv) or not np.all(np.isfinite(allv)):
+        return [np.asarray(v, float) for _, v in groups]
+    try:
+        shift = Decimal(repr(float(np.median(allv))))
+        return [np.array([float(Decimal(repr(float(x))) - shift) for x in v], float)
+                for _, v in groups]
+    except (InvalidOperation, ValueError):
+        return [np.asarray(v, float) - float(np.median(allv)) for _, v in groups]
+
+
 def one_way_anova(books: dict, settings: dict, report: ReportSheet | None = None,
                   mode: str = "manual") -> tuple[ReportSheet, str]:
     inputs, groups = _groups(books, settings, 2)
@@ -1057,8 +1095,11 @@ def one_way_anova(books: dict, settings: dict, report: ReportSheet | None = None
                     [_desc_row(name, v) for name, v in groups])
     allv = np.concatenate([v for _, v in groups])
     grand = allv.mean()
-    ss_b = float(sum(len(v) * (v.mean() - grand) ** 2 for _, v in groups))
-    ss_w = float(sum(((v - v.mean()) ** 2).sum() for _, v in groups))
+    shifted = centered_groups(groups)
+    sall = np.concatenate(shifted)
+    sgrand = sall.mean()
+    ss_b = float(sum(len(v) * (v.mean() - sgrand) ** 2 for v in shifted))
+    ss_w = float(sum(((v - v.mean()) ** 2).sum() for v in shifted))
     df_b, df_w = len(groups) - 1, len(allv) - len(groups)
     mse = ss_w / df_w
     f = (ss_b / df_b) / mse if mse > 0 else math.nan
@@ -1356,9 +1397,42 @@ REPORT_TESTS = {"desc": desc_stats, "normality": normality, "correlation": corre
                 "anova1": one_way_anova, "anova2": two_way_anova, "nonparam": nonparametric}
 
 
+# analyses added by other modules (stat_extra, stat_multivariate, stat_survival,
+# stat_power_roc) register themselves here on import; :func:`load_extensions` imports them
+# so recalculating a saved report works without the menus being built first.
+EXTENSION_MODULES = ("rsstatchem.ui.origin.stat_extra", "rsstatchem.ui.origin.stat_multivariate",
+                     "rsstatchem.ui.origin.stat_survival", "rsstatchem.ui.origin.stat_power_roc")
+_EXTENSIONS_LOADED = False
+
+
+def load_extensions() -> None:
+    global _EXTENSIONS_LOADED
+    if _EXTENSIONS_LOADED:
+        return
+    _EXTENSIONS_LOADED = True
+    import importlib
+    for name in EXTENSION_MODULES:
+        importlib.import_module(name)
+
+
+DIALOG_SPECS: dict = {}   # key -> spec(selection) -> (title, groups, description, output)
+
+
+def register(key: str, fn, spec=None) -> None:
+    """Add a report analysis ``fn(books, settings, report=None, mode="manual")`` and the
+    field spec of its dialog (see :func:`stat_dialogs.spec`)."""
+    REPORT_TESTS[key] = fn
+    if spec is not None:
+        DIALOG_SPECS[key] = spec
+
+
 def run(key: str, books: dict, settings: dict, report: ReportSheet | None = None,
         mode: str = "manual") -> tuple[ReportSheet, str]:
     """Run a report analysis (new report, or recalculate ``report`` in place)."""
+    if key not in REPORT_TESTS:
+        load_extensions()
+    if key not in REPORT_TESTS:
+        raise StatError(f"Unknown analysis {key!r}.")
     try:
         return REPORT_TESTS[key](books, settings, report=report, mode=mode)
     except (ValueError, ZeroDivisionError, np.linalg.LinAlgError) as exc:
@@ -1371,9 +1445,13 @@ def range_strings(settings: dict) -> list[str]:
     """Every input range in a settings dict."""
     out = []
     for key, value in settings.items():
-        if key in ("ranges",) and isinstance(value, list):
-            out += [v for v in value if isinstance(v, str)]
-        elif key in ("range", "range1", "range2", "data", "factor", "factor_a", "factor_b") \
-                and isinstance(value, str) and value:
+        if key in RANGE_LIST_KEYS and isinstance(value, list):
+            out += [v for v in value if isinstance(v, str) and v.strip()]
+        elif key in RANGE_KEYS and isinstance(value, str) and value.strip():
             out.append(value)
     return out
+
+
+RANGE_LIST_KEYS = ("ranges", "response", "covariates")
+RANGE_KEYS = ("range", "range1", "range2", "data", "factor", "factor_a", "factor_b",
+              "factor_c", "time", "censor", "group", "state", "labels", "subject")
