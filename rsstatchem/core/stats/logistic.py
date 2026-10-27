@@ -2,8 +2,10 @@
 REGRESSION, NOMREG and PLUM).
 
 Binary logistic regression uses its own Newton-Raphson fit so the SPSS-specific pieces (Block 0
-score tests, Forward/Backward LR and Wald selection, Hosmer-Lemeshow deciles of risk) can be
-reproduced; estimates agree with ``statsmodels.Logit``. Multinomial uses ``statsmodels.MNLogit``
+score tests, blocks of covariates with interaction terms (a*b), Forward/Backward Conditional, LR
+and Wald selection, all seven contrasts, Hosmer-Lemeshow deciles of risk, residual and
+influence saves, classification plot, casewise list) can be reproduced; estimates agree with
+``statsmodels.Logit``. Multinomial uses ``statsmodels.MNLogit``
 and ordinal uses ``statsmodels.OrderedModel``. As in SPSS NOMREG/PLUM, -2 log likelihood is the
 full value (multinomial constant over covariate patterns included); pseudo R-squares use the
 kernel.
@@ -22,9 +24,11 @@ from rsstatchem.core.dataset import NUMERIC, Dataset, format_code
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, fmt_p, numeric, pct, sup, value_text
 
-METHODS = {"enter": "Enter", "fstep_lr": "Forward: LR", "fstep_wald": "Forward: Wald",
+METHODS = {"enter": "Enter", "fstep_cond": "Forward: Conditional", "fstep_lr": "Forward: LR",
+           "fstep_wald": "Forward: Wald", "bstep_cond": "Backward: Conditional",
            "bstep_lr": "Backward: LR", "bstep_wald": "Backward: Wald"}
-CONTRASTS = ("indicator", "deviation")
+CONTRASTS = ("indicator", "simple", "difference", "helmert", "repeated", "polynomial",
+             "deviation")
 LINKS = {"logit": "Logit", "probit": "Probit", "cloglog": "Complementary Log-log",
          "nloglog": "Negative Log-log", "cauchit": "Cauchit"}
 
@@ -65,22 +69,52 @@ class _Effect:
     categorical: bool
 
 
+def contrast_coding(k: int, contrast: str, reference: str = "last") -> np.ndarray:
+    """SPSS LOGISTIC REGRESSION parameter coding (categories x k-1) for each contrast.
+
+    Indicator and deviation are coded directly; the others are the inverse of the full
+    contrast matrix [1/k ... 1/k; L] without its first column, as SPSS documents."""
+    m = np.zeros((k, k - 1))
+    rows = list(range(k - 1)) if reference == "last" else list(range(1, k))
+    if contrast in ("indicator", "deviation"):
+        for j, r in enumerate(rows):
+            m[r, j] = 1
+        if contrast == "deviation":
+            m[k - 1 if reference == "last" else 0, :] = -1
+        return m
+    ref = k - 1 if reference == "last" else 0
+    L = np.zeros((k - 1, k))
+    if contrast == "simple":
+        for j, r in enumerate(rows):
+            L[j, r] = 1
+            L[j, ref] = -1
+    elif contrast == "difference":
+        for j in range(1, k):
+            L[j - 1, j] = 1
+            L[j - 1, :j] = -1 / j
+    elif contrast == "helmert":
+        for j in range(k - 1):
+            L[j, j] = 1
+            L[j, j + 1:] = -1 / (k - j - 1)
+    elif contrast == "repeated":
+        for j in range(k - 1):
+            L[j, j], L[j, j + 1] = 1, -1
+    elif contrast == "polynomial":
+        q, _ = np.linalg.qr(np.vander(np.arange(1, k + 1, dtype=float), k, increasing=True))
+        poly = q[:, 1:] * np.sign(q[-1, 1:])
+        return poly
+    else:
+        raise ValueError(contrast)
+    full = np.vstack([np.full(k, 1 / k), L])
+    return np.linalg.inv(full)[:, 1:]
+
+
 def _coding(ds: Dataset, name: str, values: pd.Series, contrast: str,
             reference: str) -> _Coding:
     var = ds.var(name)
     cats = sorted(values.dropna().unique(), key=_sort_key)
-    k = len(cats)
-    if contrast == "deviation":
-        m = np.zeros((k, k - 1))
-        rows = list(range(k - 1)) if reference == "last" else list(range(1, k))
-        for j, r in enumerate(rows):
-            m[r, j] = 1
-        m[k - 1 if reference == "last" else 0, :] = -1
-    else:
-        m = np.zeros((k, k - 1))
-        rows = list(range(k - 1)) if reference == "last" else list(range(1, k))
-        for j, r in enumerate(rows):
-            m[r, j] = 1
+    m = contrast_coding(len(cats), contrast, reference) if len(cats) >= 2 else \
+        np.zeros((len(cats), 0))
     return _Coding(name, cats, [value_text(var, c) for c in cats], m, contrast, reference)
 
 
@@ -99,6 +133,33 @@ def _raw(ds: Dataset, name: str, categorical: bool) -> pd.Series:
     if categorical or ds.var(name).type != NUMERIC:
         return ds.analysis_series(name)
     return numeric(ds, name)
+
+
+def _term_parts(term: str) -> list[str]:
+    return [p.strip() for p in term.split("*") if p.strip()]
+
+
+def term_label(term: str) -> str:
+    return " by ".join(_term_parts(term))
+
+
+def _term_frame(term: str, raw: dict, codings: dict) -> tuple[pd.DataFrame, bool]:
+    """Design columns of a main effect or an interaction (products of component columns)."""
+    parts = _term_parts(term)
+    frames = []
+    for p in parts:
+        if p in codings:
+            frames.append(_encode(raw[p], codings[p]))
+        else:
+            frames.append(raw[p].astype(float).rename(p).to_frame())
+    out = frames[0]
+    for f in frames[1:]:
+        cols = {}
+        for a in out.columns:
+            for b in f.columns:
+                cols[f"{a} by {b}"] = out[a] * f[b]
+        out = pd.DataFrame(cols, index=out.index)
+    return out, any(p in codings for p in parts)
 
 
 # ====================================================================== Newton-Raphson fit
@@ -221,38 +282,93 @@ def hosmer_lemeshow(y: np.ndarray, prob: np.ndarray, groups: int = 10):
     return chi, df, p, rows
 
 
-def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
+def logistic_diagnostics(X: np.ndarray, y: np.ndarray, beta: np.ndarray) -> dict:
+    """SPSS LOGISTIC REGRESSION /SAVE statistics (leverage, residuals, Cook's, DfBeta)."""
+    p = special.expit(X @ beta)
+    w = p * (1 - p)
+    info_inv = np.linalg.pinv((X * w[:, None]).T @ X)
+    h = w * np.einsum("ij,jk,ik->i", X, info_inv, X)
+    e = y - p
+    one_h = np.clip(1 - h, 1e-12, None)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = e / np.sqrt(w)
+        dev = np.sign(e) * np.sqrt(-2 * (y * np.log(np.clip(p, 1e-300, None))
+                                         + (1 - y) * np.log(np.clip(1 - p, 1e-300, None))))
+        sres = np.sign(e) * np.sqrt(dev ** 2 + h * z ** 2 / one_h)
+        dfbeta = (X @ info_inv) * (e / one_h)[:, None]
+    return {"prob": p, "lever": h, "resid": e, "lresid": e / w, "zresid": z, "dev": dev,
+            "sresid": sres, "cook": z ** 2 * h / one_h ** 2, "dfbeta": dfbeta}
+
+
+SAVE_LOGISTIC = {"prob": ("PRE", "Predicted probability"), "group": ("PGR", "Predicted group"),
+                 "cook": ("COO", "Analog of Cook's influence statistics"),
+                 "lever": ("LEV", "Leverage value"), "dfbeta": ("DFB", "DFBETA"),
+                 "resid": ("RES", "Difference between observed and predicted probabilities"),
+                 "lresid": ("LRE", "Logit residual"), "sresid": ("SRE", "Studentized residual"),
+                 "zresid": ("ZRE", "Normalized residual"), "dev": ("DEV", "Deviance value")}
+SAVE_KEYWORDS = {"prob": "PRED", "group": "PGROUP", "cook": "COOK", "lever": "LEVER",
+                 "dfbeta": "DFBETA", "resid": "RESID", "lresid": "LRESID", "sresid": "SRESID",
+                 "zresid": "ZRESID", "dev": "DEV"}
+_METHOD_TEXT = {"enter": "Enter", "fstep_cond": "Forward Stepwise (Conditional)",
+                "fstep_lr": "Forward Stepwise (Likelihood Ratio)",
+                "fstep_wald": "Forward Stepwise (Wald)",
+                "bstep_cond": "Backward Stepwise (Conditional)",
+                "bstep_lr": "Backward Stepwise (Likelihood Ratio)",
+                "bstep_wald": "Backward Stepwise (Wald)"}
+_METHOD_KW = {"enter": "ENTER", "fstep_cond": "FSTEP(COND)", "fstep_lr": "FSTEP(LR)",
+              "fstep_wald": "FSTEP(WALD)", "bstep_cond": "BSTEP(COND)",
+              "bstep_lr": "BSTEP(LR)", "bstep_wald": "BSTEP(WALD)"}
+
+
+def binary_logistic(ds: Dataset, dependent: str, covariates: list[str] | None = None,
                     categorical: dict[str, tuple[str, str]] | None = None,
                     method: str = "enter", cut: float = 0.5, p_enter: float = 0.05,
                     p_remove: float = 0.10, max_iter: int = 20, constant: bool = True,
                     hosmer: bool = True, ci: bool = True, level: float = 0.95,
                     iteration_history: bool = False, each_step: bool = True,
-                    save=()) -> LogisticResult:
-    """``categorical`` maps a covariate to (contrast, reference): ("indicator"|"deviation",
-    "last"|"first"). ``save`` may contain "prob" and "group"."""
+                    save=(), *, blocks: list[tuple[str, list[str]]] | None = None,
+                    class_plot: bool = False, casewise: bool = False,
+                    casewise_sd: float = 2.0, casewise_all: bool = False,
+                    correlations: bool = False) -> LogisticResult:
+    """``blocks`` = [(method, terms)], a term being a covariate or an interaction "a*b";
+    without it one block (method, covariates) is used. ``categorical`` maps a variable to
+    (contrast, reference) with contrast in :data:`CONTRASTS` and reference "last"|"first".
+    ``save`` keys are those of :data:`SAVE_LOGISTIC`."""
+    if blocks is None:
+        blocks = [(method, list(covariates or []))]
+    blocks = [(m, list(t)) for m, t in blocks if t]
+    terms = list(dict.fromkeys(t for _, ts in blocks for t in ts))
+    variables = list(dict.fromkeys(p for t in terms for p in _term_parts(t)))
     categorical = dict(categorical or {})
-    for name in covariates:
+    for name in variables:
         if ds.var(name).type != NUMERIC and name not in categorical:
             categorical[name] = ("indicator", "last")
+    categorical = {k: v for k, v in categorical.items() if k in variables}
     dvar = ds.var(dependent)
     section = Section("Logistic Regression")
     cat_sub = "".join(f"\n  /CONTRAST ({c})={categorical[c][0].capitalize()}"
                       + ("(1)" if categorical[c][1] == "first" else "")
-                      for c in covariates if c in categorical)
-    meth_kw = {"enter": "ENTER", "fstep_lr": "FSTEP(LR)", "fstep_wald": "FSTEP(WALD)",
-               "bstep_lr": "BSTEP(LR)", "bstep_wald": "BSTEP(WALD)"}[method]
-    section.log(f"LOGISTIC REGRESSION VARIABLES {dependent}\n  /METHOD={meth_kw} "
-                + " ".join(covariates) + cat_sub
-                + ("\n  /SAVE=" + " ".join({"prob": "PRED", "group": "PGROUP"}[s]
-                                          for s in save) if save else "")
-                + "\n  /PRINT=" + " ".join(["GOODFIT"] * hosmer + ([f"CI({level * 100:g})"]
-                                                                 if ci else [])
-                                          + ["ITER(1)"] * iteration_history)
+                      for c in variables if c in categorical)
+    prints = ["GOODFIT"] * hosmer + ([f"CI({level * 100:g})"] if ci else []) + \
+        ["ITER(1)"] * iteration_history + ["CORR"] * correlations
+    section.log(f"LOGISTIC REGRESSION VARIABLES {dependent}"
+                + "".join(f"\n  /METHOD={_METHOD_KW[m]} " + " ".join(
+                    t.replace("*", " BY ") if "*" in t else t for t in ts) for m, ts in blocks)
+                + cat_sub
+                + ("\n  /SAVE=" + " ".join(SAVE_KEYWORDS[s] for s in SAVE_LOGISTIC if s in save)
+                   if save else "")
+                + ("\n  /CLASSPLOT" if class_plot else "")
+                + (("\n  /CASEWISE OUTLIER(" + f"{casewise_sd:g})" if not casewise_all else
+                    "\n  /CASEWISE") if casewise else "")
+                + "\n  /PRINT=" + " ".join(prints)
                 + f"\n  /CRITERIA=PIN({p_enter:g}) POUT({p_remove:g}) ITERATE({max_iter})"
                   f" CUT({cut:g}).")
     result = LogisticResult(section)
+    if not terms:
+        section.note("Warning", "No covariates were specified.", style="warning")
+        return result
 
-    raw = {c: _raw(ds, c, c in categorical) for c in covariates}
+    raw = {c: _raw(ds, c, c in categorical) for c in variables}
     ydata = ds.analysis_series(dependent)
     total = ds.n_cases
     frame = pd.DataFrame({"__y": ydata, **raw})
@@ -283,8 +399,7 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
     y = (frame["__y"] == levels[1]).to_numpy(float)
 
     codings: dict[str, _Coding] = {}
-    blocks, effects = [], []
-    for c in covariates:
+    for c in variables:
         if c in categorical:
             contrast, ref = categorical[c]
             coding = _coding(ds, c, frame[c], contrast, ref)
@@ -293,16 +408,19 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
                              "and was removed from the analysis.", style="warning")
                 continue
             codings[c] = coding
-            enc = _encode(frame[c], coding)
-            blocks.append(enc)
-            effects.append(_Effect(c, list(enc.columns), True))
-        else:
-            blocks.append(frame[[c]].astype(float))
-            effects.append(_Effect(c, [c], False))
-    if not effects:
+    sub_raw = {c: frame[c] for c in variables}
+    parts_df, effects_by_term = [], {}
+    for t in terms:
+        if any(p in categorical and p not in codings for p in _term_parts(t)):
+            continue
+        tf, is_cat = _term_frame(t, sub_raw, codings)
+        parts_df.append(tf)
+        effects_by_term[t] = _Effect(term_label(t), list(tf.columns), is_cat)
+    if not effects_by_term:
         section.note("Warning", "No valid covariates.", style="warning")
         return result
-    design = pd.concat(blocks, axis=1)
+    design = pd.concat(parts_df, axis=1)
+    design = design.loc[:, ~design.columns.duplicated()]
     if constant:
         design["Constant"] = 1.0
     if codings:
@@ -338,14 +456,10 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
         return s, len(cols), float(stats.chi2.sf(s, len(cols)))
 
     fit0 = fit([])
-    ll0 = fit0.ll
-    if not constant:
-        ll0 = len(y) * math.log(0.5)
+    ll0 = fit0.ll if constant else len(y) * math.log(0.5)
     p0 = probs(fit0)
 
-    letters = iter("abcdefghijklmnopqrstuvwxyz")
-
-    def classification(step_rows: list[tuple[str, np.ndarray]], title_cut: float) -> Table:
+    def classification(step_rows: list[tuple[str, np.ndarray]], title_cut: float):
         rows = []
         for label, prob in step_rows:
             pred = (prob > title_cut).astype(float)
@@ -407,37 +521,53 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
         return rows
 
     nc = ["", "", "", "Score", "df", "Sig."]
-    section.table(Table("Variables not in the Equation", nc, not_in_rows(fit0, effects, "Step 0"),
-                        row_header_cols=3))
+    all_effects = list(effects_by_term.values())
+    section.table(Table("Variables not in the Equation", nc,
+                        not_in_rows(fit0, all_effects, "Step 0"), row_header_cols=3))
 
-    # ---------------------------------------------------------------- selection
-    def removal_stat(step_effects: list[_Effect], f: _Fit, e: _Effect, lr: bool):
-        if lr:
+    # ---------------------------------------------------------------- selection helpers
+    def removal_stat(step_effects: list[_Effect], f: _Fit, e: _Effect, kind: str):
+        idx = [f.cols.index(c) for c in e.cols]
+        if kind == "lr":
             reduced = fit([x for x in step_effects if x is not e])
             change = reduced.m2ll - f.m2ll
             return change, len(e.cols), float(stats.chi2.sf(change, len(e.cols))), reduced.ll
-        idx = [f.cols.index(c) for c in e.cols]
+        if kind == "cond":
+            others = [i for i in range(len(f.cols)) if i not in idx]
+            cov = f.cov
+            b_red = f.beta[others] - cov[np.ix_(others, idx)] @ np.linalg.pinv(
+                cov[np.ix_(idx, idx)]) @ f.beta[idx]
+            X = design[[f.cols[i] for i in others]].to_numpy(float)
+            ll_c = _loglik(X, y, b_red) if others else len(y) * math.log(0.5)
+            change = -2 * (ll_c - f.ll)
+            return change, len(e.cols), float(stats.chi2.sf(max(change, 0), len(e.cols))), ll_c
         w = _wald(f.beta[idx], f.cov[np.ix_(idx, idx)])
         return w, len(e.cols), float(stats.chi2.sf(w, len(e.cols))), None
 
-    steps: list[_Step] = []
-    lr = method.endswith("_lr")
-    if method == "enter" or method.startswith("bstep"):
-        f1 = fit(effects)
-        steps.append(_Step(list(effects), f1, [e.name for e in effects], []))
-    if method != "enter":
-        current = list(effects) if method.startswith("bstep") else []
-        f = steps[-1].fit if steps else fit0
-        last_change: tuple[str, str] | None = None
-        for _ in range(4 * len(effects) + 4):
+    def run_block(meth: str, start_effs: list[_Effect], start_fit: _Fit,
+                  block_effs: list[_Effect]) -> list[_Step]:
+        steps: list[_Step] = []
+        kind = meth.split("_")[1] if "_" in meth else "lr"
+        if meth == "enter":
+            new = [e for e in block_effs if e not in start_effs]
+            effs = start_effs + new
+            return [_Step(effs, fit(effs), [e.name for e in new], [])]
+        current = list(start_effs)
+        f = start_fit
+        if meth.startswith("bstep"):
+            new = [e for e in block_effs if e not in current]
+            current = current + new
+            f = fit(current)
+            steps.append(_Step(list(current), f, [e.name for e in new], []))
+        last_change = None
+        for _ in range(4 * len(block_effs) + 4):
             changed = False
-            order = ("remove", "enter") if method.startswith("bstep") else ("enter", "remove")
+            order = ("remove", "enter") if meth.startswith("bstep") else ("enter", "remove")
             for action in order:
                 if action == "enter":
-                    outside = [e for e in effects if e not in current]
                     best = None
-                    for e in outside:
-                        if last_change == ("remove", e.name):
+                    for e in block_effs:
+                        if e in current or last_change == ("remove", e.name):
                             continue
                         s, df, p = score_for(f, e.cols)
                         if best is None or p < best[1]:
@@ -450,17 +580,14 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
                         changed = True
                         break
                 else:
-                    if not current:
-                        continue
                     worst = None
                     for e in current:
-                        if last_change == ("enter", e.name) and len(current) == 1:
+                        if e not in block_effs or last_change == ("enter", e.name):
                             continue
-                        _, _, p, _ = removal_stat(current, f, e, lr)
+                        _, _, p, _ = removal_stat(current, f, e, kind)
                         if worst is None or p > worst[1]:
                             worst = (e, p)
-                    if worst is not None and worst[1] > p_remove and \
-                            last_change != ("enter", worst[0].name):
+                    if worst is not None and worst[1] > p_remove:
                         current = [e for e in current if e is not worst[0]]
                         f = fit(current)
                         steps.append(_Step(list(current), f, [], [worst[0].name]))
@@ -469,168 +596,278 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str],
                         break
             if not changed:
                 break
+        return steps
 
-    method_text = {"enter": "Enter", "fstep_lr": "Forward Stepwise (Likelihood Ratio)",
-                   "fstep_wald": "Forward Stepwise (Wald)",
-                   "bstep_lr": "Backward Stepwise (Likelihood Ratio)",
-                   "bstep_wald": "Backward Stepwise (Wald)"}[method]
-    section.note(f"Block 1: Method = {method_text}", "")
-    if not steps:
-        section.note("", "No variables were entered into the equation (no score statistic "
-                     f"was significant at the {fmt(p_enter)} level).", style="warning")
-        return result
-    shown = steps if each_step else steps[-1:]
-    first_no = len(steps) - len(shown) + 1
-
-    if iteration_history:
-        hrows = []
-        for k, s in enumerate(shown, start=first_no):
-            for i, (m2, b) in enumerate(s.fit.history):
-                coefs = np.r_[b[-1:], b[:-1]] if constant else b
-                hrows.append([f"Step {k}" if i == 0 else "", str(i + 1), fmt(m2, 3)]
-                             + [fmt(v, 3) for v in coefs])
-        width = max(len(r) for r in hrows)
-        names = max((s.fit.cols for s in shown), key=len)
-        heads = (["Constant"] + names[:-1]) if constant else names
-        for r in hrows:
-            r += [""] * (width - len(r))
-        section.table(Table("Iteration Historyᵃ", ["Iteration", "", "-2 Log likelihood"]
-                            + [("Coefficients", h) for h in heads[:width - 3]], hrows,
-                            row_header_cols=2, footnotes=[
-                                f"a. Method: {method_text}",
-                                f"Initial -2 Log Likelihood: {fmt(fit0.m2ll, 3)}"]))
-
-    orows, srows, hlrows, hlcont = [], [], [], []
-    prev_ll = fit0.ll if constant else ll0
-    for k, s in enumerate(steps, start=1):
-        f = s.fit
-        df_model = len(f.cols) - (1 if constant else 0)
-        prev_df = (len(steps[k - 2].fit.cols) - (1 if constant else 0)) if k > 1 else 0
-        model_chi = 2 * (f.ll - ll0)
-        step_chi = 2 * (f.ll - prev_ll)
-        step_df = df_model - prev_df
-        if k >= first_no:
-            orows += [[f"Step {k}", "Step", fmt(step_chi), fmt_int(abs(step_df)),
-                       _sig(float(stats.chi2.sf(abs(step_chi), abs(step_df))) if step_df
-                            else float("nan"))],
-                      ["", "Block", fmt(model_chi), fmt_int(df_model),
-                       _sig(float(stats.chi2.sf(model_chi, df_model)))],
-                      ["", "Model", fmt(model_chi), fmt_int(df_model),
-                       _sig(float(stats.chi2.sf(model_chi, df_model)))]]
-            cs, nk = _pseudo_r2(ll0, f.ll, len(y))
-            srows.append([str(k), fmt(f.m2ll, 3) + sup("a"), fmt(cs), fmt(nk)])
-            if hosmer:
-                chi, hdf, hp, groups = hosmer_lemeshow(y, probs(f))
-                hlrows.append([str(k), fmt(chi), fmt_int(hdf), _sig(hp)])
-                for g, (m, o1, e1) in enumerate(groups, start=1):
-                    hlcont.append([f"Step {k}" if g == 1 else "", str(g), fmt_int(m - o1),
-                                   fmt(m - e1, 3), fmt_int(o1), fmt(e1, 3), fmt_int(m)])
-        prev_ll = f.ll
-    section.table(Table("Omnibus Tests of Model Coefficients", ["", "", "Chi-square", "df",
-                                                                "Sig."], orows,
-                        row_header_cols=2,
-                        footnotes=["A negative Chi-squares value indicates that the "
-                                   "Chi-squares value has decreased from the previous step."]
-                        if any(r[2].startswith("-") for r in orows) else []))
-    last = steps[-1].fit
-    term = (f"a. Estimation terminated at iteration number {last.iterations} because "
-            "parameter estimates changed by less than .001." if last.converged else
-            f"a. Estimation terminated at iteration number {last.iterations} because maximum "
-            "iterations has been reached. Final solution cannot be found.")
-    section.table(Table("Model Summary", ["Step", "-2 Log likelihood", "Cox & Snell R Square",
-                                          "Nagelkerke R Square"], srows, footnotes=[term]))
-    if not last.converged:
-        section.note("Warning", "The maximum number of iterations was reached; the estimates "
-                     "may be infinite (complete or quasi-complete separation).", style="warning")
-    if hosmer:
-        section.table(Table("Hosmer and Lemeshow Test", ["Step", "Chi-square", "df", "Sig."],
-                            hlrows))
-        g0, g1 = f"{dvar.title} = {dlabels[0]}", f"{dvar.title} = {dlabels[1]}"
-        section.table(Table("Contingency Table for Hosmer and Lemeshow Test",
-                            ["", "", (g0, "Observed"), (g0, "Expected"), (g1, "Observed"),
-                             (g1, "Expected"), "Total"], hlcont, row_header_cols=2))
-    section.table(Table("Classification Tableᵃ", ccols, classification(
-        [(f"Step {k}", probs(s.fit)) for k, s in enumerate(steps, start=1)
-         if k >= first_no], cut), row_header_cols=3,
-        footnotes=[f"a. The cut value is {fmt(cut, 3)}"]))
-
-    # Variables in the Equation
+    # ---------------------------------------------------------------- blocks
+    z = stats.norm.ppf(0.5 + level / 2)
     vcols_full = vcols + ([(f"{pct(level)} C.I.for EXP(B)", "Lower"),
                            (f"{pct(level)} C.I.for EXP(B)", "Upper")] if ci else [])
-    z = stats.norm.ppf(0.5 + level / 2)
-    vrows, notes = [], []
-    for k, s in enumerate(steps, start=1):
-        if k < first_no:
+    cur_effs: list[_Effect] = []
+    cur_fit = fit0
+    last_fit, last_effs = None, None
+    letters = iter(LETTERS_ALL)
+    for bi, (meth, bterms) in enumerate(blocks, start=1):
+        block_effs = [effects_by_term[t] for t in bterms if t in effects_by_term]
+        method_text = _METHOD_TEXT[meth]
+        section.note(f"Block {bi}: Method = {method_text}", "")
+        steps = run_block(meth, cur_effs, cur_fit, block_effs)
+        if not steps:
+            section.note("", "No variables were entered into the equation (no score statistic "
+                         f"was significant at the {fmt(p_enter)} level).", style="warning")
             continue
-        f = s.fit
-        se = f.se()
-        letter = next(letters)
-        what = s.entered and f"Variable(s) entered on step {k}: " + ", ".join(s.entered)
-        what = what or f"Variable(s) removed on step {k}: " + ", ".join(s.removed)
-        notes.append(f"{letter}. {what}.")
-        first = True
-        for e in s.effects:
-            idx = [f.cols.index(c) for c in e.cols]
-            if e.categorical and len(idx) > 1:
-                w = _wald(f.beta[idx], f.cov[np.ix_(idx, idx)])
-                vrows.append([f"Step {k}{sup(letter)}" if first else "", e.name, "", "",
-                              fmt(w), fmt_int(len(idx)), fmt_p(stats.chi2.sf(w, len(idx))),
-                              ""] + (["", ""] if ci else []))
-                first = False
-            for i in idx:
-                vrows.append(_coef_row(f"Step {k}{sup(letter)}" if first else "", f.cols[i],
-                                       f.beta[i], se[i], ci, z))
-                first = False
-        if constant:
-            vrows.append(_coef_row("", "Constant", f.beta[-1], se[-1], ci, z)[:8]
-                         + (["", ""] if ci else []))
-    section.table(Table("Variables in the Equation", vcols_full, vrows, row_header_cols=2,
-                        footnotes=notes))
+        block_ll = cur_fit.ll if cur_effs or constant else ll0
+        shown = steps if each_step else steps[-1:]
+        first_no = len(steps) - len(shown) + 1
 
-    if lr and method != "enter":
-        mrows = []
+        if iteration_history:
+            hrows = []
+            for k, s in enumerate(shown, start=first_no):
+                for i, (m2, b) in enumerate(s.fit.history):
+                    coefs = np.r_[b[-1:], b[:-1]] if constant else b
+                    hrows.append([f"Step {k}" if i == 0 else "", str(i + 1), fmt(m2, 3)]
+                                 + [fmt(v, 3) for v in coefs])
+            if hrows:
+                width = max(len(r) for r in hrows)
+                names = max((s.fit.cols for s in shown), key=len)
+                heads = (["Constant"] + names[:-1]) if constant else names
+                for r in hrows:
+                    r += [""] * (width - len(r))
+                section.table(Table("Iteration Historyᵃ", ["Iteration", "", "-2 Log likelihood"]
+                                    + [("Coefficients", h) for h in heads[:width - 3]], hrows,
+                                    row_header_cols=2, footnotes=[
+                                        f"a. Method: {method_text}",
+                                        f"Initial -2 Log Likelihood: {fmt(fit0.m2ll, 3)}"]))
+
+        orows, srows, hlrows, hlcont = [], [], [], []
+        prev_ll = block_ll
+        prev_df = len(cur_fit.cols) - (1 if constant else 0)
+        block_df0 = prev_df
         for k, s in enumerate(steps, start=1):
-            if k < first_no or not s.effects:
+            f = s.fit
+            df_model = len(f.cols) - (1 if constant else 0)
+            step_chi = 2 * (f.ll - prev_ll)
+            step_df = df_model - prev_df
+            block_chi = 2 * (f.ll - block_ll)
+            block_df = df_model - block_df0
+            model_chi = 2 * (f.ll - ll0)
+            if k >= first_no:
+                orows += [[f"Step {k}", "Step", fmt(step_chi), fmt_int(abs(step_df)),
+                           _sig(float(stats.chi2.sf(abs(step_chi), abs(step_df))) if step_df
+                                else float("nan"))],
+                          ["", "Block", fmt(block_chi), fmt_int(abs(block_df)),
+                           _sig(float(stats.chi2.sf(abs(block_chi), abs(block_df)))
+                                if block_df else float("nan"))],
+                          ["", "Model", fmt(model_chi), fmt_int(df_model),
+                           _sig(float(stats.chi2.sf(model_chi, df_model)) if df_model
+                                else float("nan"))]]
+                cs, nk = _pseudo_r2(ll0, f.ll, len(y))
+                srows.append([str(k), fmt(f.m2ll, 3) + sup("a"), fmt(cs), fmt(nk)])
+                if hosmer:
+                    chi, hdf, hp, groups = hosmer_lemeshow(y, probs(f))
+                    hlrows.append([str(k), fmt(chi), fmt_int(hdf), _sig(hp)])
+                    for g, (m, o1, e1) in enumerate(groups, start=1):
+                        hlcont.append([f"Step {k}" if g == 1 else "", str(g), fmt_int(m - o1),
+                                       fmt(m - e1, 3), fmt_int(o1), fmt(e1, 3), fmt_int(m)])
+            prev_ll, prev_df = f.ll, df_model
+        section.table(Table("Omnibus Tests of Model Coefficients", ["", "", "Chi-square", "df",
+                                                                    "Sig."], orows,
+                            row_header_cols=2,
+                            footnotes=["A negative Chi-squares value indicates that the "
+                                       "Chi-squares value has decreased from the previous step."]
+                            if any(r[2].startswith("-") for r in orows) else []))
+        last = steps[-1].fit
+        term = (f"a. Estimation terminated at iteration number {last.iterations} because "
+                "parameter estimates changed by less than .001." if last.converged else
+                f"a. Estimation terminated at iteration number {last.iterations} because "
+                "maximum iterations has been reached. Final solution cannot be found.")
+        section.table(Table("Model Summary", ["Step", "-2 Log likelihood",
+                                              "Cox & Snell R Square", "Nagelkerke R Square"],
+                            srows, footnotes=[term]))
+        if not last.converged:
+            section.note("Warning", "The maximum number of iterations was reached; the "
+                         "estimates may be infinite (complete or quasi-complete separation).",
+                         style="warning")
+        if hosmer:
+            section.table(Table("Hosmer and Lemeshow Test", ["Step", "Chi-square", "df",
+                                                             "Sig."], hlrows))
+            g0, g1 = f"{dvar.title} = {dlabels[0]}", f"{dvar.title} = {dlabels[1]}"
+            section.table(Table("Contingency Table for Hosmer and Lemeshow Test",
+                                ["", "", (g0, "Observed"), (g0, "Expected"), (g1, "Observed"),
+                                 (g1, "Expected"), "Total"], hlcont, row_header_cols=2))
+        section.table(Table("Classification Tableᵃ", ccols, classification(
+            [(f"Step {k}", probs(s.fit)) for k, s in enumerate(steps, start=1)
+             if k >= first_no], cut), row_header_cols=3,
+            footnotes=[f"a. The cut value is {fmt(cut, 3)}"]))
+
+        vrows, notes = [], []
+        for k, s in enumerate(steps, start=1):
+            if k < first_no:
                 continue
-            for j, e in enumerate(s.effects):
-                change, df, p, ll_red = removal_stat(s.effects, s.fit, e, True)
-                mrows.append([f"Step {k}" if j == 0 else "", e.name, fmt(ll_red, 3),
-                              fmt(change, 3), fmt_int(df), fmt_p(p)])
-        section.table(Table("Model if Term Removed", ["", "Variable", "Model Log Likelihood",
-                                                      "Change in -2 Log Likelihood", "df",
-                                                      "Sig. of the Change"], mrows,
-                            row_header_cols=2))
-    if method != "enter":
-        nrows = []
-        for k, s in enumerate(steps, start=1):
-            outside = [e for e in effects if e not in s.effects]
-            if k >= first_no and outside:
-                nrows += not_in_rows(s.fit, outside, f"Step {k}")
-        if nrows:
-            section.table(Table("Variables not in the Equation", nc, nrows, row_header_cols=3))
+            f = s.fit
+            se = f.se()
+            letter = next(letters)
+            what = s.entered and f"Variable(s) entered on step {k}: " + ", ".join(s.entered)
+            what = what or f"Variable(s) removed on step {k}: " + ", ".join(s.removed)
+            notes.append(f"{letter}. {what}.")
+            first = True
+            for e in s.effects:
+                idx = [f.cols.index(c) for c in e.cols]
+                if e.categorical and len(idx) > 1:
+                    w = _wald(f.beta[idx], f.cov[np.ix_(idx, idx)])
+                    vrows.append([f"Step {k}{sup(letter)}" if first else "", e.name, "", "",
+                                  fmt(w), fmt_int(len(idx)),
+                                  fmt_p(stats.chi2.sf(w, len(idx))), ""]
+                                 + (["", ""] if ci else []))
+                    first = False
+                for i in idx:
+                    vrows.append(_coef_row(f"Step {k}{sup(letter)}" if first else "",
+                                           f.cols[i], f.beta[i], se[i], ci, z))
+                    first = False
+            if constant:
+                vrows.append(_coef_row("", "Constant", f.beta[-1], se[-1], ci, z)[:8]
+                             + (["", ""] if ci else []))
+        section.table(Table("Variables in the Equation", vcols_full, vrows, row_header_cols=2,
+                            footnotes=notes))
+
+        if correlations:
+            rrows = []
+            for k, s in enumerate(steps, start=1):
+                if k < first_no:
+                    continue
+                f = s.fit
+                order = ([len(f.cols) - 1] if constant else []) + \
+                    list(range(len(f.cols) - (1 if constant else 0)))
+                sd = f.se()
+                R = f.cov / np.outer(sd, sd)
+                for a, i in enumerate(order):
+                    rrows.append([f"Step {k}" if a == 0 else "", f.cols[i]]
+                                 + [fmt(R[i, j]) for j in order])
+            width = max(len(r) for r in rrows) if rrows else 2
+            heads = ["Constant"] if constant else []
+            heads += [c for c in steps[-1].fit.cols if c != "Constant"]
+            for r in rrows:
+                r += [""] * (width - len(r))
+            section.table(Table("Correlation Matrix", ["", ""] + heads[:width - 2], rrows,
+                                row_header_cols=2))
+
+        if meth != "enter" and not meth.endswith("_wald"):
+            kind = meth.split("_")[1]
+            mrows = []
+            for k, s in enumerate(steps, start=1):
+                if k < first_no or not s.effects:
+                    continue
+                for j, e in enumerate([x for x in s.effects if x in block_effs]):
+                    change, df, p, ll_red = removal_stat(s.effects, s.fit, e, kind)
+                    mrows.append([f"Step {k}" if j == 0 else "", e.name, fmt(ll_red, 3),
+                                  fmt(change, 3), fmt_int(df), fmt_p(p)])
+            if mrows:
+                section.table(Table("Model if Term Removed" + (sup("a") if kind == "cond"
+                                                               else ""),
+                                    ["", "Variable", "Model Log Likelihood",
+                                     "Change in -2 Log Likelihood", "df",
+                                     "Sig. of the Change"], mrows, row_header_cols=2,
+                                    footnotes=["a. Based on conditional parameter estimates"]
+                                    if kind == "cond" else []))
+        if meth != "enter":
+            nrows = []
+            for k, s in enumerate(steps, start=1):
+                outside = [e for e in all_effects if e not in s.effects]
+                if k >= first_no and outside:
+                    nrows += not_in_rows(s.fit, outside, f"Step {k}")
+            if nrows:
+                section.table(Table("Variables not in the Equation", nc, nrows,
+                                    row_header_cols=3))
+        cur_effs, cur_fit = steps[-1].effects, steps[-1].fit
+        last_fit, last_effs = cur_fit, cur_effs
+
+    if last_fit is None:
+        return result
+    Xa = design[last_fit.cols].to_numpy(float)
+    dg = logistic_diagnostics(Xa, y, last_fit.beta)
+    if class_plot:
+        section.image("Observed Groups and Predicted Probabilities",
+                      _class_plot(y, dg["prob"], dlabels, cut, dvar.title), width=520)
+    if casewise:
+        hit = np.ones(len(y), bool) if casewise_all else np.abs(dg["sresid"]) > casewise_sd
+        crows = []
+        idx_cases = frame.index.to_numpy() + 1
+        for i in np.flatnonzero(hit):
+            pg = 1 if dg["prob"][i] > cut else 0
+            mis = "**" if pg != y[i] else ""
+            crows.append([fmt_int(idx_cases[i]), "S", dlabels[int(y[i])] + mis,
+                          fmt(dg["prob"][i]), dlabels[pg], fmt(dg["resid"][i]),
+                          fmt(dg["zresid"][i], 2)])
+        if crows:
+            section.table(Table("Casewise Listᵇ", [
+                "Case", "Selected Statusᵃ", (f"Observed", dvar.title), "Predicted",
+                "Predicted Group", ("Temporary Variable", "Resid"),
+                ("Temporary Variable", "ZResid")], crows, footnotes=[
+                "a. S = Selected, U = Unselected cases, and ** = Misclassified cases.",
+                "b. Cases with studentized residuals greater than "
+                f"{fmt(casewise_sd, 3)} are listed." if not casewise_all else
+                "b. All cases are listed."]))
+        else:
+            section.note("Casewise List", "The casewise plot is not produced because no "
+                         "outliers were found.")
 
     # ---------------------------------------------------------------- save
     if save:
-        allcols = [c for e in steps[-1].effects for c in e.cols]
         parts = []
-        for e in steps[-1].effects:
-            if e.categorical:
-                parts.append(_encode(ds.analysis_series(e.name), codings[e.name]))
-            else:
-                parts.append(numeric(ds, e.name).rename(e.name).to_frame())
+        full_raw = {c: _raw(ds, c, c in categorical) for c in variables}
+        for e_term, e in effects_by_term.items():
+            if e in last_effs:
+                tf, _ = _term_frame(e_term, full_raw, codings)
+                parts.append(tf)
         full = pd.concat(parts, axis=1) if parts else pd.DataFrame(index=ds.df.index)
+        full = full.loc[:, ~full.columns.duplicated()]
         if constant:
             full["Constant"] = 1.0
-        Xa = full[allcols + (["Constant"] if constant else [])].to_numpy(float)
-        prob = pd.Series(special.expit(Xa @ last.beta), index=ds.df.index)
-        if "prob" in save:
-            result.saved["PRE"] = ("Predicted probability", prob)
-        if "group" in save:
-            codes = [v if isinstance(v, (int, float)) else np.nan for v in levels]
-            grp = pd.Series(np.where(prob > cut, codes[1], codes[0]), index=ds.df.index)
-            grp[prob.isna()] = np.nan
-            result.saved["PGR"] = ("Predicted group", grp.astype(float))
+        Xall = full[last_fit.cols].to_numpy(float)
+        prob = pd.Series(special.expit(Xall @ last_fit.beta), index=ds.df.index)
+        index = ds.df.index
+        for key in [k for k in SAVE_LOGISTIC if k in save]:
+            root, label = SAVE_LOGISTIC[key]
+            if key == "prob":
+                result.saved[root] = (label, prob)
+            elif key == "group":
+                codes = [v if isinstance(v, (int, float)) else np.nan for v in levels]
+                grp = pd.Series(np.where(prob > cut, codes[1], codes[0]), index=index)
+                grp[prob.isna()] = np.nan
+                result.saved[root] = (label, grp.astype(float))
+            elif key == "dfbeta":
+                order = ([len(last_fit.cols) - 1] if constant else []) + \
+                    list(range(len(last_fit.cols) - (1 if constant else 0)))
+                for j, i in enumerate(order):
+                    s = pd.Series(np.nan, index=index)
+                    s[frame.index] = dg["dfbeta"][:, i]
+                    result.saved[f"{root}{j}"] = (f"{label} for {last_fit.cols[i]}", s)
+            else:
+                s = pd.Series(np.nan, index=index)
+                s[frame.index] = dg[key]
+                result.saved[root] = (label, s)
     return result
+
+
+LETTERS_ALL = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _class_plot(y, prob, dlabels, cut, title) -> bytes:
+    """SPSS CLASSPLOT as a stacked histogram of predicted probabilities by observed group."""
+    from rsstatchem.core.stats.roc import PALETTE, figure, png, style
+
+    fig = figure(6.4, 3.8)
+    ax = fig.add_subplot()
+    bins = np.linspace(0, 1, 41)
+    ax.hist([prob[y == 0], prob[y == 1]], bins=bins, stacked=True,
+            color=[PALETTE[1], PALETTE[0]], edgecolor="white",
+            label=[f"{dlabels[0][:1].upper() or '0'} = {dlabels[0]}",
+                   f"{dlabels[1][:1].upper() or '1'} = {dlabels[1]}"])
+    ax.axvline(cut, color="#333333", lw=1, ls="--")
+    ax.set_xlim(0, 1)
+    style(ax, "Observed Groups and Predicted Probabilities", "Predicted Probability",
+          "Frequency")
+    ax.legend(fontsize=8, frameon=False, title=title, title_fontsize=8)
+    return png(fig)
 
 
 def _coef_row(head: str, name: str, b: float, se: float, ci: bool, z: float) -> list[str]:
