@@ -88,7 +88,34 @@ def _numeric_vars(ds: Dataset, names: list[str]) -> list[Variable]:
 def descriptives(ds: Dataset, names: list[str], stats=DEFAULT_DESCRIPTIVES,
                  order: str | None = None) -> Section:
     """``order`` (or ``stats.options["order"]``): "variable" (list order), "alpha",
-    "amean" (ascending means) or "dmean" (descending means), as SPSS Display Order."""
+    "amean" (ascending means) or "dmean" (descending means), as SPSS Display Order.
+
+    ``stats.options["bootstrap"]`` (the Bootstrap… dialog values) adds SPSS bootstrap rows;
+    a multiply imputed dataset (``Imputation_``) gives the pooled output automatically."""
+    from rsstatchem.core.stats import mi_pool
+
+    views = mi_pool.auto_views(ds)
+    if views is not None:
+        from rsstatchem.core.stats.imputation import pooled_descriptives
+
+        nums = [v.name for v in _numeric_vars(ds, names)]
+        per_view = [(lb, _descriptives(v, names, stats, order)) for lb, v in views]
+        pooled = pooled_descriptives(ds, nums) if nums else Section("")
+        return mi_pool.combine("Descriptives", [i for i in pooled.items if i.kind == "table"],
+                               per_view)
+    section = _descriptives(ds, names, stats, order)
+    from rsstatchem.core.stats.resample import BootSpec
+
+    spec = BootSpec.from_options(_options(stats).get("bootstrap"))
+    if spec is not None:
+        from rsstatchem.core.stats import boot_procs
+
+        boot_procs.descriptives(section, ds, names, spec)
+    return section
+
+
+def _descriptives(ds: Dataset, names: list[str], stats=DEFAULT_DESCRIPTIVES,
+                  order: str | None = None) -> Section:
     order = order or _options(stats).get("order", "variable")
     variables = _numeric_vars(ds, names)
     if order == "alpha":
@@ -351,8 +378,32 @@ def frequencies(ds: Dataset, names: list[str], stats=(), show_tables: bool = Tru
     """FREQUENCIES. Extra options (keyword arguments or ``stats.options``): ``percentiles``
     (list), ``cut_points`` (n equal groups), ``grouped`` (values are group midpoints),
     ``chart_values`` ("frequencies" | "percentages"), ``order`` ("avalue" | "dvalue" |
-    "afreq" | "dfreq"), ``organize`` ("compare" | "variable") and ``limit`` (suppress tables
-    with more than n categories)."""
+    "afreq" | "dfreq"), ``organize`` ("compare" | "variable"), ``limit`` (suppress tables
+    with more than n categories) and ``bootstrap`` (Bootstrap… dialog values). A multiply
+    imputed dataset gives the pooled output automatically."""
+    from rsstatchem.core.stats import mi_pool
+
+    views = mi_pool.auto_views(ds)
+    if views is not None:
+        per_view = [(lb, _frequencies(v, names, stats, show_tables, chart, normal_curve,
+                                      **options)) for lb, v in views]
+        return mi_pool.combine("Frequencies", mi_pool.pooled_frequencies(views, names),
+                               per_view)
+    section = _frequencies(ds, names, stats, show_tables, chart, normal_curve, **options)
+    o = _options(stats)
+    o.update(options)
+    from rsstatchem.core.stats.resample import BootSpec
+
+    spec = BootSpec.from_options(o.get("bootstrap"))
+    if spec is not None:
+        from rsstatchem.core.stats import boot_procs
+
+        boot_procs.frequencies(section, ds, names, spec)
+    return section
+
+
+def _frequencies(ds: Dataset, names: list[str], stats=(), show_tables: bool = True,
+                 chart: str = "none", normal_curve: bool = True, **options) -> Section:
     o = _options(stats)
     o.update(options)
     variables = [ds.var(n) for n in names]

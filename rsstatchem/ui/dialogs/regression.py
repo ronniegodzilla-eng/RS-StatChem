@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QPushButton, QVBoxLayout)
 
 from rsstatchem.core.dataset import NUMERIC, format_code
-from rsstatchem.core.stats import correlate, regression
+from rsstatchem.core.stats import boot_procs, correlate, mi_pool, regression
+from rsstatchem.core.stats import imputation as mi
 from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog, is_numeric
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 
 
 def _check(owner, key, text):
@@ -22,7 +24,7 @@ def _check(owner, key, text):
     return cb
 
 
-class BivariateDialog(VariablePickerDialog):
+class BivariateDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"pearson": True, "kendall": False, "spearman": False, "two_tailed": True,
                 "flag": True, "descriptives": False, "listwise": False, "xprod": False,
                 "ci": False, "ci_level": 95.0, "bias": False, "rank_se": "fieller"}
@@ -32,6 +34,7 @@ class BivariateDialog(VariablePickerDialog):
         self.add_target("vars", "Variables:", accepts=is_numeric, min_items=2)
         self.add_option_button("Options...", self._options)
         self.add_option_button("Confidence interval...", self._ci)
+        self.add_bootstrap_button()
         box = QGroupBox("Correlation Coefficients")
         row = QHBoxLayout(box)
         for key, text in (("pearson", "Pearson"), ("kendall", "Kendall's tau-b"),
@@ -86,14 +89,21 @@ class BivariateDialog(VariablePickerDialog):
 
     def compute(self):
         o = self.opts
-        return correlate.bivariate(self.ds, self.selected("vars"), o["pearson"], o["kendall"],
-                                   o["spearman"], o["two_tailed"], o["flag"], o["descriptives"],
-                                   o["listwise"], cross_products=o["xprod"], ci=o["ci"],
-                                   ci_level=o["ci_level"] / 100, bias_adjust=o["bias"],
-                                   rank_se=o["rank_se"])
+        names = self.selected("vars")
+        return self.resampled(
+            lambda: correlate.bivariate(self.ds, names, o["pearson"], o["kendall"],
+                                        o["spearman"], o["two_tailed"], o["flag"],
+                                        o["descriptives"], o["listwise"],
+                                        cross_products=o["xprod"], ci=o["ci"],
+                                        ci_level=o["ci_level"] / 100, bias_adjust=o["bias"],
+                                        rank_se=o["rank_se"]),
+            boot=lambda sec, spec: boot_procs.correlations(
+                sec, self.ds, names, spec, o["pearson"], o["kendall"], o["spearman"],
+                o["listwise"]),
+            pool=lambda views: mi.pooled_correlations(self.ds, names) if o["pearson"] else [])
 
 
-class PartialDialog(VariablePickerDialog):
+class PartialDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"two_tailed": True, "flag": True, "zero_order": False, "descriptives": False,
                 "listwise": True}
 
@@ -102,6 +112,7 @@ class PartialDialog(VariablePickerDialog):
         self.add_target("vars", "Variables:", accepts=is_numeric, min_items=2)
         self.add_target("controls", "Controlling for:", accepts=is_numeric)
         self.add_option_button("Options...", self._options)
+        self.add_bootstrap_button()
         box = QGroupBox("Test of Significance")
         row = QHBoxLayout(box)
         tails = QComboBox()
@@ -129,9 +140,13 @@ class PartialDialog(VariablePickerDialog):
 
     def compute(self):
         o = self.opts
-        return correlate.partial(self.ds, self.selected("vars"), self.selected("controls"),
-                                 o["two_tailed"], o["flag"], o["zero_order"],
-                                 o["descriptives"], o["listwise"])
+        names, controls = self.selected("vars"), self.selected("controls")
+        return self.resampled(
+            lambda: correlate.partial(self.ds, names, controls, o["two_tailed"], o["flag"],
+                                      o["zero_order"], o["descriptives"], o["listwise"]),
+            boot=lambda sec, spec: boot_procs.partial(sec, self.ds, names, controls, spec),
+            pool=lambda views: mi_pool.pooled_partial(views, names, controls) if controls
+            else [])
 
 
 # ============================================================================ Linear
@@ -164,7 +179,7 @@ class _RuleDialog(QDialog):
         lay.addWidget(buttons)
 
 
-class LinearRegressionDialog(VariablePickerDialog):
+class LinearRegressionDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"method": "enter", "blocks": [["enter", []]],
                 "statistics": list(regression.DEFAULT_STATS),
                 "plots": ["histogram", "pp", "scatter"], "pairs": [], "partial_plots": False,
@@ -211,6 +226,7 @@ class LinearRegressionDialog(VariablePickerDialog):
         self.add_option_button("Save...", self._save)
         self.add_option_button("Options...", self._options)
         self.add_option_button("Assumptions...", self._assumptions)
+        self.add_bootstrap_button()
         blocks = [[m, [n for n in names if ds.has_name(n)]]
                   for m, names in self.opts.get("blocks") or [["enter", []]]]
         self._blocks = blocks or [["enter", []]]
@@ -459,6 +475,13 @@ class LinearRegressionDialog(VariablePickerDialog):
             rel, val = o["rule"]
             value = float(val.replace(",", ".")) if self.ds.var(sel).type == NUMERIC else val
             selection = (sel, rel, value)
+        return self.resampled(
+            lambda: self._linear(selection),
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec),
+            pool="models", level=self.level())
+
+    def _linear(self, selection):
+        o = self.opts
         return regression.linear(
             self.ds, self.selected_one("dep"), None, statistics=tuple(o["statistics"]),
             plots=tuple(o["plots"]), save=tuple(o["save"]),

@@ -442,3 +442,7 @@ def selftest() -> None:
     mi.pooled_logistic(new, "g", ["x", "z"])
     mi.pooled_correlations(new, ["x", "z"])
     mi.pooled_independent_t(new, ["y"], "g", (0.0, 1.0))
+    from rsstatchem.core.stats import mi_pool  # WP6b automatic pooling
+
+    mi_pool.selftest()
+    assert mi_pool.auto_views(new) is not None

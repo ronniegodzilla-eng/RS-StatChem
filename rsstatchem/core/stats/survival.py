@@ -1154,6 +1154,23 @@ def cox_regression(ds: Dataset, time: str, status: str, event, covariates: list[
 
     cols = final.cols
     beta = final.beta
+    models = []
+    if len(cols):
+        from rsstatchem.core.stats import boot_models as bm
+        info = bm.cox_model(fr["t"].to_numpy(float), fr["d"].to_numpy(float),
+                            data.X[:, cols] if tcov_index is None else X[:, cols[:0]],
+                            st if strata else None, [names_x[c] for c in cols], beta,
+                            se=np.sqrt(np.clip(np.diag(final.cov), 0, None)),
+                            rows=fr.index.to_numpy(), table="Variables in the Equation",
+                            headers=[""], stat="wald", exp=True, stat_label="Wald")
+        if tcov_index is not None:
+            info.bootable = False
+            info.note = ("Bootstrap results are not available for models with time-dependent "
+                         "covariates.")
+        elif method != "enter":
+            info.note = ("Variable selection is not repeated in the bootstrap samples: the "
+                         "final model is re-estimated with the selected covariates.")
+        models.append(info)
     zbar = means_all[cols] if len(cols) else np.zeros(0)
     base = _baseline(data, cols, beta, final.cov, zbar)
     if baseline and tcov_index is None:
@@ -1185,7 +1202,7 @@ def cox_regression(ds: Dataset, time: str, status: str, event, covariates: list[
     if not final.converged:
         sec.note("Warning", "Estimation terminated because the maximum number of iterations "
                  "was reached; final solution cannot be found.", "warning")
-    return Result(sec, saved)
+    return Result(sec, saved, models)
 
 
 def sup_letter(i: int) -> str:

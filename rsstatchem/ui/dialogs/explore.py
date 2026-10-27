@@ -4,11 +4,12 @@ from __future__ import annotations
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QRadioButton)
 
-from rsstatchem.core.stats import crosstabs, explore, reliability
+from rsstatchem.core.stats import boot_procs, crosstabs, explore, mi_pool, reliability
 from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog, is_numeric
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 
 
-class ExploreDialog(VariablePickerDialog):
+class ExploreDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"display": "both", "boxplot": True, "boxplot_mode": "factor",
                 "histogram": False, "stem_leaf": True, "normality": True, "level": 95.0,
                 "descriptives": True, "m_estimators": False, "outliers": False,
@@ -23,6 +24,7 @@ class ExploreDialog(VariablePickerDialog):
         self.add_option_button("Statistics...", self._statistics)
         self.add_option_button("Plots...", self._plots)
         self.add_option_button("Options...", self._options)
+        self.add_bootstrap_button()
         row = QHBoxLayout()
         row.addWidget(QLabel("Display:"))
         group = QButtonGroup(self)
@@ -87,6 +89,15 @@ class ExploreDialog(VariablePickerDialog):
         o = self.opts
         show_stats = o["display"] in ("both", "statistics")
         show_plots = o["display"] in ("both", "plots")
+        deps, factors = self.selected("deps"), self.selected("factors")
+        return self.resampled(
+            lambda: self._explore(show_stats, show_plots),
+            boot=lambda sec, spec: boot_procs.explore(sec, self.ds, deps, factors, spec,
+                                                      o["missing"])
+            if show_stats and o["descriptives"] else None)
+
+    def _explore(self, show_stats: bool, show_plots: bool):
+        o = self.opts
         return explore.explore(
             self.ds, self.selected("deps"), self.selected("factors"),
             statistics=show_stats, normality=o["normality"],
@@ -101,7 +112,7 @@ class ExploreDialog(VariablePickerDialog):
             missing=o["missing"])
 
 
-class CrosstabsDialog(VariablePickerDialog):
+class CrosstabsDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"chisq": True, "phi": True, "cc": False, "corr": False, "lambda": False,
                 "uc": False, "gamma": False, "d": False, "btau": False, "ctau": False,
                 "kappa": False, "eta": False, "risk": False, "mcnemar": False, "cmh": False,
@@ -114,9 +125,11 @@ class CrosstabsDialog(VariablePickerDialog):
         self.add_target("rows", "Row(s):")
         self.add_target("cols", "Column(s):")
         self.add_target("layer", "Layer:", required=False)
+        self.add_exact_button()
         self.add_option_button("Statistics...", self._statistics)
         self.add_option_button("Cells...", self._cells)
         self.add_option_button("Format...", self._format)
+        self.add_bootstrap_button()
         layer_row = QHBoxLayout()
         self.prev_button, self.next_button = QPushButton("Previous"), QPushButton("Next")
         self.layer_label = QLabel()
@@ -252,12 +265,29 @@ class CrosstabsDialog(VariablePickerDialog):
     def compute(self):
         o = self.opts
         stats = tuple(k for k in crosstabs.STATISTICS if o.get(k))
-        return crosstabs.crosstabs(
-            self.ds, self.selected("rows"), self.selected("cols"), False, False, False,
-            tuple(o["cells"]), layers=self.layers(), statistics=stats,
-            hide_small=int(o["hide_n"]) if o["hide_small"] else None, z_test=o["z_test"],
-            bonferroni=o["bonferroni"], row_order=o["row_order"],
-            suppress_tables=o["suppress"], clustered_bar=o["bar"], cmh_value=o["cmh_value"])
+        rows, cols, layers = self.selected("rows"), self.selected("cols"), self.layers()
+        ex = self.exact_spec()
+        exact_kw = {} if ex is None else {
+            "exact": ex.method, "mc_samples": ex.mc_samples, "mc_level": ex.mc_level,
+            "mc_seed": ex.seed}
+
+        def run():
+            return crosstabs.crosstabs(
+                self.ds, rows, cols, False, False, False,
+                tuple(o["cells"]), layers=layers, statistics=stats,
+                hide_small=int(o["hide_n"]) if o["hide_small"] else None, z_test=o["z_test"],
+                bonferroni=o["bonferroni"], row_order=o["row_order"],
+                suppress_tables=o["suppress"], clustered_bar=o["bar"],
+                cmh_value=o["cmh_value"], **exact_kw)
+
+        boot = None
+        if not any(layers) and stats:
+            def boot(sec, spec):
+                boot_procs.crosstabs(sec, self.ds, rows, cols, spec)
+        return self.resampled(
+            run, boot=boot,
+            pool=lambda views: [mi_pool.pooled_crosstab(views, r, c) for r in rows
+                                for c in cols])
 
 
 class ReliabilityDialog(VariablePickerDialog):

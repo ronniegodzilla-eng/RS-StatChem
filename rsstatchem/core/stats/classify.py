@@ -31,6 +31,7 @@ from rsstatchem.core.stats.roc import figure, png, style
 class ClassifyResult:
     section: Section
     saved: dict[str, tuple[str, pd.Series]] = field(default_factory=dict)
+    models: list = field(default_factory=list)   # resample.ModelInfo (Bootstrap)
 
 
 def _frame(ds: Dataset, names: list[str]) -> pd.DataFrame:
@@ -709,6 +710,16 @@ def discriminant(ds: Dataset, group: str, lo: float, hi: float, names: list[str]
             [[t] + [fmt(coef[j, i]) for j in range(g)] for i, t in enumerate(stitles)]
             + [["(Constant)"] + [fmt(ccon[j]) for j in range(g)]],
             footnotes=["Fisher's linear discriminant functions"]))
+    from rsstatchem.core.stats import boot_models as bm
+    info = bm.discriminant_model(
+        Xs, gidx, g, [(t if j == 0 else "", lb) for t in stitles + ["(Constant)"]
+                      for j, lb in enumerate(glabels)],
+        prior if priors == "equal" else None,
+        rows=np.flatnonzero(np.asarray(valid)), table="Classification Function Coefficients",
+        headers=["", gvar.title], est_label="Coefficient")
+    if method != "enter":
+        info.note = "Variable selection is not repeated in the bootstrap samples."
+    result.models = [info]
     scores = Xs @ coef.T + ccon
     pred = scores.argmax(axis=1)
     rows = _class_rows("Original", gidx, pred, g, glabels)

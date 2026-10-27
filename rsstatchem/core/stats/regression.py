@@ -75,6 +75,7 @@ LETTERS = "abcdefghijklmnopqrstuvwxyz"
 class RegressionResult:
     section: Section
     saved: dict[str, tuple] = field(default_factory=dict)
+    models: list = field(default_factory=list)   # resample.ModelInfo per model (step)
 
 
 # ====================================================================== moments and fits
@@ -701,6 +702,9 @@ def linear(ds: Dataset, dependent: str, independents: list[str] | None = None,
     section.table(Table("Coefficientsᵃ", ccols, crows, row_header_cols=2,
                         footnotes=[f"a. {dep_note}"] + ([f"b. {wls_note}"] if wls else [])))
 
+    result.models = _model_infos(steps, frame, dependent, w if wls else None, constant,
+                                 titles, blocks, missing)
+
     # ---------------------------------------------------------------- excluded variables
     xrows = []
     for i, s in enumerate(steps):
@@ -870,6 +874,33 @@ def linear(ds: Dataset, dependent: str, independents: list[str] | None = None,
         _save(result, ds, save, ffit, final.cols, data, complete, use, diag, wser, pil,
               constant, dependent)
     return result
+
+
+def _model_infos(steps, frame, dependent, w, constant, titles, blocks, missing) -> list:
+    """Coefficients of every model (step) for the Bootstrap option and MI pooling."""
+    from rsstatchem.core.stats import boot_models as bm
+
+    y = frame[dependent].to_numpy(float)
+    rows = frame.index.to_numpy()
+    out = []
+    for i, s in enumerate(steps):
+        X = frame[s.cols].to_numpy(float)
+        if constant:
+            X = np.column_stack([np.ones(len(X)), X])
+        names = (["(Constant)"] if constant else []) + [titles[c] for c in s.cols]
+        try:
+            m = bm.ols_model(y, X, names, w, rows=rows, table="Coefficients", headers=[""],
+                             group=str(i + 1))
+        except np.linalg.LinAlgError:
+            continue
+        m.estimate, m.se, m.df = np.asarray(s.fit.b, float), s.fit.se, s.fit.df_resid
+        if any(meth != "enter" for meth, _ in blocks):
+            m.note = ("Variable selection is not repeated in the bootstrap samples: each model "
+                      "is re-estimated with the variables selected on the original data.")
+        if missing == "pairwise":
+            m.note = "Bootstrap samples use the cases with complete data (listwise)."
+        out.append(m)
+    return out
 
 
 def _save(result, ds, save, fit, cols, data, complete, use, diag, wser, level, constant,

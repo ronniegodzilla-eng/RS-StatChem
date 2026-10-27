@@ -6,11 +6,13 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, Q
                                QLineEdit, QListWidget, QPushButton)
 
 from rsstatchem.core.dataset import format_code
-from rsstatchem.core.stats import anova, glm_output, posthoc_ext, ttest
+from rsstatchem.core.stats import anova, boot_procs, glm_output, mi_pool, posthoc_ext, ttest
+from rsstatchem.core.stats import imputation as mi
 from rsstatchem.core.stats.anova import POSTHOC, POSTHOC_ORDER  # noqa: F401 (re-export)
 from rsstatchem.ui.dialogs import glm_model_ui as gm
 from rsstatchem.ui.dialogs.base import (DefineGroupsDialog, DefineRangeDialog, SubDialog,
                                         VariablePickerDialog, is_numeric)
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 
 
 class GroupingMixin:
@@ -84,13 +86,14 @@ class GroupingMixin:
         return "Click Define Groups… to set the two groups to compare."
 
 
-class OneSampleTDialog(VariablePickerDialog):
+class OneSampleTDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"test_value": 0.0, "level": 95.0, "listwise": False}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "One-Sample T Test", parent)
         self.add_target("vars", "Test Variable(s):", accepts=is_numeric)
         self.add_option_button("Options...", self.ci_missing_options)
+        self.add_bootstrap_button()
         self.test_value = QLineEdit(f"{self.opts['test_value']:g}")
         form = QFormLayout()
         form.addRow("Test Value:", self.test_value)
@@ -105,11 +108,14 @@ class OneSampleTDialog(VariablePickerDialog):
         return None
 
     def compute(self):
-        return ttest.one_sample(self.ds, self.selected("vars"), self.opts["test_value"],
-                                self.level(), self.opts["listwise"])
+        names, tv, lw = self.selected("vars"), self.opts["test_value"], self.opts["listwise"]
+        return self.resampled(
+            lambda: ttest.one_sample(self.ds, names, tv, self.level(), lw),
+            boot=lambda sec, spec: boot_procs.one_sample_t(sec, self.ds, names, tv, spec, lw),
+            pool=lambda views: mi.pooled_one_sample_t(self.ds, names, tv, self.level()))
 
 
-class IndependentTDialog(GroupingMixin, VariablePickerDialog):
+class IndependentTDialog(ResampleMixin, GroupingMixin, VariablePickerDialog):
     DEFAULTS = {"level": 95.0, "listwise": False, "group_def": None}
 
     def __init__(self, ds, parent=None):
@@ -117,30 +123,47 @@ class IndependentTDialog(GroupingMixin, VariablePickerDialog):
         self.add_target("vars", "Test Variable(s):", accepts=is_numeric)
         self.setup_grouping()
         self.add_option_button("Options...", self.ci_missing_options)
+        self.add_bootstrap_button()
         self.finish()
 
     def compute(self):
         d = self._definition()
-        return ttest.independent(self.ds, self.selected("vars"), self.selected_one("group"),
-                                 d.get("groups"), d.get("cut"), self.level(),
-                                 self.opts["listwise"])
+        names, group, lw = self.selected("vars"), self.selected_one("group"), \
+            self.opts["listwise"]
+        groups, cut = d.get("groups"), d.get("cut")
+
+        def pool(views):
+            if groups is None:
+                return []
+            return mi.pooled_independent_t(self.ds, names, group, groups, self.level())
+
+        return self.resampled(
+            lambda: ttest.independent(self.ds, names, group, groups, cut, self.level(), lw),
+            boot=lambda sec, spec: boot_procs.independent_t(sec, self.ds, names, group, groups,
+                                                            cut, spec, lw),
+            pool=pool)
 
 
-class PairedTDialog(VariablePickerDialog):
+class PairedTDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"level": 95.0, "listwise": False}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Paired-Samples T Test", parent)
         self.add_pair_target("pairs", "Paired Variables (Variable1 – Variable2):")
         self.add_option_button("Options...", self.ci_missing_options)
+        self.add_bootstrap_button()
         self.finish()
 
     def compute(self):
-        return ttest.paired(self.ds, self.pairs("pairs"), self.level(), self.opts["listwise"])
+        pairs, lw = self.pairs("pairs"), self.opts["listwise"]
+        return self.resampled(
+            lambda: ttest.paired(self.ds, pairs, self.level(), lw),
+            boot=lambda sec, spec: boot_procs.paired_t(sec, self.ds, pairs, spec, lw),
+            pool=lambda views: mi.pooled_paired_t(self.ds, pairs, self.level()))
 
 
 # ------------------------------------------------------------------ One-Way ANOVA
-class OneWayAnovaDialog(VariablePickerDialog):
+class OneWayAnovaDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"descriptives": True, "homogeneity": True, "welch": False, "bf": False,
                 "effects": False, "effect": True, "means_plot": False, "posthoc": [],
                 "alpha": 0.05, "polynomial": False, "degree": 1, "contrasts": [],
@@ -155,6 +178,7 @@ class OneWayAnovaDialog(VariablePickerDialog):
         self.add_option_button("Post Hoc...", lambda: gm.posthoc_dialog(
             self, "One-Way ANOVA", None, significance=True))
         self.add_option_button("Options...", self._options)
+        self.add_bootstrap_button()
         self.add_checkbox("effect", "Estimate effect size for overall tests")
         self.finish()
 
@@ -185,11 +209,16 @@ class OneWayAnovaDialog(VariablePickerDialog):
         o = self.opts
         popts = posthoc_ext.PostHocOptions(1 - o["alpha"], o["control"], o["dunnett_test"],
                                            o["k_ratio"])
-        return anova.oneway(self.ds, self.selected("deps"), self.selected_one("factor"),
-                            o["descriptives"], o["homogeneity"], o["welch"], o["bf"], o["effect"],
-                            o["posthoc"], o["means_plot"], o["level"] / 100,
-                            o["degree"] if o["polynomial"] else 0, o["contrasts"],
-                            o["effects"], o["listwise"], popts, 1 - o["alpha"])
+        deps, factor = self.selected("deps"), self.selected_one("factor")
+        return self.resampled(
+            lambda: anova.oneway(self.ds, deps, factor, o["descriptives"], o["homogeneity"],
+                                 o["welch"], o["bf"], o["effect"], o["posthoc"],
+                                 o["means_plot"], o["level"] / 100,
+                                 o["degree"] if o["polynomial"] else 0, o["contrasts"],
+                                 o["effects"], o["listwise"], popts, 1 - o["alpha"]),
+            boot=lambda sec, spec: boot_procs.oneway(sec, self.ds, deps, factor, spec,
+                                                     bool(o["posthoc"]), o["listwise"]),
+            pool=lambda views: mi_pool.pooled_oneway(views, deps, factor, o["level"] / 100))
 
 
 class ContrastsOneWayDialog(SubDialog):
@@ -265,7 +294,7 @@ class ContrastsOneWayDialog(SubDialog):
 
 
 # ------------------------------------------------------------------ GLM Univariate
-class UnivariateDialog(VariablePickerDialog):
+class UnivariateDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {**gm.GLM_DEFAULTS, "descriptives": True, "effect": True, "homogeneity": True}
     TITLE = "Univariate"
 
@@ -290,6 +319,8 @@ class UnivariateDialog(VariablePickerDialog):
             self, t, self.selected("factors") + self.selected("random"), self.opts.get("terms")))
         self.add_option_button("Save...", lambda: gm.save_dialog(self, t))
         self.add_option_button("Options...", lambda: gm.options_dialog(self, t))
+        if self.TITLE == "Univariate":
+            self.add_bootstrap_button()
         self.finish()
 
     def validate(self):
@@ -312,5 +343,9 @@ class UnivariateDialog(VariablePickerDialog):
         covs = self.selected("covariates")
         opts = gm.glm_options_from(self.opts, factors, covs, random)
         opts.wls = self.selected_one("wls")
-        res = glm_output.univariate(self.ds, self.selected_one("dep"), factors, covs, opts)
-        return res if res.saved else res.section
+        dep = self.selected_one("dep")
+        res = self.resampled(
+            lambda: glm_output.univariate(self.ds, dep, factors, covs, opts),
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec),
+            pool="models")
+        return self.plain(res)
