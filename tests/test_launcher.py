@@ -22,6 +22,8 @@ def test_four_modules_and_file_routing():
     assert module_for_path("design.rsx").key == "rsm"
     assert module_for_path("project.rsop").key == "graph"
     assert module_for_path("aspirin.rsc").key == "chem"
+    assert module_for_path("output.rso").key == "stats"
+    assert module_for_path("survey.dta").key == "stats"
     assert module_for_path("notes.docx") is None
 
 

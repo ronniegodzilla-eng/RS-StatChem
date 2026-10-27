@@ -143,6 +143,10 @@ if sys.platform == "darwin":
                 "CFBundleTypeExtensions": ["rsop"],
                 "CFBundleTypeRole": "Editor",
             }, {
+                "CFBundleTypeName": "RS-StatChem Output",
+                "CFBundleTypeExtensions": ["rso"],
+                "CFBundleTypeRole": "Editor",
+            }, {
                 "CFBundleTypeName": "SPSS Data",
                 "CFBundleTypeExtensions": ["sav"],
                 "CFBundleTypeRole": "Viewer",

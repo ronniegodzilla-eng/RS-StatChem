@@ -33,7 +33,8 @@ class ModuleInfo:
 MODULES: tuple[ModuleInfo, ...] = (
     ModuleInfo("stats", "Statistics", "Data Editor, descriptive to multivariate analyses, "
                "SEM, output to Word", "SPSS", "rsstatchem.ui.data_editor:open_workspace",
-               (".rsd", ".sav", ".csv", ".txt", ".dat", ".tsv", ".xlsx", ".xls"), "stats"),
+               (".rsd", ".sav", ".por", ".dta", ".sas7bdat", ".xpt", ".csv", ".txt", ".dat",
+                ".tsv", ".xlsx", ".xls", ".rso"), "stats"),
     ModuleInfo("rsm", "RSM / DOE", "Factorial, response surface and mixture designs, "
                "ANOVA, model graphs, optimization", "Design-Expert",
                "rsstatchem.ui.dx:open_workspace", (".rsx",), "rsm"),
