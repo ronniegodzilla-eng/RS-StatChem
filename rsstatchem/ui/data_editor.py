@@ -1019,9 +1019,10 @@ class DataEditorWindow(QMainWindow):
 
         Returns a Section, or an object with ``.section`` and ``.saved`` whose saved columns
         are mapped back onto the active dataset's rows."""
-        views = selection.analysis_views(self.ds)
-        if len(views) == 1 and not selection.describe(self.ds):
-            return fn(self.ds)
+        source = self._split_source()
+        views = selection.analysis_views(source)
+        if len(views) == 1 and not selection.describe(source):
+            return fn(source)
         results = [(view, fn(view.ds)) for view in views]
         section = selection.combine(
             [(v.label, r.section if hasattr(r, "section") else r) for v, r in results], self.ds)
@@ -1038,6 +1039,25 @@ class DataEditorWindow(QMainWindow):
             section.note("", "New variables are not saved while cases are weighted.",
                          style="warning")
         return SimpleNamespace(section=section, saved=saved) if saved else section
+
+    def _split_source(self) -> Dataset:
+        """The dataset whose views the analyses get. When Split File is by the imputation
+        variable only (SPSS turns it on after Impute Missing Data Values), analyses receive
+        the whole stacked file so they can pool across imputations (Rubin's rules) as SPSS
+        does; any other split keeps one analysis per split group."""
+        split = [v.lower() for v in (self.ds.meta.get("split") or {}).get("vars") or []]
+        if len(split) != 1:
+            return self.ds
+        try:
+            from rsstatchem.core.stats.imputation import imputation_variable, is_imputed
+        except ImportError:  # pragma: no cover - imputation module missing
+            return self.ds
+        name = imputation_variable(self.ds)
+        if not name or name.lower() != split[0] or not is_imputed(self.ds):
+            return self.ds
+        whole = Dataset(self.ds.df, self.ds.variables, name=self.ds.name)
+        whole.meta = {k: v for k, v in self.ds.meta.items() if k != "split"}
+        return whole
 
     def _run_action(self, fn) -> None:
         self._guard("Error", lambda: fn(self))

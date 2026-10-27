@@ -332,3 +332,30 @@ def test_editor_find_goto_and_variable_sets(qapp, ds, tmp_path, monkeypatch):
     dp.use_variable_sets(ed.ds, None)
     ed.apply_variable_sets()
     assert not ed.data_view.isColumnHidden(0)
+
+
+def test_split_by_imputation_variable_passes_whole_file(qapp, tmp_path, monkeypatch):
+    from rsstatchem.core import selection
+    from rsstatchem.core.output import Section
+
+    monkeypatch.setenv("RSSTATCHEM_HOME", str(tmp_path))
+    from rsstatchem.app import AppContext
+
+    ctx = AppContext(qapp)
+    df = pd.DataFrame({"Imputation_": np.repeat([0.0, 1.0, 2.0], 4),
+                       "g": np.tile([1.0, 2.0], 6), "x": np.arange(12, dtype=float)})
+    ed = ctx.new_editor(Dataset(df))
+    sizes = []
+
+    def run(d):
+        sizes.append(d.n_cases)
+        return Section("x")
+
+    ed.ds.meta["split"] = {"vars": [ed.ds.names()[0]], "mode": "compare"}
+    assert selection.analysis_views(ed.ds)[0].ds.n_cases == 4   # split is really on
+    ed._compute_on_views(run)
+    assert sizes == [12]                       # pooled analyses see every imputation
+    ed.ds.meta["split"] = {"vars": ["g"], "mode": "compare"}
+    sizes.clear()
+    ed._compute_on_views(run)
+    assert sizes == [6, 6]                     # other splits: one run per group
