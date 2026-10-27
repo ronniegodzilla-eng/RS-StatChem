@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QPushButton, QVBoxLayout)
+                               QLineEdit, QListWidget, QPushButton)
 
 from rsstatchem.core.dataset import format_code
 from rsstatchem.core.stats import anova, glm_output, posthoc_ext, ttest

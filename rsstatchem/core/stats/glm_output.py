@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import itertools
-import math
 from dataclasses import dataclass, field
 
 import numpy as np

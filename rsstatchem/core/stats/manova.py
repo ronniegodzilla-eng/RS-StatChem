@@ -18,12 +18,11 @@ from scipy import stats
 
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
-from rsstatchem.core.stats.anova import (POSTHOC, POSTHOC_ORDER, multiple_comparisons_table,
-                                         posthoc)
+from rsstatchem.core.stats.anova import POSTHOC  # noqa: F401 (re-exported)
 from rsstatchem.core.stats.common import (Group, fmt, fmt_df, fmt_int, fmt_p, levene_rows,
                                           numeric, pct, sup, value_text)
-from rsstatchem.core.stats.glm_model import (GLMFit, Term, TermSpec, full_factorial,
-                                             main_effects)
+from rsstatchem.core.stats.glm_model import Term  # noqa: F401 (re-exported)
+from rsstatchem.core.stats.glm_model import GLMFit, TermSpec, full_factorial, main_effects
 
 ADJUST = {"lsd": "Least Significant Difference (equivalent to no adjustments)",
           "bonferroni": "Bonferroni", "sidak": "Sidak"}

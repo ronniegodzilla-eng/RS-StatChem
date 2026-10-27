@@ -4,11 +4,8 @@ Linear dialogs (SPSS layout). This module also exports the combined ``MENUS`` an
 """
 from __future__ import annotations
 
-import itertools
-
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
@@ -412,7 +409,9 @@ class RepeatedMeasuresDialog(VariablePickerDialog):
 class LinearMixedDialog(VariablePickerDialog):
     DEFAULTS = {"main_only": False, "intercept": True, "slopes": [], "structure": "VC",
                 "method": "REML", "descriptives": False, "estimates": True, "covtests": True,
-                "level": 95.0}
+                "level": 95.0, "terms": None, "fixed_intercept": True, "rtype": "ID",
+                "emm": [], "compare": False, "adjust": "lsd", "save": [], "icc": False,
+                "repeated": None}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Linear Mixed Models", parent)
@@ -422,24 +421,31 @@ class LinearMixedDialog(VariablePickerDialog):
         self.add_target("covariates", "Covariate(s):", accepts=is_numeric, required=False)
         self.add_option_button("Fixed...", self._fixed)
         self.add_option_button("Random...", self._random)
+        self.add_option_button("Repeated...", self._repeated)
         self.add_option_button("Estimation...", self._estimation)
         self.add_option_button("Statistics...", self._statistics)
+        self.add_option_button("EM Means...", lambda: gm.emm_dialog(
+            self, "Linear Mixed Models", self.selected("factors"), self.opts.get("terms")))
+        self.add_option_button("Save...", self._save)
         hint = QLabel("Data must be in long format: one row per observation, with a subject "
-                      "identifier.")
+                      "identifier (and a repeated-measures index for repeated covariance "
+                      "structures).")
         hint.setStyleSheet("color:#666")
         hint.setWordWrap(True)
         self.options_layout.addWidget(hint)
         self.finish()
 
     def _fixed(self) -> None:
-        dlg = SubDialog("Linear Mixed Models: Fixed Effects", self, columns=1)
-        box = dlg.group("Fixed effects model")
-        dlg.radio(box, "main_only", [(False, "Full factorial (factors) + covariate main effects"),
-                                     (True, "Main effects only")], self.opts["main_only"])
-        box.addWidget(QLabel("Include intercept and Type III sums of squares are always used."))
-        values = dlg.run()
-        if values:
-            self.opts.update(values)
+        dlg = gm.ModelDialog("Linear Mixed Models", self.selected("factors"),
+                             self.selected("covariates"), self.opts.get("terms"),
+                             self.opts.get("fixed_intercept", True), 3, self)
+        dlg.setWindowTitle("Linear Mixed Models: Fixed Effects")
+        dlg.ss.setEnabled(False)
+        dlg.ss.setToolTip("MIXED tests fixed effects with Type III sums of squares.")
+        if dlg.exec():
+            v = dlg.result_values()
+            self.opts["terms"] = v["terms"]
+            self.opts["fixed_intercept"] = v["intercept"]
 
     def _random(self) -> None:
         dlg = SubDialog("Linear Mixed Models: Random Effects", self)
@@ -462,6 +468,32 @@ class LinearMixedDialog(VariablePickerDialog):
         self.opts["structure"] = values["structure"]
         self.opts["slopes"] = [c for c in covs if values.get(f"slope::{c}")]
 
+    def _repeated(self) -> None:
+        """SPSS's Specify Subjects and Repeated step: the repeated variable (it may also be a
+        factor) and the residual covariance type."""
+        dlg = SubDialog("Linear Mixed Models: Repeated", self, columns=1)
+        box = dlg.group("Repeated")
+        combo = QComboBox()
+        combo.addItem("(none)", None)
+        for v in self.ds.variables:
+            combo.addItem(v.name, v.name)
+        cur = self.opts.get("repeated")
+        combo.setCurrentIndex(max(combo.findData(cur), 0) if cur else 0)
+        row = QFormLayout()
+        row.addRow("Repeated variable:", combo)
+        box.addLayout(row)
+        dlg._getters["repeated"] = combo.currentData
+        box = dlg.group("Repeated Covariance Type (residual covariance within a subject)")
+        dlg.radio(box, "rtype", [(k, v) for k, v in mixed.REPEATED_TYPES.items()],
+                  self.opts["rtype"])
+        values = dlg.run()
+        if values:
+            self.opts.update(values)
+
+    def _repeated_name(self) -> str | None:
+        name = self.opts.get("repeated")
+        return name if name and self.ds.has_name(name) else None
+
     def _estimation(self) -> None:
         dlg = SubDialog("Linear Mixed Models: Estimation", self, columns=1)
         box = dlg.group("Method")
@@ -479,25 +511,105 @@ class LinearMixedDialog(VariablePickerDialog):
         dlg.check(box, "estimates", "Parameter estimates for fixed effects",
                   self.opts["estimates"])
         dlg.check(box, "covtests", "Tests for covariance parameters", self.opts["covtests"])
+        dlg.check(box, "icc", "Intraclass correlation (random-intercept models)",
+                  self.opts["icc"])
         dlg.number(box, "level", "Confidence interval (%):", self.opts["level"], 50, 99.99, 2)
         values = dlg.run()
         if values:
             self.opts.update(values)
 
+    def _save(self) -> None:
+        dlg = SubDialog("Linear Mixed Models: Save", self, columns=2)
+        cur = self.opts.get("save", [])
+        box = dlg.group("Fixed Predicted Values")
+        dlg.check(box, "FIXPRED", "Predicted values", "FIXPRED" in cur)
+        dlg.check(box, "SEFIXP", "Standard errors", "SEFIXP" in cur)
+        box = dlg.group("Predicted Values && Residuals".replace("&&", "&"))
+        dlg.check(box, "PRED", "Predicted values", "PRED" in cur)
+        dlg.check(box, "RESID", "Residuals", "RESID" in cur)
+        values = dlg.run()
+        if values is not None:
+            self.opts["save"] = [k for k in ("FIXPRED", "SEFIXP", "PRED", "RESID")
+                                 if values.get(k)]
+
     def validate(self):
-        if self.selected_one("subject") in self.selected("factors") + self.selected("covariates"):
+        others = self.selected("factors") + self.selected("covariates")
+        if self.selected_one("subject") in others:
             return "The subject variable cannot also be a factor or covariate."
+        if self.opts.get("rtype", "ID") != "ID" and not self._repeated_name():
+            return "Choose a Repeated variable (Repeated… button) for the covariance type."
+        if self.opts.get("terms"):
+            try:
+                gm.parse_terms(" ".join(self.opts["terms"]), self.selected("factors"),
+                               self.selected("covariates"))
+            except ValueError as exc:
+                return f"The fixed-effects model refers to variables that are not selected " \
+                       f"({exc})."
         return None
 
     def compute(self):
         o = self.opts
         covs = self.selected("covariates")
+        factors = self.selected("factors")
+        terms = gm.parse_terms(" ".join(o["terms"]), factors, covs) if o.get("terms") else None
+        names = set(factors)
+        emm = [e for e in o.get("emm", []) if e == "(OVERALL)" or
+               all(p in names for p in e.split("*"))]
+        rep = self._repeated_name()
         return mixed.linear_mixed(self.ds, self.selected_one("dep"),
-                                  self.selected_one("subject"), self.selected("factors"), covs,
+                                  self.selected_one("subject"), factors, covs,
                                   o["intercept"], [s for s in o["slopes"] if s in covs],
                                   o["structure"], o["method"], o["main_only"],
                                   o["descriptives"], o["estimates"], o["covtests"],
-                                  o["level"] / 100)
+                                  o["level"] / 100, terms, o.get("fixed_intercept", True),
+                                  rep, o.get("rtype", "ID") if rep else "ID", emm,
+                                  o.get("compare", False), o.get("adjust", "lsd"),
+                                  o.get("save", []), o.get("icc", False))
+
+
+# ------------------------------------------------------------------ Variance Components
+class VarianceComponentsDialog(VariablePickerDialog):
+    DEFAULTS = {"method": "minque1", "ss_type": 3, "terms": None, "intercept": True}
+
+    def __init__(self, ds, parent=None):
+        super().__init__(ds, "Variance Components", parent)
+        self.add_target("dep", "Dependent Variable:", accepts=is_numeric, single=True)
+        self.add_target("factors", "Fixed Factor(s):", required=False)
+        self.add_target("random", "Random Factor(s):")
+        self.add_target("covariates", "Covariate(s):", accepts=is_numeric, required=False)
+        self.add_option_button("Model...", lambda: gm.model_dialog(
+            self, "Variance Components", self.selected("factors"),
+            self.selected("covariates"), self.selected("random")))
+        self.add_option_button("Options...", self._options)
+        self.finish()
+
+    def _options(self) -> None:
+        dlg = SubDialog("Variance Components: Options", self, columns=2)
+        box = dlg.group("Method")
+        dlg.radio(box, "method", [("minque1", "MINQUE (random-effect prior: uniform)"),
+                                  ("minque0", "MINQUE (random-effect prior: zero)"),
+                                  ("anova", "ANOVA"),
+                                  ("ml", "Maximum likelihood"),
+                                  ("reml", "Restricted maximum likelihood")],
+                  self.opts["method"])
+        box = dlg.group("Sum of Squares (ANOVA method)")
+        dlg.radio(box, "ss_type", [(1, "Type I"), (3, "Type III")], self.opts["ss_type"])
+        values = dlg.run()
+        if values:
+            self.opts.update(values)
+
+    def compute(self):
+        from rsstatchem.core.stats import varcomp
+
+        o = self.opts
+        factors = self.selected("factors")
+        random = self.selected("random")
+        covs = self.selected("covariates")
+        terms = gm.parse_terms(" ".join(o["terms"]), factors + random, covs) \
+            if o.get("terms") else None
+        return varcomp.variance_components(self.ds, self.selected_one("dep"), factors, random,
+                                           covs, o["method"], o["ss_type"], terms,
+                                           o.get("intercept", True))
 
 
 # ------------------------------------------------------------------ menus + selftest
@@ -506,7 +618,8 @@ def _menus() -> dict:
 
     return {
         "Analyze/General Linear Model": [("Multivariate...", MultivariateDialog),
-                                         ("Repeated Measures...", RepeatedMeasuresDialog)],
+                                         ("Repeated Measures...", RepeatedMeasuresDialog),
+                                         ("Variance Components...", VarianceComponentsDialog)],
         "Analyze/Mixed Models": [("Linear...", LinearMixedDialog)],
         "Analyze/Dimension Reduction": [("Factor...", mv.FactorDialog)],
         "Analyze/Mediation && Moderation": [
@@ -594,3 +707,43 @@ def selftest() -> None:
     _check(abs(res.effects["indirect"][0] - a * b) < 1e-10, "PROCESS indirect effect")
     res = process.process(pds, 1, "y", "x", w="w", boot=0)
     _check(any(i.kind == "image" for i in res.section.items), "PROCESS interaction plot")
+
+    _selftest_wp1()
+
+
+def _selftest_wp1() -> None:
+    """GLM custom model (Montgomery RCBD), SPSS post hoc tests, mixed AR(1), VARCOMP."""
+    from rsstatchem.core.dataset import Dataset
+    from rsstatchem.core.stats import glm_output, posthoc_ext, varcomp
+    from rsstatchem.core.stats.common import Group
+    from rsstatchem.core.stats.glm_model import TermSpec
+
+    y = [90.3, 89.2, 98.2, 93.9, 87.4, 97.9, 92.5, 89.5, 90.6, 94.7, 87.0, 95.8,
+         85.5, 90.8, 89.6, 86.2, 88.0, 93.4, 82.5, 89.5, 85.6, 87.4, 78.9, 90.7]
+    df = pd.DataFrame({"y": y, "p": np.repeat([1., 2, 3, 4], 6),
+                       "b": np.tile(np.arange(1., 7), 4)})
+    opts = glm_output.GLMOptions(terms=[TermSpec(("p",)), TermSpec(("b",))], emm=["p"],
+                                 compare=True, posthoc_factors=["p"],
+                                 posthoc_methods=["duncan", "dunnett"], save=["PRE"])
+    res = glm_output.univariate(Dataset(df), "y", ["p", "b"], [], opts)
+    tab = next(i for i in res.section.items
+               if getattr(i, "title", "") == "Tests of Between-Subjects Effects")
+    row = next(r for r in tab.rows if r[0] == "p")
+    _check(abs(float(row[1]) - 178.171) < 1e-3, "RCBD treatment SS (Montgomery 4.1)")
+    _check("PRE" in res.saved, "GLM save")
+    groups = [Group(k, k, np.array(v)) for k, v in
+              {"cc": [28.5, 21.7, 23.0], "fc": [14.9, 10.6, 13.1], "ff": [41.8, 39.2, 28.0],
+               "oo": [38.2, 40.4, 32.1]}.items()]
+    order, sets, _ = posthoc_ext.homogeneous_subsets(groups, "duncan", 22.489167, 8)
+    _check(len(sets) == 3, "Duncan subsets")
+    _check(abs(posthoc_ext.dunnett_crit(0.95, np.full(4, np.sqrt(0.5)), 20) - 2.65) < 6e-3,
+           "Dunnett critical value")
+    rng = np.random.default_rng(3)
+    long = pd.DataFrame({"id": np.repeat(np.arange(12.), 3), "t": np.tile([1., 2., 3.], 12),
+                         "y": rng.normal(size=36) + np.tile([0., 1., 2.], 12)})
+    sec = mixed.linear_mixed(Dataset(long), "y", "id", ["t"], random_intercept=False,
+                             repeated="t", repeated_type="AR1")
+    _check(any(getattr(i, "title", "").startswith("Estimates of Covariance")
+               for i in sec.items), "mixed AR(1)")
+    sec = varcomp.variance_components(Dataset(long), "y", [], ["id"], method="reml")
+    _check(any(getattr(i, "title", "") == "Variance Estimates" for i in sec.items), "VARCOMP")
