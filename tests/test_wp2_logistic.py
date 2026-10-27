@@ -14,7 +14,7 @@ from rsstatchem.core.stats import logistic
 
 
 def num(text: str) -> float:
-    return float(text.rstrip("ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ*"))
+    return float(text.rstrip("ᵃᵇᶜᵈᵉᶠᵍ*"))
 
 
 def tables(sec, title):

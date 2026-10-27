@@ -815,7 +815,10 @@ def linear(ds: Dataset, dependent: str, independents: list[str] | None = None,
             v = v[np.isfinite(v)]
             if not len(v):
                 continue
-            rrows.append([label, fmt(v.min(), d), fmt(v.max(), d), fmt(v.mean(), d),
+            mean = float(v.mean())
+            if abs(mean) < 1e-9 * max(1.0, float(np.abs(v).max())):
+                mean = 0.0
+            rrows.append([label, fmt(v.min(), d), fmt(v.max(), d), fmt(mean, d),
                           fmt(v.std(ddof=1), d) if len(v) > 1 else "", fmt_int(len(v))])
         section.table(Table("Residuals Statisticsᵃ", ["", "Minimum", "Maximum", "Mean",
                                                       "Std. Deviation", "N"], rrows,

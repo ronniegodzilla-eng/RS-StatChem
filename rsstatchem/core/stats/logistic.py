@@ -1257,9 +1257,9 @@ def multinomial(ds: Dataset, dependent: str, factors: list[str] = (),
                          "variable levels by subpopulations) with zero frequencies.",
                          style="warning")
     if phi != 1.0:
-        section.note("Dispersion Scaling", f"Scale value = {fmt(phi, 3)} "
-                     f"({'Pearson' if scale == 'pearson' else 'Deviance' if scale == 'deviance' else 'user'}"
-                     "); covariances and likelihood-ratio statistics are scaled.")
+        kind = {"pearson": "Pearson", "deviance": "Deviance"}.get(scale, "user")
+        section.note("Dispersion Scaling", f"Scale value = {fmt(phi, 3)} ({kind}); "
+                     "covariances and likelihood-ratio statistics are scaled.")
     if pseudo:
         section.table(_pseudo_table(ll0, ll1, n))
     if monotonicity and J == 2:

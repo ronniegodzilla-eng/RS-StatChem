@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, special, stats
 
-from rsstatchem.core.dataset import NUMERIC, Dataset, format_code
+from rsstatchem.core.dataset import Dataset, format_code
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, fmt_p, numeric, pct, sup, value_text
 

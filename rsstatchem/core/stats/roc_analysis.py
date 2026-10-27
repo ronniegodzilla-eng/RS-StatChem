@@ -70,8 +70,9 @@ def roc_analysis(ds: Dataset, tests: list[str], state: str, positive,
                 + "\n  /PRINT=" + " ".join(["PAIRED"] * paired + ["INDEPENDENT"] * bool(group)
                                           + ["CLASSIFIER"] * metrics
                                           + ["COORDINATES"] * coordinates)
-                + f"\n  /CRITERIA=CUTOFF(INCLUDE) TESTPOS({'LARGE' if larger_positive else 'SMALL'})"
-                  f" DISTRIBUTION({distribution.upper()}) CI({level * 100:g})"
+                + "\n  /CRITERIA=CUTOFF(INCLUDE) TESTPOS("
+                + ("LARGE" if larger_positive else "SMALL") + ")"
+                + f" DISTRIBUTION({distribution.upper()}) CI({level * 100:g})"
                   "\n  /MISSING=EXCLUDE.")
     cols = {"__s": ds.analysis_series(state), **{t: numeric(ds, t) for t in tests}}
     if group:
