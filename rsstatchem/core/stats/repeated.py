@@ -24,8 +24,8 @@ from scipy import stats
 
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
-from rsstatchem.core.stats.anova import POSTHOC_ORDER, multiple_comparisons_table, posthoc
-from rsstatchem.core.stats.common import Group, fmt, fmt_df, fmt_int, fmt_p, pct
+from rsstatchem.core.stats.common import Group, fmt, fmt_df, fmt_int, fmt_p, pct, sup
+from rsstatchem.core.stats.glm_model import contrast_matrix
 from rsstatchem.core.stats.manova import (LinearModel, _frame, between_factors_table,
                                           blank_repeats, box_table, cell_index, covariate_note,
                                           estimates_rows, levene_table, make_factor,
@@ -33,6 +33,7 @@ from rsstatchem.core.stats.manova import (LinearModel, _frame, between_factors_t
                                           nested_descriptive_rows, pairwise_rows, pairwise_table)
 
 CORRECTIONS = ("Sphericity Assumed", "Greenhouse-Geisser", "Huynh-Feldt", "Lower-bound")
+SS_NAMES = {1: "Type I", 2: "Type II", 3: "Type III", 4: "Type IV"}
 
 
 def poly_contrasts(k: int) -> np.ndarray:
@@ -99,6 +100,30 @@ class WithinDesign:
         per = [contrast_names(k) if i in effect else [""] for i, k in enumerate(self.ks)]
         return [list(c) for c in itertools.product(*per)]
 
+    def contrast_basis(self, effect: tuple[int, ...], kinds: dict[str, str]
+                       ) -> tuple[np.ndarray, list[list[str]]]:
+        """Transformation for the Tests of Within-Subjects Contrasts table: the requested
+        contrast type per within factor (polynomial by default; other contrast types are used
+        unnormalized, as SPSS prints them)."""
+        mats, per = [], []
+        for i, (name, k) in enumerate(self.factors):
+            if i in effect:
+                kind = kinds.get(name, "polynomial")
+                if kind == "polynomial":
+                    mats.append(poly_contrasts(k))
+                    per.append(contrast_names(k))
+                else:
+                    C, labels = contrast_matrix(kind, k, "last")
+                    mats.append(C.T)
+                    per.append(labels)
+            else:
+                mats.append(np.ones((k, 1)) / math.sqrt(k))
+                per.append([""])
+        out = mats[0]
+        for m in mats[1:]:
+            out = np.kron(out, m)
+        return out, [list(c) for c in itertools.product(*per)]
+
     def level_of(self, col: int) -> tuple[int, ...]:
         return tuple(int(v) for v in np.unravel_index(col, self.ks))
 
@@ -119,7 +144,27 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
                       emm: list[str] | None = None, compare: bool = False,
                       adjustment: str = "bonferroni", posthoc_factors: list[str] | None = None,
                       posthoc_methods=(), plots: list[tuple[str, str | None]] | None = None,
-                      level: float = 0.95) -> Section:
+                      level: float = 0.95, options=None,
+                      within_contrasts: dict[str, str] | None = None):
+    """SPSS GLM Repeated Measures. With ``options`` (:class:`glm_output.GLMOptions`: custom
+    between-subjects model and SS type, observed power, parameter estimates, extended post hoc
+    tests, simple main effects, error bars, Save) a :class:`glm_output.GLMResult` is returned;
+    ``within_contrasts`` maps a within factor to deviation / simple / difference / helmert /
+    repeated / polynomial for the Tests of Within-Subjects Contrasts table."""
+    from rsstatchem.core.stats import glm_output as go
+
+    legacy = options is None
+    if options is not None:
+        o = options
+        effect_size, descriptives, homogeneity = o.effect_size, o.descriptives, o.homogeneity
+        emm, compare, adjustment = list(o.emm), o.compare, o.adjust
+        posthoc_factors, posthoc_methods = list(o.posthoc_factors), list(o.posthoc_methods)
+        plots = list(o.plots)
+        level = o.level
+    else:
+        o = go.GLMOptions(alpha=1 - level)
+    power = o.power
+    within_contrasts = within_contrasts or {}
     between = between or []
     covariates = covariates or []
     emm = emm or []
@@ -130,7 +175,7 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
     if len(dependents) != wd.K:
         section.note("Warning", f"The within-subjects design needs {wd.K} variables; "
                      f"{len(dependents)} were given.", style="warning")
-        return section
+        return section if legacy else go.GLMResult(section)
     log = f"GLM {' '.join(dependents)}"
     if between:
         log += f" BY {' '.join(between)}"
@@ -139,9 +184,13 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
     log += ("\n  /WSFACTOR=" + " ".join(f"{n} {k} Polynomial" for n, k in within))
     if measure and measure != "MEASURE_1":
         log += f"\n  /MEASURE={measure}"
-    log += "\n  /METHOD=SSTYPE(3)"
-    for h, s in plots:
-        log += f"\n  /PLOT=PROFILE({h}{'*' + s if s else ''})"
+    for wf, kind in within_contrasts.items():
+        log += f"\n  /WSFACTOR CONTRAST({wf})={kind.capitalize()}"
+    log += f"\n  /METHOD=SSTYPE({o.ss_type})"
+    for spec in plots:
+        log += "\n  /PLOT=PROFILE(" + "*".join(x for x in spec[:3] if x) + ")"
+    if o.save:
+        log += "\n  /SAVE=" + " ".join(o.save)
     for e in emm:
         log += f"\n  /EMMEANS=TABLES({e})"
         if compare and e != "(OVERALL)" and "*" not in e:
@@ -160,10 +209,11 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
     fobjs = [make_factor(ds, f, frame[f]) for f in between]
     Y = frame[dependents].to_numpy(float)
     model = LinearModel(Y, fobjs, {ds.var(c).name: frame[c].to_numpy(float)
-                                   for c in covariates})
+                                   for c in covariates}, terms=o.terms,
+                        intercept=o.intercept, ss_type=o.ss_type)
     if model.ve < 1:
         section.note("Warning", "Not enough valid cases for the model.", style="warning")
-        return section
+        return section if legacy else go.GLMResult(section)
     design = model.design_text
     wdesign = f"Within Subjects Design: {wd.design_text}"
     mnote = f"Measure: {measure}"
@@ -203,7 +253,7 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
             name = wd.label(eff) if term.label == "Intercept" else \
                 f"{wd.label(eff)} * {term.label}"
             blocks.append((name, multivariate_tests(model.hypothesis(term, M), E,
-                                                    len(term.idx), model.ve)))
+                                                    model.term_df(term), model.ve)))
     section.table(multivariate_table("Multivariate Tests", blocks, effect_size, design,
                                      [wdesign]))
 
@@ -241,7 +291,7 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
             name = wd.label(eff) if term.label == "Intercept" else \
                 f"{wd.label(eff)} * {term.label}"
             ss = float(np.trace(model.hypothesis(term, M)))
-            dfh = len(term.idx) * d
+            dfh = model.term_df(term) * d
             F = (ss / dfh) / (sse / dfe) if sse > 0 else float("nan")
             for ci, (corr, e) in enumerate(zip(CORRECTIONS, eps_by_effect[eff])):
                 cells_ = [name if ci == 0 else "", corr, fmt(ss), fmt_df(round(dfh * e, 3)),
@@ -249,26 +299,31 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
                           fmt_p(stats.f.sf(F, dfh * e, dfe * e))]
                 if effect_size:
                     cells_.append(fmt(ss / (ss + sse)))
+                if power:
+                    cells_ += _power(F, dfh * e, dfe * e, o.alpha)
                 rows.append(cells_)
         for ci, (corr, e) in enumerate(zip(CORRECTIONS, eps_by_effect[eff])):
             cells_ = [f"Error({wd.label(eff)})" if ci == 0 else "", corr, fmt(sse),
                       fmt_df(round(dfe * e, 3)), fmt(sse / (dfe * e)), "", ""]
-            if effect_size:
-                cells_.append("")
+            cells_ += [""] * (effect_size + 2 * power)
             rows.append(cells_)
-    cols = ["Source", "", "Type III Sum of Squares", "df", "Mean Square", "F", "Sig."]
+    cols = ["Source", "", f"{SS_NAMES[o.ss_type]} Sum of Squares", "df", "Mean Square", "F",
+            "Sig."]
     if effect_size:
         cols.append("Partial Eta Squared")
+    pnote = []
+    if power:
+        cols += ["Noncent. Parameter", "Observed Power" + sup("a")]
+        pnote = [f"a. Computed using alpha = {fmt(o.alpha, 2)}"]
     section.table(Table("Tests of Within-Subjects Effects", cols, rows, row_header_cols=2,
-                        footnotes=[mnote]))
+                        footnotes=[mnote] + pnote))
 
     # Tests of Within-Subjects Contrasts
     rows = []
     nw = len(within)
     for eff in wd.effects:
-        M = wd.M(eff)
+        M, labels = wd.contrast_basis(eff, within_contrasts)
         E = model.error(M)
-        labels = wd.contrast_labels(eff)
         for term in [*model.terms, None]:
             if term is None:
                 name = f"Error({wd.label(eff)})"
@@ -282,23 +337,26 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
                     ss, df = float(E[j, j]), model.ve
                     cells_ = [name if j == 0 else ""] + labels[j] + \
                         [fmt(ss), fmt_int(df), fmt(ss / df), "", ""]
-                    if effect_size:
-                        cells_.append("")
+                    cells_ += [""] * (effect_size + 2 * power)
                 else:
-                    ss, df = float(H[j, j]), len(term.idx)
+                    ss, df = float(H[j, j]), model.term_df(term)
                     F = (ss / df) / (E[j, j] / model.ve) if E[j, j] > 0 else float("nan")
                     cells_ = [name if j == 0 else ""] + labels[j] + \
                         [fmt(ss), fmt_int(df), fmt(ss / df), fmt(F),
                          fmt_p(stats.f.sf(F, df, model.ve))]
                     if effect_size:
                         cells_.append(fmt(ss / (ss + E[j, j])))
+                    if power:
+                        cells_ += _power(F, df, model.ve, o.alpha)
                 rows.append(cells_)
-    cols = ["Source"] + [n_ for n_, _ in within] + ["Type III Sum of Squares", "df",
-                                                    "Mean Square", "F", "Sig."]
+    cols = ["Source"] + [n_ for n_, _ in within] + [f"{SS_NAMES[o.ss_type]} Sum of Squares",
+                                                    "df", "Mean Square", "F", "Sig."]
     if effect_size:
         cols.append("Partial Eta Squared")
+    if power:
+        cols += ["Noncent. Parameter", "Observed Power" + sup("a")]
     section.table(Table("Tests of Within-Subjects Contrasts", cols, rows,
-                        row_header_cols=1 + nw, footnotes=[mnote]))
+                        row_header_cols=1 + nw, footnotes=[mnote] + pnote))
 
     # Levene
     if homogeneity and fobjs:
@@ -314,24 +372,33 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
     rows = []
     for term in model.terms:
         ss = float(model.hypothesis(term, A)[0, 0])
-        df = len(term.idx)
+        df = model.term_df(term)
         F = (ss / df) / mse0 if mse0 > 0 else float("nan")
         cells_ = [term.label, fmt(ss), fmt_int(df), fmt(ss / df), fmt(F),
                   fmt_p(stats.f.sf(F, df, model.ve))]
         if effect_size:
             cells_.append(fmt(ss / (ss + E0)))
+        if power:
+            cells_ += _power(F, df, model.ve, o.alpha)
         rows.append(cells_)
     rows.append(["Error", fmt(E0), fmt_int(model.ve), fmt(mse0), "", ""] +
-                ([""] if effect_size else []))
-    cols = ["Source", "Type III Sum of Squares", "df", "Mean Square", "F", "Sig."]
+                [""] * (effect_size + 2 * power))
+    cols = ["Source", f"{SS_NAMES[o.ss_type]} Sum of Squares", "df", "Mean Square", "F",
+            "Sig."]
     if effect_size:
         cols.append("Partial Eta Squared")
+    if power:
+        cols += ["Noncent. Parameter", "Observed Power" + sup("a")]
     section.table(Table("Tests of Between-Subjects Effects", cols, rows,
-                        footnotes=[mnote, "Transformed Variable: Average"]))
+                        footnotes=[mnote, "Transformed Variable: Average"] + pnote))
+    if o.parameters:
+        for t in go.parameter_table(model, dvars, o):
+            section.table(t)
 
     # Estimated marginal means
     if emm:
-        _emm_tables(section, model, wd, fobjs, emm, compare, adjustment, level, measure)
+        _emm_tables(section, model, wd, fobjs, emm, compare, adjustment, level, measure,
+                    o.simple)
 
     # Post hoc (between factors, observed means of the average over within levels)
     if posthoc_factors and posthoc_methods:
@@ -349,19 +416,27 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
                     continue
                 groups = [Group(lv, lab, avg[f.codes == i])
                           for i, (lv, lab) in enumerate(zip(f.levels, f.labels))]
-                mc = [(measure, groups, m, posthoc(groups, m, mse_avg, model.ve, level))
-                      for m in POSTHOC_ORDER if m in posthoc_methods]
-                tab = multiple_comparisons_table(mc, level, f.title)
-                tab.title = f"Multiple Comparisons — {f.title}"
-                tab.footnotes.append(f"Based on observed means. The error term is Mean "
-                                     f"Square(Error) = {fmt(mse_avg)}.")
-                section.table(tab)
+                for tab in go.posthoc_tables([(measure, groups)], f.title, posthoc_methods,
+                                             [mse_avg], model.ve, o.posthoc, True):
+                    section.table(tab)
 
-    for h, s in plots:
-        png = _profile_plot(model, wd, fobjs, h, s, measure)
+    for spec in plots:
+        h, s = spec[0], (spec[1] if len(spec) > 1 else None)
+        png = _profile_plot(model, wd, fobjs, h, s, measure, o)
         if png:
             section.image(f"Profile Plot: {h}" + (f" * {s}" if s else ""), png)
-    return section
+    if legacy:
+        return section
+    saved = go.saved_variables(model, o.save, frame.index, ds.df.index,
+                               [ds.var(d).name for d in dependents]) if o.save else {}
+    return go.GLMResult(section, saved)
+
+
+def _power(F: float, df1: float, df2: float, alpha: float) -> list[str]:
+    from rsstatchem.core.stats.glm_model import observed_power_f
+
+    lam, pw = observed_power_f(F, df1, df2, alpha)
+    return [fmt(lam), fmt(pw)]
 
 
 # ------------------------------------------------------------------ marginal means
@@ -388,7 +463,8 @@ def _lc(model: LinearModel, wd: WithinDesign, assignment: list[tuple[str, int, i
 
 
 def _emm_tables(section: Section, model: LinearModel, wd: WithinDesign, fobjs, emm: list[str],
-                compare: bool, adjustment: str, level: float, measure: str) -> None:
+                compare: bool, adjustment: str, level: float, measure: str,
+                simple: bool = False) -> None:
     notes = [f"Measure: {measure}"] + covariate_note(model)
     ci_cols = ["Mean", "Std. Error", (f"{pct(level)} Confidence Interval", "Lower Bound"),
                (f"{pct(level)} Confidence Interval", "Upper Bound")]
@@ -417,10 +493,33 @@ def _emm_tables(section: Section, model: LinearModel, wd: WithinDesign, fobjs, e
             rows, flagged = pairwise_rows(levels[0], ests, model, adjustment, level, [])
             section.table(pairwise_table(f"Pairwise Comparisons — {names[0]}", [], names[0],
                                          rows, flagged, adjustment, level, [f"Measure: {measure}"]))
+        if simple and len(names) > 1:
+            _simple_effects(section, model, wd, names, resolved, levels, adjustment, level,
+                            measure)
+
+
+def _simple_effects(section, model, wd, names, resolved, levels, adjustment, level,
+                    measure) -> None:
+    """Pairwise comparisons of each factor within every level combination of the others."""
+    for t_pos, tname in enumerate(names):
+        others = [k for k in range(len(names)) if k != t_pos]
+        all_rows, flagged = [], False
+        for combo in itertools.product(*[range(len(levels[k])) for k in others]):
+            fixed = [(resolved[k][0], resolved[k][1], lv) for k, lv in zip(others, combo)]
+            tk, ti = resolved[t_pos]
+            ests = [_lc(model, wd, fixed + [(tk, ti, lv)]) for lv in range(len(levels[t_pos]))]
+            prefix = [levels[k][lv] for k, lv in zip(others, combo)]
+            r, fl = pairwise_rows(levels[t_pos], ests, model, adjustment, level, prefix)
+            all_rows += r
+            flagged |= fl
+        other_names = [names[k] for k in others]
+        section.table(pairwise_table(
+            f"Pairwise Comparisons — {tname} within {' * '.join(other_names)}", other_names,
+            tname, all_rows, flagged, adjustment, level, [f"Measure: {measure}"]))
 
 
 def _profile_plot(model: LinearModel, wd: WithinDesign, fobjs, h: str, s: str | None,
-                  measure: str) -> bytes | None:
+                  measure: str, opts=None) -> bytes | None:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
 
@@ -435,15 +534,33 @@ def _profile_plot(model: LinearModel, wd: WithinDesign, fobjs, h: str, s: str | 
     ax = fig.add_subplot()
     colors = ["#C62828", "#1565C0", "#2E7D32", "#6A1B9A", "#EF6C00", "#00838F", "#4E342E"]
     series = [None] if sk_si is None else list(range(len(_levels(*sk_si, wd, fobjs))))
+    bars = getattr(opts, "error_bars", None)
+    q = float(stats.t.ppf(0.5 + opts.level / 2, model.ve)) if bars == "ci" else \
+        float(getattr(opts, "se_mult", 2.0))
+    bar_chart = getattr(opts, "plot_type", "line") == "bar"
     for si, sv in enumerate(series):
-        ys = []
+        ys, half = [], []
         for hv in range(len(hlev)):
             assignment = [(hk, hi, hv)] + ([(sk_si[0], sk_si[1], sv)] if sk_si else [])
             l, c = _lc(model, wd, assignment)
-            ys.append(model.estimate(l, c)[0])
+            e, se = model.estimate(l, c)
+            ys.append(e)
+            half.append(q * se)
         label = None if sv is None else _levels(*sk_si, wd, fobjs)[sv]
-        ax.plot(range(len(hlev)), ys, marker="o", color=colors[si % len(colors)], label=label,
-                linewidth=1.6)
+        x = np.arange(len(hlev), dtype=float)
+        if bar_chart:
+            width = 0.8 / len(series)
+            ax.bar(x - 0.4 + width * (si + 0.5), ys, width * 0.95,
+                   color=colors[si % len(colors)], label=label,
+                   yerr=half if bars else None, capsize=3)
+        else:
+            ax.errorbar(x, ys, yerr=half if bars else None, marker="o",
+                        color=colors[si % len(colors)], label=label, linewidth=1.6,
+                        capsize=3 if bars else 0)
+    if bars:
+        ax.text(1.0, -0.18, f"Error bars: {pct(opts.level)} CI" if bars == "ci" else
+                f"Error bars: +/- {q:g} SE", transform=ax.transAxes, fontsize=7, color="#555",
+                ha="right")
     ax.set_xticks(range(len(hlev)), hlev)
     ax.set_xlabel(h)
     ax.set_ylabel("Estimated Marginal Means")

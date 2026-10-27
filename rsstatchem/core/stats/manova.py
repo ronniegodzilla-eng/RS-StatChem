@@ -352,54 +352,89 @@ def manova(ds: Dataset, dependents: list[str], factors: list[str],
            effect_size: bool = True, homogeneity: bool = True,
            posthoc_factors: list[str] | None = None, posthoc_methods=(),
            emm_factors: list[str] | None = None, compare: bool = False,
-           adjustment: str = "bonferroni", level: float = 0.95) -> Section:
+           adjustment: str = "bonferroni", level: float = 0.95, options=None):
+    """SPSS GLM Multivariate. Without ``options`` returns a Section (older signature); with a
+    :class:`glm_output.GLMOptions` (custom model, SS type, WLS, contrasts, EM means with
+    simple effects, profile plots, power, parameter estimates, extended post hoc, Save) it
+    returns a :class:`glm_output.GLMResult`."""
+    from rsstatchem.core.stats import glm_output as go
+    from rsstatchem.core.stats.glm_model import full_factorial as _ff
+
     covariates = covariates or []
-    posthoc_factors = posthoc_factors or []
-    emm_factors = emm_factors or []
+    legacy = options is None
+    if legacy:
+        options = go.GLMOptions(descriptives=descriptives, effect_size=effect_size,
+                                homogeneity=homogeneity,
+                                posthoc_factors=list(posthoc_factors or []),
+                                posthoc_methods=list(posthoc_methods),
+                                emm=list(emm_factors or []), compare=compare,
+                                adjust=adjustment, alpha=1 - level)
+    o = options
+    level = o.level
     section = Section("Multivariate Analysis of Variance")
+    terms_text = " ".join(t.syntax for t in (o.terms if o.terms is not None else
+                                             _ff(factors, covariates)))
     log = f"GLM {' '.join(dependents)} BY {' '.join(factors)}"
     if covariates:
         log += f" WITH {' '.join(covariates)}"
-    log += "\n  /METHOD=SSTYPE(3)\n  /INTERCEPT=INCLUDE"
-    if posthoc_factors and posthoc_methods:
-        log += (f"\n  /POSTHOC={' '.join(posthoc_factors)}"
-                f"({' '.join(m.upper() for m in posthoc_methods)})")
-    for e in emm_factors:
-        log += f"\n  /EMMEANS=TABLES({e})" + (f" COMPARE ADJ({adjustment.upper()})"
-                                              if compare and e != "(OVERALL)"
-                                              and "*" not in e else "")
-    stats_list = [s for s, on in (("DESCRIPTIVE", descriptives), ("ETASQ", effect_size),
-                                  ("HOMOGENEITY", homogeneity)) if on]
+    if o.wls:
+        log += f"\n  /REGWGT={o.wls}"
+    for f, (kind, ref) in o.contrasts.items():
+        log += f"\n  /CONTRAST({f})={kind.capitalize()}"
+    log += f"\n  /METHOD=SSTYPE({o.ss_type})\n  /INTERCEPT=" + \
+        ("INCLUDE" if o.intercept else "EXCLUDE")
+    if o.save:
+        log += "\n  /SAVE=" + " ".join(o.save)
+    for spec in o.plots:
+        log += "\n  /PLOT=PROFILE(" + "*".join(x for x in spec if x) + ")"
+    if o.posthoc_factors and o.posthoc_methods:
+        log += (f"\n  /POSTHOC={' '.join(o.posthoc_factors)}"
+                f"({' '.join(m.upper() for m in o.posthoc_methods)})")
+    for e in o.emm:
+        log += f"\n  /EMMEANS=TABLES({'OVERALL' if e == '(OVERALL)' else e})" + \
+            (f" COMPARE ADJ({o.adjust.upper()})" if o.compare and e != "(OVERALL)"
+             and "*" not in e else "")
+    stats_list = [s for s, on in (("DESCRIPTIVE", o.descriptives), ("ETASQ", o.effect_size),
+                                  ("OPOWER", o.power), ("PARAMETER", o.parameters),
+                                  ("HOMOGENEITY", o.homogeneity)) if on]
     if stats_list:
         log += f"\n  /PRINT={' '.join(stats_list)}"
     log += f"\n  /CRITERIA=ALPHA({1 - level:.2f})"
-    design_terms = covariates + ["*".join(c) for r in range(1, len(factors) + 1)
-                                 for c in itertools.combinations(factors, r)]
-    section.log(log + "\n  /DESIGN=" + " ".join(design_terms) + ".")
+    section.log(log + "\n  /DESIGN=" + terms_text + ".")
 
-    frame = _frame(ds, dependents + factors + covariates, set(dependents + covariates))
+    def done(saved=None):
+        return section if legacy else go.GLMResult(section, saved or {})
+
+    extra = [o.wls] if o.wls else []
+    frame = _frame(ds, dependents + factors + covariates + extra,
+                   set(dependents + covariates + extra))
+    if o.wls:
+        frame = frame[frame[o.wls] > 0]
     if len(dependents) < 2:
         section.note("Warning", "Multivariate analysis needs at least two dependent variables.",
                      style="warning")
-        return section
+        return done()
     fobjs = [make_factor(ds, f, frame[f]) for f in factors]
+    names = [f.name for f in fobjs]
     Y = frame[dependents].to_numpy(float)
-    model = LinearModel(Y, fobjs, {ds.var(c).name: frame[c].to_numpy(float)
-                                   for c in covariates})
+    covs = {ds.var(c).name: frame[c].to_numpy(float) for c in covariates}
+    model = LinearModel(Y, fobjs, covs, terms=o.terms, intercept=o.intercept,
+                        ss_type=o.ss_type,
+                        weights=frame[o.wls].to_numpy(float) if o.wls else None)
     design = model.design_text
     n, p = Y.shape
     if model.ve < p:
         section.note("Warning", "There are not enough error degrees of freedom for the "
                      "multivariate tests.", style="warning")
-        return section
-    if model.deficient:
+        return done()
+    if model.deficient and o.ss_type in (3, 4):
         section.note("Warning", "Some cells of the design are empty; Type III results use a "
                      "generalized inverse and may differ from SPSS.", style="warning")
     dvars = [ds.var(d) for d in dependents]
 
     if fobjs:
         section.table(between_factors_table(fobjs))
-    if descriptives:
+    if o.descriptives:
         rows = []
         for v, j in zip(dvars, range(p)):
             inner = nested_descriptive_rows(fobjs, Y[:, j], v.decimals)
@@ -409,92 +444,69 @@ def manova(ds: Dataset, dependents: list[str], factors: list[str],
                             [""] + [f.name for f in fobjs] + ["Mean", "Std. Deviation", "N"],
                             rows, row_header_cols=1 + len(fobjs)))
     cells = cell_index(fobjs)
-    if homogeneity and fobjs:
+    if o.homogeneity and fobjs:
         groups = [Y[cells == c] for c in np.unique(cells)]
         t = box_table(groups, design)
         if t is not None:
             section.table(t)
-    blocks = [(t.label, multivariate_tests(model.hypothesis(t), model.E, len(t.idx), model.ve))
-              for t in model.terms]
-    section.table(multivariate_table("Multivariate Tests", blocks, effect_size, design))
-    if homogeneity and fobjs:
+    blocks = [(t.label, multivariate_tests(model.hypothesis(t), model.E, model.term_df(t),
+                                           model.ve)) for t in model.terms]
+    mv = multivariate_table("Multivariate Tests", blocks, o.effect_size, design)
+    if o.power:
+        _add_mv_power(mv, blocks, o)
+    section.table(mv)
+    if o.homogeneity and fobjs:
         source = model.resid if covariates else Y
         samples = [[source[cells == c, j] for c in np.unique(cells)] for j in range(p)]
         section.table(levene_table([v.title for v in dvars], samples, design))
-
-    # Tests of Between-Subjects Effects
-    ss_ct = ((Y - Y.mean(axis=0)) ** 2).sum(axis=0)
-    sse = np.diag(model.E)
-    mse = sse / model.ve
-    rows = []
-    r2_notes = []
-
-    def add(source, j, ss, df, test=True):
-        f = (ss / df) / mse[j] if test and df > 0 and mse[j] > 0 else float("nan")
-        cells_ = [source, dvars[j].title, fmt(ss), fmt_df(df), fmt(ss / df) if df else "",
-                  fmt(f) if test else "", fmt_p(stats.f.sf(f, df, model.ve)) if test else ""]
-        if effect_size:
-            cells_.append(fmt(ss / (ss + sse[j])) if test and ss + sse[j] > 0 else "")
-        rows.append(cells_)
-
-    df_model = model.rank - 1
-    for j in range(p):
-        ss_model = ss_ct[j] - sse[j]
-        r2 = ss_model / ss_ct[j] if ss_ct[j] > 0 else float("nan")
-        adj = 1 - (1 - r2) * (n - 1) / model.ve
-        letter = chr(ord("a") + j)
-        add("Corrected Model" if j == 0 else "", j, ss_model, df_model)
-        rows[-1][2] += sup(letter)
-        r2_notes.append(f"{letter}. R Squared = {fmt(r2)} (Adjusted R Squared = {fmt(adj)})")
-    for t in model.terms:
-        H = model.hypothesis(t)
-        for j in range(p):
-            add(t.label if j == 0 else "", j, H[j, j], len(t.idx))
-    for title, vals, df, test in (("Error", sse, model.ve, False),
-                                  ("Total", (Y ** 2).sum(axis=0), n, False),
-                                  ("Corrected Total", ss_ct, n - 1, False)):
-        for j in range(p):
-            add(title if j == 0 else "", j, vals[j], df, test)
-            if title != "Error":
-                rows[-1][4] = ""
-    columns = ["Source", "Dependent Variable", "Type III Sum of Squares", "df", "Mean Square",
-               "F", "Sig."]
-    if effect_size:
-        columns.append("Partial Eta Squared")
-    section.table(Table("Tests of Between-Subjects Effects", columns, rows, row_header_cols=2,
-                        footnotes=r2_notes))
-
-    # Estimated marginal means
-    if emm_factors:
-        _manova_emm(section, model, fobjs, dvars, emm_factors, compare, adjustment, level)
-
-    # Post hoc
-    if posthoc_factors and posthoc_methods:
+    wls_note = f"Weighted Least Squares Regression - Weighted by {ds.var(o.wls).title}" \
+        if o.wls else None
+    section.table(go.between_effects_table(model, dvars, o, wls_note))
+    for t in go.parameter_table(model, dvars, o):
+        section.table(t)
+    for t in go.contrast_tables(model, dvars, o, names):
+        section.table(t)
+    cov_note = covariate_note(model)
+    for t in go.emm_tables(model, dvars, o, names, cov_note):
+        section.table(t)
+    ph = [f for f in o.posthoc_factors if f in factors]
+    if ph and o.posthoc_methods:
         if covariates:
             section.note("Warning", "Post hoc tests are not performed when covariates are in "
                          "the model.", style="warning")
         else:
-            for fname in posthoc_factors:
-                f = next(o for o in fobjs if o.name == ds.var(fname).name)
+            mse = np.diag(model.E) / model.ve
+            for fname in ph:
+                f = next(ob for ob in fobjs if ob.name == ds.var(fname).name)
                 if len(f.levels) < 3:
                     section.note("", f"Post hoc tests are not performed for {f.name} because "
                                  "there are fewer than three groups.")
                     continue
-                mc = []
-                for j, v in enumerate(dvars):
-                    groups = [Group(lv, lab, Y[f.codes == i, j])
-                              for i, (lv, lab) in enumerate(zip(f.levels, f.labels))]
-                    for meth in [m for m in POSTHOC_ORDER if m in posthoc_methods]:
-                        mc.append((v.title, groups, meth,
-                                   posthoc(groups, meth, mse[j], model.ve, level)))
-                tab = multiple_comparisons_table(mc, level, f.title)
-                tab.title = f"Multiple Comparisons — {f.title}"
-                tab.footnotes.append("Based on observed means. The error term is Mean "
-                                     "Square(Error) = " +
-                                     ", ".join(f"{fmt(mse[j])} ({v.title})"
-                                               for j, v in enumerate(dvars)) + ".")
-                section.table(tab)
-    return section
+                gbd = [(v.title, [Group(lv, lab, Y[f.codes == i, j])
+                                  for i, (lv, lab) in enumerate(zip(f.levels, f.labels))])
+                       for j, v in enumerate(dvars)]
+                for t in go.posthoc_tables(gbd, f.title, o.posthoc_methods, list(mse),
+                                           model.ve, o.posthoc, True, None,
+                                           max(v.decimals for v in dvars)):
+                    section.table(t)
+    for caption, png in go.glm_profile_plots(model, dvars, o, names):
+        section.image(caption, png)
+    saved = go.saved_variables(model, o.save, frame.index, ds.df.index,
+                               [v.name for v in dvars]) if o.save else {}
+    return done(saved)
+
+
+def _add_mv_power(table: Table, blocks, o) -> None:
+    from rsstatchem.core.stats.glm_model import observed_power_f
+
+    table.columns += ["Noncent. Parameter", "Observed Power" + sup("c")]
+    i = 0
+    for _, tests in blocks:
+        for t in tests:
+            lam, pw = observed_power_f(t.F, t.df1, t.df2, o.alpha)
+            table.rows[i] += [fmt(lam), fmt(pw)]
+            i += 1
+    table.footnotes.append(f"c. Computed using alpha = {fmt(o.alpha, 2)}")
 
 
 def _manova_emm(section: Section, model: LinearModel, fobjs: list[Factor], dvars, emm: list[str],

@@ -107,7 +107,7 @@ class ModelDialog(QDialog):
         lists.addLayout(rcol, 1)
 
         self.custom = QLineEdit()
-        self.custom.setPlaceholderText("e.g.  B(A)   or   B WITHIN A   or   A*B*X")
+        self.custom.setPlaceholderText("e.g. B(A), A*B*X")
         by = QPushButton("By *")
         by.clicked.connect(lambda: self.custom.insert("*"))
         within = QPushButton("Within")
@@ -326,7 +326,7 @@ class PlotsDialog(QDialog):
         el = QGridLayout(err)
         self.include = QCheckBox("Include Error bars")
         self.include.setChecked(bool(opts.get("error_bars")))
-        self.ci = QRadioButton("Confidence Interval (95.0%)")
+        self.ci = QRadioButton("Confidence Interval")
         self.se = QRadioButton("Standard Error")
         (self.se if opts.get("error_bars") == "se" else self.ci).setChecked(True)
         self.mult = QDoubleSpinBox()

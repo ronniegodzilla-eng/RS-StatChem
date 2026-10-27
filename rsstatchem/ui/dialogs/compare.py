@@ -213,7 +213,7 @@ class ContrastsOneWayDialog(SubDialog):
         box.addLayout(row)
         box = self.group("Coefficients")
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("e.g.  1 -1 0   (one coefficient per group, in order)")
+        self.edit.setPlaceholderText("e.g. 1 -1 0")
         add, change, remove = QPushButton("Add"), QPushButton("Change"), QPushButton("Remove")
         add.clicked.connect(self._add)
         change.clicked.connect(self._change)

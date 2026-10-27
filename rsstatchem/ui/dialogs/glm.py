@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
                                QWidget)
 
 from rsstatchem.core.stats import manova, mixed, repeated
-from rsstatchem.core.stats.anova import POSTHOC, POSTHOC_ORDER
+from rsstatchem.ui.dialogs import glm_model_ui as gm
 from rsstatchem.ui.dialogs.base import (BASE_TEXT_ROLE, NAME_ROLE, SubDialog,
                                         VariablePickerDialog, is_numeric)
 
@@ -23,70 +23,21 @@ ADJUST_CHOICES = [("lsd", "LSD(none)"), ("bonferroni", "Bonferroni"), ("sidak", 
 
 
 # ------------------------------------------------------------------ shared sub-dialogs
-def _effects(factor_names: list[str]) -> list[str]:
-    return [" * ".join(c).replace(" * ", "*") for r in range(1, len(factor_names) + 1)
-            for c in itertools.combinations(factor_names, r)]
-
-
 def emm_dialog(owner: VariablePickerDialog, factor_names: list[str]) -> None:
-    """Estimated Marginal Means: factors / interactions, compare main effects, adjustment."""
-    dlg = SubDialog(f"{owner.windowTitle()}: Estimated Marginal Means", owner)
-    box = dlg.group("Display Means for")
-    current = owner.opts.get("emm", [])
-    for eff in ["(OVERALL)"] + _effects(factor_names):
-        dlg.check(box, f"emm::{eff}", eff.replace("*", " * "), eff in current)
-    box = dlg.group("Comparisons")
-    dlg.check(box, "compare", "Compare main effects", owner.opts.get("compare", False))
-    box.addWidget(QLabel("Confidence interval adjustment:"))
-    dlg.radio(box, "adjust", ADJUST_CHOICES, owner.opts.get("adjust", "bonferroni"))
-    values = dlg.run()
-    if values is None:
-        return
-    owner.opts["emm"] = [k.split("::", 1)[1] for k, v in values.items()
-                         if k.startswith("emm::") and v]
-    owner.opts["compare"] = values["compare"]
-    owner.opts["adjust"] = values["adjust"]
+    gm.emm_dialog(owner, owner.windowTitle(), factor_names, owner.opts.get("terms"))
 
 
 def posthoc_dialog(owner: VariablePickerDialog, factors: list[str]) -> None:
-    dlg = SubDialog(f"{owner.windowTitle()}: Post Hoc Multiple Comparisons for Observed Means",
-                    owner)
-    box = dlg.group("Post Hoc Tests for")
-    if not factors:
-        box.addWidget(QLabel("(no between-subjects factors)"))
-    for f in factors:
-        dlg.check(box, f"ph_{f}", owner.ds.var(f).name, f in owner.opts["posthoc_factors"])
-    box = dlg.group("Equal Variances Assumed")
-    for key in POSTHOC_ORDER[:-1]:
-        dlg.check(box, key, POSTHOC[key], key in owner.opts["posthoc"])
-    box = dlg.group("Equal Variances Not Assumed")
-    dlg.check(box, "games_howell", "Games-Howell", "games_howell" in owner.opts["posthoc"])
-    values = dlg.run()
-    if values is None:
-        return
-    owner.opts["posthoc"] = [k for k in POSTHOC_ORDER if values.get(k)]
-    owner.opts["posthoc_factors"] = [f for f in factors if values.get(f"ph_{f}")]
+    gm.posthoc_dialog(owner, owner.windowTitle(), factors)
 
 
 def glm_options(owner: VariablePickerDialog, title: str) -> None:
-    dlg = SubDialog(f"{title}: Options", owner, columns=1)
-    box = dlg.group("Display")
-    for key, text in (("descriptives", "Descriptive statistics"),
-                      ("effect", "Estimates of effect size"),
-                      ("homogeneity", "Homogeneity tests")):
-        dlg.check(box, key, text, owner.opts[key])
-    box = dlg.group("Significance level")
-    dlg.number(box, "alpha", "Significance level:", owner.opts["alpha"], 0.001, 0.5, 3)
-    box.addWidget(QLabel("Confidence intervals are (1 − significance level) × 100%."))
-    values = dlg.run()
-    if values:
-        owner.opts.update(values)
+    gm.options_dialog(owner, title, multivariate=True)
 
 
 # ------------------------------------------------------------------ Multivariate
 class MultivariateDialog(VariablePickerDialog):
-    DEFAULTS = {"descriptives": True, "effect": True, "homogeneity": True, "posthoc": [],
-                "posthoc_factors": [], "alpha": 0.05, "emm": [], "compare": False,
+    DEFAULTS = {**gm.GLM_DEFAULTS, "descriptives": True, "effect": True, "homogeneity": True,
                 "adjust": "bonferroni"}
 
     def __init__(self, ds, parent=None):
@@ -94,28 +45,35 @@ class MultivariateDialog(VariablePickerDialog):
         self.add_target("deps", "Dependent Variables:", accepts=is_numeric, min_items=2)
         self.add_target("factors", "Fixed Factor(s):", required=False)
         self.add_target("covariates", "Covariate(s):", accepts=is_numeric, required=False)
-        self.add_option_button("Post Hoc...", lambda: posthoc_dialog(
-            self, self.selected("factors")))
-        self.add_option_button("EM Means...", lambda: emm_dialog(
-            self, [self.ds.var(f).name for f in self.selected("factors")]))
-        self.add_option_button("Options...", lambda: glm_options(self, "Multivariate"))
+        self.add_target("wls", "WLS Weight:", accepts=is_numeric, single=True, required=False)
+        t = "Multivariate"
+        self.add_option_button("Model...", lambda: gm.model_dialog(
+            self, t, self.selected("factors"), self.selected("covariates")))
+        self.add_option_button("Contrasts...", lambda: gm.contrasts_dialog(
+            self, t, self.selected("factors")))
+        self.add_option_button("Plots...", lambda: gm.plots_dialog(
+            self, t, self.selected("factors")))
+        self.add_option_button("Post Hoc...", lambda: gm.posthoc_dialog(
+            self, t, self.selected("factors")))
+        self.add_option_button("EM Means...", lambda: gm.emm_dialog(
+            self, t, self.selected("factors"), self.opts.get("terms")))
+        self.add_option_button("Save...", lambda: gm.save_dialog(self, t))
+        self.add_option_button("Options...", lambda: gm.options_dialog(self, t, True))
         self.finish()
 
     def validate(self):
-        if not self.selected("factors") and not self.selected("covariates"):
+        if not self.selected("factors") and not self.selected("covariates") and \
+                not self.opts.get("terms"):
             return "Specify at least one fixed factor or covariate."
         return None
 
     def compute(self):
-        o = self.opts
         factors = self.selected("factors")
-        names = {self.ds.var(f).name for f in factors}
-        emm = [e for e in o["emm"] if e == "(OVERALL)" or
-               all(p in names for p in e.split("*"))]
-        return manova.manova(self.ds, self.selected("deps"), factors,
-                             self.selected("covariates"), o["descriptives"], o["effect"],
-                             o["homogeneity"], [f for f in o["posthoc_factors"] if f in factors],
-                             o["posthoc"], emm, o["compare"], o["adjust"], 1 - o["alpha"])
+        covs = self.selected("covariates")
+        opts = gm.glm_options_from(self.opts, factors, covs)
+        opts.wls = self.selected_one("wls")
+        res = manova.manova(self.ds, self.selected("deps"), factors, covs, options=opts)
+        return res if res.saved else res.section
 
 
 # ------------------------------------------------------------------ Repeated Measures
@@ -270,63 +228,11 @@ class RepeatedMeasuresDefineDialog(QDialog):
         return self.mlist.item(0).text() if self.mlist.count() else ""
 
 
-class ProfilePlotsDialog(QDialog):
-    def __init__(self, factors: list[str], plots: list, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Repeated Measures: Profile Plots")
-        self.h = QComboBox()
-        self.h.addItems(factors)
-        self.s = QComboBox()
-        self.s.addItems(["(none)"] + factors)
-        self.list = QListWidget()
-        for h, s in plots:
-            if h in factors and (s is None or s in factors):
-                self._add_item(h, s)
-        add, remove = QPushButton("Add"), QPushButton("Remove")
-        add.clicked.connect(self._add)
-        remove.clicked.connect(lambda: self.list.takeItem(self.list.currentRow()))
-        form = QFormLayout()
-        form.addRow("Horizontal Axis:", self.h)
-        form.addRow("Separate Lines:", self.s)
-        row = QHBoxLayout()
-        row.addWidget(add)
-        row.addWidget(remove)
-        row.addStretch()
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
-                              QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Continue")
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addLayout(row)
-        layout.addWidget(QLabel("Plots:"))
-        layout.addWidget(self.list)
-        layout.addWidget(bb)
-
-    def _add_item(self, h, s) -> None:
-        item = QListWidgetItem(h + (f"*{s}" if s else ""))
-        item.setData(Qt.ItemDataRole.UserRole, (h, s))
-        self.list.addItem(item)
-
-    def _add(self) -> None:
-        h = self.h.currentText()
-        s = self.s.currentText()
-        s = None if s == "(none)" or s == h else s
-        if h:
-            self._add_item(h, s)
-
-    def plots(self) -> list:
-        return [tuple(self.list.item(i).data(Qt.ItemDataRole.UserRole))
-                for i in range(self.list.count())]
-
-
 class RepeatedMeasuresDialog(VariablePickerDialog):
     """Main Repeated Measures dialog; opens the Define Factor(s) dialog first (like SPSS)."""
 
-    DEFAULTS = {"descriptives": True, "effect": True, "homogeneity": False, "posthoc": [],
-                "posthoc_factors": [], "alpha": 0.05, "emm": [], "compare": True,
-                "adjust": "bonferroni", "plots": []}
+    DEFAULTS = {**gm.GLM_DEFAULTS, "descriptives": True, "effect": True, "compare": True,
+                "adjust": "bonferroni", "within_contrasts": {}}
     _last_define: tuple[list[tuple[str, int]], str] | None = None
 
     def __init__(self, ds, parent=None, factors: list[tuple[str, int]] | None = None,
@@ -340,12 +246,20 @@ class RepeatedMeasuresDialog(VariablePickerDialog):
         self.add_target("covariates", "Covariates:", accepts=is_numeric, required=False)
         self.within_label = next(w for w in self.findChildren(QLabel)
                                  if w.text() == "Within-Subjects Variables:")
+        t = "Repeated Measures"
         self.add_option_button("Define Factors...", self._redefine)
-        self.add_option_button("Plots...", self._plots)
-        self.add_option_button("Post Hoc...", lambda: posthoc_dialog(
-            self, self.selected("between")))
-        self.add_option_button("EM Means...", lambda: emm_dialog(self, self._factor_names()))
-        self.add_option_button("Options...", lambda: glm_options(self, "Repeated Measures"))
+        self.add_option_button("Model...", lambda: gm.model_dialog(
+            self, f"{t} (between-subjects)", self._between_names(),
+            [self.ds.var(c).name for c in self.selected("covariates")]))
+        self.add_option_button("Contrasts...", self._contrasts)
+        self.add_option_button("Plots...", lambda: gm.plots_dialog(
+            self, t, self._factor_names()))
+        self.add_option_button("Post Hoc...", lambda: gm.posthoc_dialog(
+            self, t, self.selected("between")))
+        self.add_option_button("EM Means...", lambda: gm.emm_dialog(
+            self, t, self._factor_names()))
+        self.add_option_button("Save...", lambda: gm.save_dialog(self, t))
+        self.add_option_button("Options...", lambda: gm.options_dialog(self, t, True))
         self.finish()
         if factors:
             self.set_factors(factors, measure)
@@ -388,6 +302,18 @@ class RepeatedMeasuresDialog(VariablePickerDialog):
     def _slot(self, col: int) -> str:
         ks = [k for _, k in self.within_factors]
         return ",".join(str(int(v) + 1) for v in np.unravel_index(col, ks))
+
+    def _between_names(self) -> list[str]:
+        return [self.ds.var(b).name for b in self.selected("between")]
+
+    def _contrasts(self) -> None:
+        names = [n for n, _ in self.within_factors]
+        current = {k: (v, "last") for k, v in self.opts.get("within_contrasts", {}).items()}
+        dlg = gm.ContrastsDialog("Repeated Measures (within-subjects factors)", names, current,
+                                 self)
+        if dlg.exec():
+            self.opts["within_contrasts"] = {f: v[0] for f, v in dlg.values.items()
+                                             if v[0] != "none"}
 
     def _factor_names(self) -> list[str]:
         return [n for n, _ in self.within_factors] + \
@@ -456,11 +382,6 @@ class RepeatedMeasuresDialog(VariablePickerDialog):
         type(self)._last_define = (self.within_factors, self.measure)
 
     # ---------------------------------------------------------------- options
-    def _plots(self) -> None:
-        dlg = ProfilePlotsDialog(self._factor_names(), self.opts["plots"], self)
-        if dlg.exec():
-            self.opts["plots"] = dlg.plots()
-
     def validate(self):
         if not self.within_factors:
             return "Define the within-subject factor(s) first."
@@ -469,17 +390,22 @@ class RepeatedMeasuresDialog(VariablePickerDialog):
         return None
 
     def compute(self):
-        o = self.opts
         between = self.selected("between")
+        covs = self.selected("covariates")
         names = set(self._factor_names())
-        emm = [e for e in o["emm"] if e == "(OVERALL)" or all(p in names for p in e.split("*"))]
-        plots = [(h, s) for h, s in o["plots"] if h in names and (s is None or s in names)]
-        return repeated.repeated_measures(
-            self.ds, self.within_factors, self.slot_variables(), between,
-            self.selected("covariates"), self.measure or "MEASURE_1", o["descriptives"],
-            o["effect"], o["homogeneity"], emm, o["compare"], o["adjust"],
-            [f for f in o["posthoc_factors"] if f in between], o["posthoc"], plots,
-            1 - o["alpha"])
+        opts = gm.glm_options_from(self.opts, self._between_names(),
+                                   [self.ds.var(c).name for c in covs])
+        opts.emm = [e for e in self.opts.get("emm", []) if e == "(OVERALL)" or
+                    all(p in names for p in e.split("*"))]
+        opts.plots = [tuple(p) for p in self.opts.get("plots", [])
+                      if p[0] in names and all(x is None or x in names for x in p[1:])]
+        opts.posthoc_factors = [f for f in self.opts.get("posthoc_factors", []) if f in between]
+        wc = {k: v for k, v in self.opts.get("within_contrasts", {}).items()
+              if k in {n for n, _ in self.within_factors}}
+        res = repeated.repeated_measures(
+            self.ds, self.within_factors, self.slot_variables(), between, covs,
+            self.measure or "MEASURE_1", options=opts, within_contrasts=wc)
+        return res if res.saved else res.section
 
 
 # ------------------------------------------------------------------ Linear Mixed Models
