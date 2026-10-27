@@ -91,8 +91,10 @@ def test_airline_model_matches_box_jenkins_r_fixture(air):
     y = air.df["pass"].to_numpy()
     fm = ts.fit_model(y, spec, 12, horizon=12)
     params = {p[0]: p for p in fm.params}
-    assert params["MA Lag 1"][1] == pytest.approx(0.4018, abs=5e-4)
-    assert params["MA, Seasonal Lag 1"][1] == pytest.approx(0.5569, abs=5e-4)
+    # the likelihood is flat near the optimum: optimisers/BLAS builds differ by up to ~1e-3
+    # (CI's macOS runner gave 0.5562), far inside the standard errors of 0.07-0.09
+    assert params["MA Lag 1"][1] == pytest.approx(0.4018, abs=2e-3)
+    assert params["MA, Seasonal Lag 1"][1] == pytest.approx(0.5569, abs=2e-3)
     assert params["MA Lag 1"][2] == pytest.approx(0.0896, abs=2e-3)
     assert params["MA, Seasonal Lag 1"][2] == pytest.approx(0.0731, abs=2e-3)
     import statsmodels.api as sm
