@@ -31,6 +31,11 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.nptests",
     "rsstatchem.ui.dialogs.distplots",
     "rsstatchem.ui.dialogs.proportions",
+    "rsstatchem.ui.dialogs.power",
+    "rsstatchem.ui.dialogs.meta",
+    "rsstatchem.ui.dialogs.bayes",
+    "rsstatchem.ui.dialogs.correspondence",
+    "rsstatchem.ui.dialogs.mds",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
