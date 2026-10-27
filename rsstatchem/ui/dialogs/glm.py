@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
 
 from rsstatchem.core.stats import manova, mixed, repeated
 from rsstatchem.ui.dialogs import glm_model_ui as gm
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 from rsstatchem.ui.dialogs.base import (BASE_TEXT_ROLE, NAME_ROLE, SubDialog,
                                         VariablePickerDialog, is_numeric)
 
@@ -406,7 +407,7 @@ class RepeatedMeasuresDialog(VariablePickerDialog):
 
 
 # ------------------------------------------------------------------ Linear Mixed Models
-class LinearMixedDialog(VariablePickerDialog):
+class LinearMixedDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"main_only": False, "intercept": True, "slopes": [], "structure": "VC",
                 "method": "REML", "descriptives": False, "estimates": True, "covtests": True,
                 "level": 95.0, "terms": None, "fixed_intercept": True, "rtype": "ID",
@@ -556,6 +557,11 @@ class LinearMixedDialog(VariablePickerDialog):
         emm = [e for e in o.get("emm", []) if e == "(OVERALL)" or
                all(p in names for p in e.split("*"))]
         rep = self._repeated_name()
+        return self.resampled(lambda: self._mixed(covs, factors, terms, emm, rep),
+                              pool="models", level=o["level"] / 100)
+
+    def _mixed(self, covs, factors, terms, emm, rep):
+        o = self.opts
         return mixed.linear_mixed(self.ds, self.selected_one("dep"),
                                   self.selected_one("subject"), factors, covs,
                                   o["intercept"], [s for s in o["slopes"] if s in covs],

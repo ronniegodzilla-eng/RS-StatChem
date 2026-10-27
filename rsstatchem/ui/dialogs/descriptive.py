@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QDialogButtonBo
 from rsstatchem.core.dataset import NUMERIC
 from rsstatchem.core.stats.descriptive import DEFAULT_DESCRIPTIVES, StatSpec
 from rsstatchem.ui.dialogs.base import VariablePickerDialog
+from rsstatchem.ui.dialogs.resample_ui import BOOT_DEFAULTS, BootstrapDialog
 
 
 def _numeric(var) -> bool:
@@ -76,15 +77,32 @@ class _CheckSubDialog(QDialog):
         return {k for k, cb in self.boxes.items() if cb.isChecked()}
 
 
-class DescriptivesDialog(VariablePickerDialog):
+class _BootstrapButton:
+    """Bootstrap… for the two dialogs the Data Editor runs itself (settings travel in
+    ``params()["stats"].options["bootstrap"]``)."""
+
+    _bootstrap: dict = dict(BOOT_DEFAULTS)
+
+    def add_bootstrap_button(self) -> None:
+        self.add_option_button("Bootstrap...", self._bootstrap_dialog)
+
+    def _bootstrap_dialog(self) -> None:
+        dlg = BootstrapDialog(self.ds, type(self)._bootstrap, self)
+        if dlg.exec():
+            type(self)._bootstrap = dlg.values()
+
+
+class DescriptivesDialog(_BootstrapButton, VariablePickerDialog):
     _stats: set[str] = set(DEFAULT_DESCRIPTIVES)
     _save_z = False
     _order = "variable"
+    _bootstrap: dict = dict(BOOT_DEFAULTS)
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Descriptives", parent)
         self.add_target("vars", "Variable(s):", accepts=_numeric)
         self.add_option_button("Options...", self._options)
+        self.add_bootstrap_button()
         self.save_z = QCheckBox("Save standardized values as variables")
         self.save_z.setChecked(type(self)._save_z)
         self.options_layout.addWidget(self.save_z)
@@ -115,12 +133,15 @@ class DescriptivesDialog(VariablePickerDialog):
 
     def params(self) -> dict:
         return {"names": self.selected("vars"),
-                "stats": StatSpec(sorted(type(self)._stats), {"order": type(self)._order}),
+                "stats": StatSpec(sorted(type(self)._stats),
+                                  {"order": type(self)._order,
+                                   "bootstrap": dict(type(self)._bootstrap)}),
                 "save_z": self.save_z.isChecked()}
 
 
-class FrequenciesDialog(VariablePickerDialog):
+class FrequenciesDialog(_BootstrapButton, VariablePickerDialog):
     _stats: set[str] = set()
+    _bootstrap: dict = dict(BOOT_DEFAULTS)
     _chart = "none"
     _normal = True
     _tables = True
@@ -134,6 +155,7 @@ class FrequenciesDialog(VariablePickerDialog):
         self.add_option_button("Statistics...", self._statistics)
         self.add_option_button("Charts...", self._charts)
         self.add_option_button("Format...", self._format)
+        self.add_bootstrap_button()
         self.show_tables = QCheckBox("Display frequency tables")
         self.show_tables.setChecked(type(self)._tables)
         self.options_layout.addWidget(self.show_tables)
@@ -285,7 +307,8 @@ class FrequenciesDialog(VariablePickerDialog):
                    "cut_points": extra["cut_points"] if extra["use_cut"] else None,
                    "grouped": extra["grouped"], "chart_values": extra["chart_values"],
                    "order": extra["order"], "organize": extra["organize"],
-                   "limit": extra["limit"] if extra["use_limit"] else None}
+                   "limit": extra["limit"] if extra["use_limit"] else None,
+                   "bootstrap": dict(type(self)._bootstrap)}
         return {"names": self.selected("vars"),
                 "stats": StatSpec(sorted(type(self)._stats), options),
                 "show_tables": self.show_tables.isChecked(), "chart": type(self)._chart,

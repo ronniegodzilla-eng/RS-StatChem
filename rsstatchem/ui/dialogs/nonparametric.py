@@ -10,8 +10,11 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFormLayout, QGridLayout
 
 from rsstatchem.core.output import Section
 from rsstatchem.core.stats import nonparametric as npt
+from rsstatchem.core.stats import npar_exact
+from rsstatchem.core.stats.resample import add_subcommand
 from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog, is_numeric
 from rsstatchem.ui.dialogs.compare import GroupingMixin
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 
 OPTION_DEFAULTS = {"descriptives": False, "quartiles": False, "listwise": False}
 
@@ -49,11 +52,20 @@ def merge(sections: list[Section]) -> Section:
     return merged
 
 
-class NparOptionsMixin:
-    """The Options… sub-dialog shared by all legacy nonparametric dialogs."""
+class NparOptionsMixin(ResampleMixin):
+    """The Exact… and Options… buttons shared by all legacy nonparametric dialogs."""
 
     def add_npar_options(self: VariablePickerDialog) -> None:
+        self.add_exact_button()
         self.add_option_button("Options...", self._npar_options)
+
+    def with_exact(self, section, fn):
+        """Add the Exact / Monte Carlo rows when the Exact… option is not asymptotic."""
+        spec = self.exact_spec()
+        if spec is not None:
+            fn(section, spec)
+            add_subcommand(section, spec.syntax())
+        return section
 
     def _npar_options(self: VariablePickerDialog) -> None:
         dlg = SubDialog(f"{self.windowTitle()}: Options", self, columns=1)
@@ -136,8 +148,10 @@ class ChiSquareDialog(NparOptionsMixin, VariablePickerDialog):
     def compute(self):
         o = self.opts
         rng = (_number(o["lower"]), _number(o["upper"])) if o["use_range"] else None
-        return npt.chi_square(self.ds, self.selected("vars"), _numbers(o["expected"]) or None,
-                              expected_range=rng, **self.npar_kwargs())
+        names, exp = self.selected("vars"), _numbers(o["expected"]) or None
+        sec = npt.chi_square(self.ds, names, exp, expected_range=rng, **self.npar_kwargs())
+        return self.with_exact(sec, lambda s, spec: npar_exact.chi_square(
+            s, self.ds, names, spec, exp, rng, o["listwise"]))
 
 
 class BinomialDialog(NparOptionsMixin, VariablePickerDialog):
@@ -170,9 +184,12 @@ class BinomialDialog(NparOptionsMixin, VariablePickerDialog):
 
     def compute(self):
         cut = self.opts["cut"].strip()
-        return npt.binomial(self.ds, self.selected("vars"),
-                            float(self.opts["prop"].replace(",", ".")),
-                            float(cut.replace(",", ".")) if cut else None, **self.npar_kwargs())
+        prop = float(self.opts["prop"].replace(",", "."))
+        cutv = float(cut.replace(",", ".")) if cut else None
+        names = self.selected("vars")
+        sec = npt.binomial(self.ds, names, prop, cutv, **self.npar_kwargs())
+        return self.with_exact(sec, lambda s, spec: npar_exact.binomial(
+            s, self.ds, names, spec, prop, cutv, self.opts["listwise"]))
 
 
 class RunsDialog(NparOptionsMixin, VariablePickerDialog):
@@ -208,9 +225,16 @@ class RunsDialog(NparOptionsMixin, VariablePickerDialog):
         for cut in ("median", "mode", "mean", "custom"):
             if self.opts[cut]:
                 value = _number(self.opts["value"]) if cut == "custom" else None
-                sections.append(npt.runs(self.ds, names, cut, value, **kw))
+                sec = npt.runs(self.ds, names, cut, value, **kw)
+                sections.append(self.with_exact(sec, lambda s, spec, c=cut, v=value:
+                                                npar_exact.runs(s, self.ds, names, c, v, spec,
+                                                                self.opts["listwise"])))
                 kw["descriptives"] = kw["quartiles"] = False
-        return merge(sections) if sections else npt.runs(self.ds, names, "median", **kw)
+        if not sections:
+            sec = npt.runs(self.ds, names, "median", **kw)
+            sections.append(self.with_exact(sec, lambda s, spec: npar_exact.runs(
+                s, self.ds, names, "median", None, spec, self.opts["listwise"])))
+        return merge(sections)
 
 
 class OneSampleKSDialog(NparOptionsMixin, VariablePickerDialog):
@@ -235,7 +259,8 @@ class OneSampleKSDialog(NparOptionsMixin, VariablePickerDialog):
         sections = []
         for dist in npt.DISTRIBUTIONS:
             if self.opts[dist]:
-                sections.append(npt.ks_one_sample(self.ds, self.selected("vars"), dist, **kw))
+                sections.append(npt.ks_one_sample(self.ds, self.selected("vars"), dist,
+                                                  exact=self.exact_spec() is not None, **kw))
                 kw["descriptives"] = kw["quartiles"] = False
         return merge(sections)
 
@@ -262,9 +287,12 @@ class TwoIndependentDialog(NparOptionsMixin, GroupingMixin, VariablePickerDialog
 
     def compute(self):
         o = self.opts
-        return npt.two_independent(self.ds, self.selected("vars"), self.selected_one("group"),
-                                   self._definition()["groups"], o["mw"], o["ks"], o["moses"],
-                                   o["ww"], **self.npar_kwargs())
+        names, group = self.selected("vars"), self.selected_one("group")
+        groups = self._definition()["groups"]
+        sec = npt.two_independent(self.ds, names, group, groups, o["mw"], o["ks"], o["moses"],
+                                  o["ww"], **self.npar_kwargs())
+        return self.with_exact(sec, lambda s, spec: npar_exact.two_independent(
+            s, self.ds, names, group, groups, spec, o["mw"], o["ks"], o["listwise"]))
 
 
 class KIndependentDialog(NparOptionsMixin, GroupingMixin, VariablePickerDialog):
@@ -287,9 +315,12 @@ class KIndependentDialog(NparOptionsMixin, GroupingMixin, VariablePickerDialog):
 
     def compute(self):
         d, o = self._definition(), self.opts
-        return npt.k_independent(self.ds, self.selected("vars"), self.selected_one("group"),
-                                 d["lo"], d["hi"], o["kw"], o["median"], o["jt"],
-                                 **self.npar_kwargs())
+        names, group = self.selected("vars"), self.selected_one("group")
+        sec = npt.k_independent(self.ds, names, group, d["lo"], d["hi"], o["kw"], o["median"],
+                                o["jt"], **self.npar_kwargs())
+        return self.with_exact(sec, lambda s, spec: npar_exact.k_independent(
+            s, self.ds, names, group, d["lo"], d["hi"], spec, o["kw"], o["median"], o["jt"],
+            o["listwise"]))
 
 
 class TwoRelatedDialog(NparOptionsMixin, VariablePickerDialog):
@@ -312,8 +343,11 @@ class TwoRelatedDialog(NparOptionsMixin, VariablePickerDialog):
 
     def compute(self):
         o = self.opts
-        return npt.two_related(self.ds, self.pairs("pairs"), o["wilcoxon"], o["sign"],
-                               o["mcnemar"], o["marginal"], **self.npar_kwargs())
+        pairs = self.pairs("pairs")
+        sec = npt.two_related(self.ds, pairs, o["wilcoxon"], o["sign"], o["mcnemar"],
+                              o["marginal"], **self.npar_kwargs())
+        return self.with_exact(sec, lambda s, spec: npar_exact.two_related(
+            s, self.ds, pairs, spec, o["wilcoxon"], o["sign"], o["listwise"]))
 
 
 class KRelatedDialog(NparOptionsMixin, VariablePickerDialog):
@@ -333,5 +367,9 @@ class KRelatedDialog(NparOptionsMixin, VariablePickerDialog):
 
     def compute(self):
         o = self.opts
-        return npt.k_related(self.ds, self.selected("vars"), o["friedman"], o["kendall"],
-                             o["cochran"], **self.npar_kwargs())
+        names = self.selected("vars")
+        sec = npt.k_related(self.ds, names, o["friedman"], o["kendall"], o["cochran"],
+                            **self.npar_kwargs())
+        return self.with_exact(sec, lambda s, spec: npar_exact.k_related(
+            s, self.ds, names, spec, o["friedman"], o["kendall"], o["cochran"],
+            o["listwise"]))

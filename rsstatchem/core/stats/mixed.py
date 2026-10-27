@@ -469,7 +469,11 @@ def linear_mixed(ds: Dataset, dependent: str, subject: str, factors: list[str] |
     section.log(log + ".")
 
     def done(saved=None):
-        return MixedResult(section, saved or {}) if save else section
+        if save:
+            out = MixedResult(section, saved or {})
+            out.models = getattr(section, "models", [])
+            return out
+        return section
 
     names = [dependent, subject] + factors + covariates + ([repeated] if repeated else [])
     frame = _frame(ds, list(dict.fromkeys(names)), {dependent, *covariates})
@@ -631,19 +635,32 @@ def linear_mixed(ds: Dataset, dependent: str, subject: str, factors: list[str] |
                         footnotes=[f"a. Dependent Variable: {dvar.title}."]))
 
     # ---------------------------------------------------------------- Estimates
+    pe = []
+    for label, cols_ in ref_info:
+        if cols_ is not None:
+            L = np.zeros((1, Xr.shape[1]))
+            L[0, cols_[0]] = 1
+            df, LCL = sat(L, Xr)
+            pe.append((label, float(beta_r[cols_[0]]), math.sqrt(float(LCL[0, 0])), df))
+    if pe:
+        from rsstatchem.core.stats.resample import ModelInfo
+        section.models = [ModelInfo([r[0] for r in pe], np.array([r[1] for r in pe]),
+                                    np.array([r[2] for r in pe]), n=len(frame),
+                                    table="Estimates of Fixed Effects",
+                                    headers=["Parameter"], est_label="Estimate",
+                                    df=np.array([r[3] for r in pe], float), bootable=False,
+                                    note="Bootstrapping is not available for Linear Mixed "
+                                         "Models (as in SPSS).")]
     if parameter_estimates:
         rows = []
         any_red = False
+        pe_iter = iter(pe)
         for label, cols_ in ref_info:
             if cols_ is None:
                 rows.append([label, "0" + sup("b"), "", "", "", "", "", ""])
                 any_red = True
                 continue
-            L = np.zeros((1, Xr.shape[1]))
-            L[0, cols_[0]] = 1
-            df, LCL = sat(L, Xr)
-            est = float(beta_r[cols_[0]])
-            se = math.sqrt(float(LCL[0, 0]))
+            _, est, se, df = next(pe_iter)
             tt = est / se if se > 0 else float("nan")
             qt = stats.t.ppf(0.5 + level / 2, df)
             rows.append([label, fmt(est), fmt(se), fmt(df), fmt(tt),

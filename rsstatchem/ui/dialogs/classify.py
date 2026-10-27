@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (QButtonGroup, QFormLayout, QHBoxLayout, QRadioButton, QSpinBox)
 
-from rsstatchem.core.stats import classify
+from rsstatchem.core.stats import boot_procs, classify
 from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog, is_numeric
 from rsstatchem.ui.dialogs.compare import GroupingMixin
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 
 
 def _range_group(dlg: SubDialog, title: str, prefix: str, current: list) -> None:
@@ -171,7 +172,7 @@ class HierarchicalDialog(VariablePickerDialog):
                                      _solution(*o["save"]))
 
 
-class DiscriminantDialog(GroupingMixin, VariablePickerDialog):
+class DiscriminantDialog(ResampleMixin, GroupingMixin, VariablePickerDialog):
     DEFAULTS = {"group_def": None, "method": "enter", "means": True, "univariate": True,
                 "box_m": True, "fisher": False, "unstandardized": False, "priors": "equal",
                 "loo": True, "f_enter": 3.84, "f_remove": 2.71, "save": []}
@@ -185,6 +186,7 @@ class DiscriminantDialog(GroupingMixin, VariablePickerDialog):
         self.method_button = self.add_option_button("Method...", self._method)
         self.add_option_button("Classify...", self._classify)
         self.add_option_button("Save...", self._save)
+        self.add_bootstrap_button()
         row = QHBoxLayout()
         self.r_enter = QRadioButton("Enter independents together")
         self.r_step = QRadioButton("Use stepwise method")
@@ -253,8 +255,11 @@ class DiscriminantDialog(GroupingMixin, VariablePickerDialog):
     def compute(self):
         o = self.opts
         d = self._definition()
-        return classify.discriminant(self.ds, self.selected_one("group"), d["lo"], d["hi"],
-                                     self.selected("ind"), o["method"], o["priors"],
-                                     o["means"], o["univariate"], o["box_m"], o["fisher"],
-                                     o["unstandardized"], o["loo"], o["f_enter"],
-                                     o["f_remove"], save=tuple(o["save"]))
+        return self.resampled(
+            lambda: classify.discriminant(self.ds, self.selected_one("group"), d["lo"],
+                                          d["hi"], self.selected("ind"), o["method"],
+                                          o["priors"], o["means"], o["univariate"],
+                                          o["box_m"], o["fisher"], o["unstandardized"],
+                                          o["loo"], o["f_enter"], o["f_remove"],
+                                          save=tuple(o["save"])),
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec))
