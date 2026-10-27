@@ -1,12 +1,14 @@
-"""Analyze > Compare Means and General Linear Model dialogs."""
+"""Analyze > Compare Means and General Linear Model > Univariate dialogs (SPSS layout)."""
 from __future__ import annotations
 
 import pandas as pd
-from PySide6.QtWidgets import QFormLayout, QLineEdit
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QListWidget, QPushButton)
 
 from rsstatchem.core.dataset import format_code
-from rsstatchem.core.stats import anova, ttest
-from rsstatchem.core.stats.anova import POSTHOC, POSTHOC_ORDER
+from rsstatchem.core.stats import anova, glm_output, posthoc_ext, ttest
+from rsstatchem.core.stats.anova import POSTHOC, POSTHOC_ORDER  # noqa: F401 (re-export)
+from rsstatchem.ui.dialogs import glm_model_ui as gm
 from rsstatchem.ui.dialogs.base import (DefineGroupsDialog, DefineRangeDialog, SubDialog,
                                         VariablePickerDialog, is_numeric)
 
@@ -125,107 +127,190 @@ class IndependentTDialog(GroupingMixin, VariablePickerDialog):
 
 
 class PairedTDialog(VariablePickerDialog):
-    DEFAULTS = {"level": 95.0}
+    DEFAULTS = {"level": 95.0, "listwise": False}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Paired-Samples T Test", parent)
         self.add_pair_target("pairs", "Paired Variables (Variable1 – Variable2):")
-        self.add_option_button("Options...", lambda: self.ci_missing_options(missing=False))
+        self.add_option_button("Options...", self.ci_missing_options)
         self.finish()
 
     def compute(self):
-        return ttest.paired(self.ds, self.pairs("pairs"), self.level())
+        return ttest.paired(self.ds, self.pairs("pairs"), self.level(), self.opts["listwise"])
 
 
-def _posthoc_dialog(owner: VariablePickerDialog, factors: list[str] | None = None) -> None:
-    dlg = SubDialog(f"{owner.windowTitle()}: Post Hoc Multiple Comparisons", owner)
-    if factors is not None:
-        box = dlg.group("Post Hoc Tests for")
-        for f in factors:
-            dlg.check(box, f"ph_{f}", owner.ds.var(f).title, f in owner.opts["posthoc_factors"])
-    box = dlg.group("Equal Variances Assumed")
-    for key in POSTHOC_ORDER[:-1]:
-        dlg.check(box, key, POSTHOC[key], key in owner.opts["posthoc"])
-    box = dlg.group("Equal Variances Not Assumed")
-    dlg.check(box, "games_howell", "Games-Howell", "games_howell" in owner.opts["posthoc"])
-    box = dlg.group("Significance level")
-    dlg.number(box, "alpha", "Significance level:", owner.opts.get("alpha", 0.05), 0.001, 0.5, 3)
-    values = dlg.run()
-    if values is None:
-        return
-    owner.opts["posthoc"] = [k for k in POSTHOC_ORDER if values.get(k)]
-    owner.opts["alpha"] = values["alpha"]
-    if factors is not None:
-        owner.opts["posthoc_factors"] = [f for f in factors if values.get(f"ph_{f}")]
-
-
+# ------------------------------------------------------------------ One-Way ANOVA
 class OneWayAnovaDialog(VariablePickerDialog):
     DEFAULTS = {"descriptives": True, "homogeneity": True, "welch": False, "bf": False,
-                "effect": True, "means_plot": False, "posthoc": [], "alpha": 0.05}
+                "effects": False, "effect": True, "means_plot": False, "posthoc": [],
+                "alpha": 0.05, "polynomial": False, "degree": 1, "contrasts": [],
+                "control": "last", "dunnett_test": "2-sided", "k_ratio": 100.0,
+                "listwise": False, "level": 95.0}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "One-Way ANOVA", parent)
         self.add_target("deps", "Dependent List:", accepts=is_numeric)
         self.add_target("factor", "Factor:", single=True)
-        self.add_option_button("Post Hoc...", lambda: _posthoc_dialog(self))
+        self.add_option_button("Contrasts...", self._contrasts)
+        self.add_option_button("Post Hoc...", lambda: gm.posthoc_dialog(
+            self, "One-Way ANOVA", None, significance=True))
         self.add_option_button("Options...", self._options)
         self.add_checkbox("effect", "Estimate effect size for overall tests")
         self.finish()
+
+    def _contrasts(self) -> None:
+        dlg = ContrastsOneWayDialog(self.opts, self)
+        if dlg.exec():
+            self.opts.update(dlg.result_values())
 
     def _options(self) -> None:
         dlg = SubDialog("One-Way ANOVA: Options", self, columns=1)
         box = dlg.group("Statistics")
         for key, text in (("descriptives", "Descriptive"),
+                          ("effects", "Fixed and random effects"),
                           ("homogeneity", "Homogeneity of variance test"),
                           ("bf", "Brown-Forsythe"), ("welch", "Welch")):
             dlg.check(box, key, text, self.opts[key])
         dlg.check(dlg.group("Plots"), "means_plot", "Means plot", self.opts["means_plot"])
+        dlg.radio(dlg.group("Missing Values"), "listwise",
+                  [(False, "Exclude cases analysis by analysis"),
+                   (True, "Exclude cases listwise")], self.opts["listwise"])
+        dlg.number(dlg.group("Confidence Intervals"), "level", "Level(%):", self.opts["level"],
+                   50, 99.99, 2)
         values = dlg.run()
         if values:
             self.opts.update(values)
 
     def compute(self):
         o = self.opts
+        popts = posthoc_ext.PostHocOptions(1 - o["alpha"], o["control"], o["dunnett_test"],
+                                           o["k_ratio"])
         return anova.oneway(self.ds, self.selected("deps"), self.selected_one("factor"),
                             o["descriptives"], o["homogeneity"], o["welch"], o["bf"], o["effect"],
-                            o["posthoc"], o["means_plot"], 1 - o["alpha"])
+                            o["posthoc"], o["means_plot"], o["level"] / 100,
+                            o["degree"] if o["polynomial"] else 0, o["contrasts"],
+                            o["effects"], o["listwise"], popts, 1 - o["alpha"])
 
 
+class ContrastsOneWayDialog(SubDialog):
+    """One-Way ANOVA: Contrasts — polynomial trend (degree) and coefficient lists."""
+
+    DEGREES = ["Linear", "Quadratic", "Cubic", "4th", "5th"]
+
+    def __init__(self, opts: dict, parent=None):
+        super().__init__("One-Way ANOVA: Contrasts", parent, columns=1)
+        box = self.group("Polynomial")
+        row = QHBoxLayout()
+        self.poly = QCheckBox("Polynomial")
+        self.poly.setChecked(bool(opts.get("polynomial")))
+        self.degree = QComboBox()
+        self.degree.addItems(self.DEGREES)
+        self.degree.setCurrentIndex(int(opts.get("degree", 1)) - 1)
+        row.addWidget(self.poly)
+        row.addWidget(QLabel("Degree:"))
+        row.addWidget(self.degree)
+        row.addStretch()
+        box.addLayout(row)
+        box = self.group("Coefficients")
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText("e.g. 1 -1 0")
+        add, change, remove = QPushButton("Add"), QPushButton("Change"), QPushButton("Remove")
+        add.clicked.connect(self._add)
+        change.clicked.connect(self._change)
+        remove.clicked.connect(lambda: self.list.takeItem(self.list.currentRow()))
+        self.list = QListWidget()
+        for c in opts.get("contrasts", []):
+            self.list.addItem(" ".join(f"{x:g}" for x in c))
+        self.list.currentRowChanged.connect(
+            lambda r: self.edit.setText(self.list.item(r).text()) if r >= 0 else None)
+        row = QHBoxLayout()
+        row.addWidget(self.edit, 1)
+        for b in (add, change, remove):
+            row.addWidget(b)
+        box.addLayout(row)
+        box.addWidget(QLabel("Contrasts (one per row):"))
+        box.addWidget(self.list)
+        self.sum_label = QLabel("")
+        box.addWidget(self.sum_label)
+        self.edit.textChanged.connect(self._sum)
+
+    def _parse(self) -> list[float] | None:
+        try:
+            vals = [float(t.replace(",", ".")) for t in self.edit.text().replace(";", " ").split()]
+        except ValueError:
+            return None
+        return vals or None
+
+    def _sum(self) -> None:
+        vals = self._parse()
+        self.sum_label.setText(f"Coefficient Total: {sum(vals):g}" if vals else "")
+
+    def _add(self) -> None:
+        vals = self._parse()
+        if vals:
+            self.list.addItem(" ".join(f"{x:g}" for x in vals))
+            self.edit.clear()
+
+    def _change(self) -> None:
+        row = self.list.currentRow()
+        vals = self._parse()
+        if row >= 0 and vals:
+            self.list.item(row).setText(" ".join(f"{x:g}" for x in vals))
+
+    def result_values(self) -> dict:
+        rows = [[float(x) for x in self.list.item(i).text().split()]
+                for i in range(self.list.count())]
+        return {"polynomial": self.poly.isChecked(), "degree": self.degree.currentIndex() + 1,
+                "contrasts": rows}
+
+
+# ------------------------------------------------------------------ GLM Univariate
 class UnivariateDialog(VariablePickerDialog):
-    DEFAULTS = {"descriptives": True, "effect": True, "homogeneity": True, "posthoc": [],
-                "posthoc_factors": [], "alpha": 0.05}
+    DEFAULTS = {**gm.GLM_DEFAULTS, "descriptives": True, "effect": True, "homogeneity": True}
+    TITLE = "Univariate"
 
     def __init__(self, ds, parent=None):
-        super().__init__(ds, "Univariate", parent)
+        super().__init__(ds, self.TITLE, parent)
         self.add_target("dep", "Dependent Variable:", accepts=is_numeric, single=True)
         self.add_target("factors", "Fixed Factor(s):", required=False)
+        self.add_target("random", "Random Factor(s):", required=False)
         self.add_target("covariates", "Covariate(s):", accepts=is_numeric, required=False)
-        self.add_option_button("Post Hoc...", lambda: _posthoc_dialog(
-            self, self.selected("factors")))
-        self.add_option_button("Options...", self._options)
+        self.add_target("wls", "WLS Weight:", accepts=is_numeric, single=True, required=False)
+        t = self.TITLE
+        self.add_option_button("Model...", lambda: gm.model_dialog(
+            self, t, self.selected("factors"), self.selected("covariates"),
+            self.selected("random")))
+        self.add_option_button("Contrasts...", lambda: gm.contrasts_dialog(
+            self, t, self.selected("factors") + self.selected("random")))
+        self.add_option_button("Plots...", lambda: gm.plots_dialog(
+            self, t, self.selected("factors") + self.selected("random")))
+        self.add_option_button("Post Hoc...", lambda: gm.posthoc_dialog(
+            self, t, self.selected("factors")))
+        self.add_option_button("EM Means...", lambda: gm.emm_dialog(
+            self, t, self.selected("factors") + self.selected("random"), self.opts.get("terms")))
+        self.add_option_button("Save...", lambda: gm.save_dialog(self, t))
+        self.add_option_button("Options...", lambda: gm.options_dialog(self, t))
         self.finish()
 
-    def _options(self) -> None:
-        dlg = SubDialog("Univariate: Options", self, columns=1)
-        box = dlg.group("Display")
-        for key, text in (("descriptives", "Descriptive statistics"),
-                          ("effect", "Estimates of effect size"),
-                          ("homogeneity", "Homogeneity tests")):
-            dlg.check(box, key, text, self.opts[key])
-        values = dlg.run()
-        if values:
-            self.opts.update(values)
-
     def validate(self):
-        if not self.selected("factors") and not self.selected("covariates"):
-            return "Specify at least one fixed factor or covariate."
+        if not self.selected("factors") and not self.selected("covariates") and \
+                not self.selected("random") and not self.opts.get("terms"):
+            return "Specify at least one fixed factor, random factor or covariate."
+        if self.opts.get("terms"):
+            try:
+                gm.parse_terms(" ".join(self.opts["terms"]),
+                               self.selected("factors") + self.selected("random"),
+                               self.selected("covariates"))
+            except ValueError as exc:
+                return f"The custom model refers to variables that are no longer selected " \
+                       f"({exc}). Open Model… and choose Full factorial or rebuild the terms."
         return None
 
     def compute(self):
-        o = self.opts
         factors = self.selected("factors")
-        return anova.univariate(self.ds, self.selected_one("dep"), factors,
-                                self.selected("covariates"), o["descriptives"], o["effect"],
-                                o["homogeneity"],
-                                [f for f in o["posthoc_factors"] if f in factors],
-                                o["posthoc"], 1 - o["alpha"])
+        random = self.selected("random")
+        covs = self.selected("covariates")
+        opts = gm.glm_options_from(self.opts, factors, covs, random)
+        opts.wls = self.selected_one("wls")
+        res = glm_output.univariate(self.ds, self.selected_one("dep"), factors, covs, opts)
+        return res if res.saved else res.section

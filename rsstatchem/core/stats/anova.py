@@ -1,4 +1,13 @@
-"""One-Way ANOVA, post hoc multiple comparisons and GLM Univariate (factorial ANOVA / ANCOVA)."""
+"""One-Way ANOVA, post hoc multiple comparisons and GLM Univariate (factorial ANOVA / ANCOVA).
+
+One-Way ANOVA mirrors SPSS ONEWAY: descriptives (with fixed- and random-effects model rows),
+homogeneity of variances, Welch / Brown-Forsythe, polynomial trend partitions of the
+between-groups SS (unweighted, weighted, deviation), a priori contrasts with equal / unequal
+variance tests, effect sizes with confidence intervals, all SPSS post hoc tests (see
+:mod:`posthoc_ext`) with homogeneous subsets, means plot and missing-value handling.
+GLM Univariate is implemented in :mod:`glm_output`; :func:`univariate` keeps the older call
+signature.
+"""
 from __future__ import annotations
 
 import itertools
@@ -6,23 +15,26 @@ import math
 
 import numpy as np
 import pandas as pd
-from scipy import stats
+from scipy import optimize, stats
 
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
-from rsstatchem.core.stats import charts
+from rsstatchem.core.stats import charts, posthoc_ext
 from rsstatchem.core.stats.common import (Group, fmt, fmt_df, fmt_int, fmt_p, groups_of,
-                                          levene_rows, numeric, pct, t_interval, value_text)
+                                          levene_rows, numeric, pct, sup, t_interval)
 
-POSTHOC = {"lsd": "LSD", "bonferroni": "Bonferroni", "sidak": "Sidak", "scheffe": "Scheffe",
-           "tukey": "Tukey HSD", "games_howell": "Games-Howell"}
+POSTHOC = dict(posthoc_ext.LABELS)
 POSTHOC_ORDER = ("tukey", "lsd", "bonferroni", "sidak", "scheffe", "games_howell")
+POLY_NAMES = ("Linear", "Quadratic", "Cubic", "4th-order", "5th-order")
 
 
 # ------------------------------------------------------------------ post hoc
 def posthoc(groups: list[Group], method: str, mse: float, df_error: float,
             level: float = 0.95) -> list[tuple[int, int, float, float, float, float, float]]:
     """All ordered pairs (i, j): mean difference, SE, p, CI lower, CI upper."""
+    if method not in ("lsd", "bonferroni", "sidak", "scheffe", "tukey", "games_howell"):
+        return posthoc_ext.pairwise(groups, method, mse, df_error,
+                                    posthoc_ext.PostHocOptions(level))
     k = len(groups)
     m = k * (k - 1) / 2
     alpha = 1 - level
@@ -56,37 +68,49 @@ def posthoc(groups: list[Group], method: str, mse: float, df_error: float,
             f = t * t / (k - 1)
             p = float(stats.f.sf(f, k - 1, df_error))
             crit = math.sqrt((k - 1) * stats.f.ppf(level, k - 1, df_error))
-        elif method == "tukey":
+        else:  # tukey
             q = abs(t) * math.sqrt(2)
             p = float(stats.studentized_range.sf(q, k, df_error))
             crit = stats.studentized_range.ppf(level, k, df_error) / math.sqrt(2)
-        else:
-            raise ValueError(method)
         out.append((i, j, diff, se, float(min(max(p, 0.0), 1.0)), diff - crit * se,
                     diff + crit * se))
     return out
 
 
 def multiple_comparisons_table(title_rows: list[tuple[str, list[Group], str, list]],
-                               level: float, factor_title: str) -> Table:
+                               level: float, factor_title: str,
+                               opts: posthoc_ext.PostHocOptions | None = None) -> Table:
     """title_rows: (dependent title, groups, method key, comparisons)."""
     rows = []
     flagged = False
+    dunnett = False
     for dep_title, groups, method, comps in title_rows:
         first_dep = True
         first_method = True
         last_i = None
+        label = posthoc_ext.method_label(method, opts)
+        if method == "dunnett":
+            label += sup("a")
+            dunnett = True
         for i, j, diff, se, p, lo, hi in comps:
-            star = "*" if p < 1 - level else ""
+            if p == p:
+                sig = p < 1 - level
+            else:  # Dunnett's C: significance from the confidence interval
+                sig = lo > 0 or hi < 0
+            star = "*" if sig else ""
             flagged |= bool(star)
-            rows.append([dep_title if first_dep else "",
-                         POSTHOC[method] if first_method else "",
+            rows.append([dep_title if first_dep else "", label if first_method else "",
                          groups[i].label if i != last_i else "", groups[j].label,
-                         fmt(diff) + star, fmt(se), fmt_p(p), fmt(lo), fmt(hi)])
+                         fmt(diff) + star, fmt(se), fmt_p(p) if p == p else "",
+                         fmt(lo) if math.isfinite(lo) else "",
+                         fmt(hi) if math.isfinite(hi) else ""])
             first_dep = first_method = False
             last_i = i
     notes = [f"*. The mean difference is significant at the {1 - level:.2f} level."] \
         if flagged else []
+    if dunnett:
+        notes.append("a. Dunnett t-tests treat one group as a control, and compare all other "
+                     "groups against it.")
     return Table("Multiple Comparisons", ["Dependent Variable", "", f"(I) {factor_title}",
                                           f"(J) {factor_title}", "Mean Difference (I-J)",
                                           "Std. Error", "Sig.",
@@ -95,42 +119,155 @@ def multiple_comparisons_table(title_rows: list[tuple[str, list[Group], str, lis
                  rows, row_header_cols=4, footnotes=notes)
 
 
+# ------------------------------------------------------------------ helpers
+def eta_interval(F: float, df1: float, df2: float, level: float) -> tuple[float, float]:
+    """Confidence limits of eta-squared from the noncentral F (lambda / (lambda + N))."""
+    if not np.isfinite(F) or df1 <= 0 or df2 <= 0:
+        return float("nan"), float("nan")
+    n_tot = df1 + df2 + 1
+    a = (1 - level) / 2
+
+    def lam_for(target):
+        g = lambda lam: stats.ncf.cdf(F, df1, df2, lam) - target  # noqa: E731
+        if g(0.0) < 0:
+            return 0.0
+        hi = max(10.0, F * df1 * 4)
+        while g(hi) > 0 and hi < 1e7:
+            hi *= 2
+        return float(optimize.brentq(g, 0.0, hi, xtol=1e-9))
+
+    lam_lo = lam_for(1 - a)
+    lam_hi = lam_for(a)
+    return lam_lo / (lam_lo + n_tot), lam_hi / (lam_hi + n_tot)
+
+
+def _poly_rows(groups: list[Group], degree: int, ssb: float, msw: float, dfw: int):
+    """(term name, kind, SS, df) rows of the SPSS trend partition."""
+    k = len(groups)
+    n = np.array([g.n for g in groups], float)
+    m = np.array([g.data.mean() for g in groups])
+    x = np.arange(1, k + 1, dtype=float)
+    from rsstatchem.core.stats.glm_model import poly_coefficients
+
+    P = poly_coefficients(k)
+    rows = []
+    cum_weighted = 0.0
+    grand = float(n @ m / n.sum())
+    prev_reg = 0.0
+    for d in range(1, min(degree, k - 1) + 1):
+        c = P[:, d - 1]
+        ss_u = float((c @ m) ** 2 / np.sum(c * c / n))
+        V = np.vander(x, d + 1, increasing=True)
+        W = np.diag(n)
+        beta = np.linalg.solve(V.T @ W @ V, V.T @ W @ m)
+        reg = float(n @ (V @ beta - grand) ** 2)
+        ss_w = reg - prev_reg
+        prev_reg = reg
+        cum_weighted += ss_w
+        dev_df = k - 1 - d
+        name = f"{POLY_NAMES[d - 1]} Term"
+        rows.append((name, "Unweighted", ss_u, 1))
+        rows.append(("", "Weighted", ss_w, 1))
+        if dev_df > 0:
+            rows.append(("", "Deviation", ssb - cum_weighted, dev_df))
+    return rows
+
+
 # ------------------------------------------------------------------ one-way
 def oneway(ds: Dataset, dependents: list[str], factor: str, descriptives: bool = True,
            homogeneity: bool = True, welch: bool = False, brown_forsythe: bool = False,
            effect_size: bool = True, posthoc_methods=(), means_plot: bool = False,
-           level: float = 0.95) -> Section:
+           level: float = 0.95, polynomial: int = 0, contrasts: list[list[float]] | None = None,
+           effects: bool = False, listwise: bool = False,
+           posthoc_opts: posthoc_ext.PostHocOptions | None = None,
+           posthoc_level: float | None = None) -> Section:
+    """SPSS ONEWAY. ``level`` is the confidence level for intervals; ``posthoc_level`` the
+    (1 - significance level) of the post hoc tests (defaults to ``level``)."""
     fvar = ds.var(factor)
+    contrasts = [list(c) for c in (contrasts or []) if c]
+    ph_level = posthoc_level if posthoc_level is not None else level
+    popts = posthoc_opts or posthoc_ext.PostHocOptions()
+    popts = posthoc_ext.PostHocOptions(ph_level, popts.control, popts.dunnett_test,
+                                       popts.k_ratio)
     section = Section("Oneway")
-    stats_list = [s for s, on in (("DESCRIPTIVES", descriptives), ("HOMOGENEITY", homogeneity),
+    stats_list = [s for s, on in (("DESCRIPTIVES", descriptives), ("EFFECTS", effects),
+                                  ("HOMOGENEITY", homogeneity),
                                   ("BROWNFORSYTHE", brown_forsythe), ("WELCH", welch)) if on]
     log = f"ONEWAY {' '.join(dependents)} BY {factor}"
+    if effect_size:
+        log += "\n  /ES=OVERALL"
+    if polynomial:
+        log += f"\n  /POLYNOMIAL={polynomial}"
+    for c in contrasts:
+        log += "\n  /CONTRAST=" + " ".join(f"{v:g}" for v in c)
     if stats_list:
         log += f"\n  /STATISTICS {' '.join(stats_list)}"
+    if means_plot:
+        log += "\n  /PLOT MEANS"
+    log += f"\n  /MISSING {'LISTWISE' if listwise else 'ANALYSIS'}"
+    log += f"\n  /CRITERIA=CILEVEL({level:.2f})"
     if posthoc_methods:
         log += (f"\n  /POSTHOC={' '.join(m.upper() for m in posthoc_methods)} "
-                f"ALPHA({1 - level:.2f})")
+                f"ALPHA({1 - ph_level:.2f})")
     section.log(log + ".")
 
-    desc_rows, lev_rows, anova_rows, eff_rows, robust_rows, mc = [], [], [], [], [], []
+    frame_all = None
+    if listwise:
+        frame_all = pd.DataFrame({d: numeric(ds, d) for d in dependents})
+        frame_all["__g"] = ds.analysis_series(factor)
+        frame_all = frame_all.dropna()
+
+    desc_rows, lev_rows, anova_rows, eff_rows, robust_rows = [], [], [], [], []
+    coef_rows, ctest_rows, mc, subset_tables = [], [], [], []
+    warn_negative = False
     for dep in dependents:
         var = ds.var(dep)
         d = var.decimals
-        groups = [g for g in groups_of(ds, dep, factor) if g.n > 0]
+        sub = None if frame_all is None else pd.DataFrame({"y": frame_all[dep],
+                                                           "g": frame_all["__g"]})
+        groups = [g for g in groups_of(ds, dep, factor, frame=sub) if g.n > 0]
         allx = np.concatenate([g.data for g in groups]) if groups else np.array([])
         k, n = len(groups), len(allx)
+        grand = allx.mean() if n else float("nan")
+        ok = k >= 2 and n - k >= 1
+        if ok:
+            ssb = sum(g.n * (g.data.mean() - grand) ** 2 for g in groups)
+            sst = float(((allx - grand) ** 2).sum())
+            ssw = sst - ssb
+            dfb, dfw = k - 1, n - k
+            msb, msw = ssb / dfb, ssw / dfw
         if descriptives:
+            first = True
             for gi, g in enumerate(groups + [Group(None, "Total", allx)]):
                 x = g.data
                 sd = x.std(ddof=1) if len(x) > 1 else float("nan")
                 se = sd / math.sqrt(len(x)) if len(x) else float("nan")
                 lo, hi = t_interval(x.mean(), se, len(x) - 1, level) if len(x) > 1 \
                     else (float("nan"), float("nan"))
-                desc_rows.append([var.title if gi == 0 else "", g.label, fmt_int(len(x)),
-                                  fmt(x.mean(), d + 4), fmt(sd, d + 5), fmt(se, d + 5),
-                                  fmt(lo, d + 4), fmt(hi, d + 4), fmt(x.min(), d),
-                                  fmt(x.max(), d)])
-        if k < 2 or n - k < 1:
+                row = [var.title if first else "", "", g.label, fmt_int(len(x)),
+                       fmt(x.mean(), d + 4), fmt(sd, d + 5), fmt(se, d + 5),
+                       fmt(lo, d + 4), fmt(hi, d + 4), fmt(x.min(), d), fmt(x.max(), d)]
+                if effects:
+                    row.append("")
+                desc_rows.append(row)
+                first = False
+            if effects and ok:
+                se_f = math.sqrt(msw / n)
+                lo, hi = t_interval(grand, se_f, dfw, level)
+                desc_rows.append(["", "Model", "Fixed Effects", "", "", fmt(math.sqrt(msw), d + 5),
+                                  fmt(se_f, d + 5), fmt(lo, d + 4), fmt(hi, d + 4), "", "", ""])
+                n0 = (n - sum(g.n ** 2 for g in groups) / n) / (k - 1)
+                var_b = (msb - msw) / n0
+                neg = var_b < 0
+                warn_negative |= neg
+                se_r = math.sqrt(max(var_b, 0.0) / k + msw / n)
+                lo, hi = t_interval(grand, se_r, k - 1, level)
+                desc_rows.append(["", "", "Random Effects", "", "", "",
+                                  fmt(se_r, d + 5) + (sup("a") if neg else ""),
+                                  fmt(lo, d + 4) + (sup("a") if neg else ""),
+                                  fmt(hi, d + 4) + (sup("a") if neg else ""), "", "",
+                                  fmt(var_b, d + 5)])
+        if not ok:
             section.note("Warning", f"ANOVA cannot be computed for {var.title}: fewer than two "
                          "non-empty groups.", style="warning")
             continue
@@ -138,25 +275,40 @@ def oneway(ds: Dataset, dependents: list[str], factor: str, descriptives: bool =
             for li, (basis, f, df1, df2, p) in enumerate(levene_rows([g.data for g in groups])):
                 lev_rows.append([var.title if li == 0 else "", basis, fmt(f), fmt_df(df1),
                                  fmt_df(df2), fmt_p(p)])
-        grand = allx.mean()
-        ssb = sum(g.n * (g.data.mean() - grand) ** 2 for g in groups)
-        sst = float(((allx - grand) ** 2).sum())
-        ssw = sst - ssb
-        dfb, dfw = k - 1, n - k
-        msb, msw = ssb / dfb, ssw / dfw
         f = msb / msw if msw > 0 else float("nan")
         p = float(stats.f.sf(f, dfb, dfw)) if msw > 0 else float("nan")
-        anova_rows += [[var.title, "Between Groups", fmt(ssb), fmt_int(dfb), fmt(msb), fmt(f),
-                        fmt_p(p)],
-                       ["", "Within Groups", fmt(ssw), fmt_int(dfw), fmt(msw), "", ""],
-                       ["", "Total", fmt(sst), fmt_int(n - 1), "", "", ""]]
+        if polynomial:
+            anova_rows.append([var.title, "Between Groups", "(Combined)", fmt(ssb),
+                               fmt_int(dfb), fmt(msb), fmt(f), fmt_p(p)])
+            for name, kind, ss, df in _poly_rows(groups, polynomial, ssb, msw, dfw):
+                F_ = (ss / df) / msw if msw > 0 else float("nan")
+                anova_rows.append(["", name, kind, fmt(ss), fmt_int(df), fmt(ss / df), fmt(F_),
+                                   fmt_p(stats.f.sf(F_, df, dfw))])
+            anova_rows += [["", "Within Groups", "", fmt(ssw), fmt_int(dfw), fmt(msw), "", ""],
+                           ["", "Total", "", fmt(sst), fmt_int(n - 1), "", "", ""]]
+        else:
+            anova_rows += [[var.title, "Between Groups", fmt(ssb), fmt_int(dfb), fmt(msb),
+                            fmt(f), fmt_p(p)],
+                           ["", "Within Groups", fmt(ssw), fmt_int(dfw), fmt(msw), "", ""],
+                           ["", "Total", fmt(sst), fmt_int(n - 1), "", "", ""]]
         if effect_size:
             eta = ssb / sst if sst > 0 else float("nan")
             eps = (ssb - dfb * msw) / sst if sst > 0 else float("nan")
             omega = (ssb - dfb * msw) / (sst + msw) if sst > 0 else float("nan")
-            eff_rows += [[var.title, "Eta-squared", fmt(eta)],
-                         ["", "Epsilon-squared", fmt(eps)],
-                         ["", "Omega-squared Fixed-effect", fmt(omega)]]
+            e_lo, e_hi = eta_interval(f, dfb, dfw, level)
+
+            def to_eps(e):
+                return 1 - (1 - e) * (n - 1) / dfw
+
+            def to_omega(e):
+                return (e - dfb * (1 - e) / dfw) / (1 + (1 - e) / dfw)
+
+            eff_rows += [[var.title, "Eta-squared", fmt(eta), fmt(e_lo), fmt(e_hi)],
+                         ["", "Epsilon-squared", fmt(eps), fmt(to_eps(e_lo)), fmt(to_eps(e_hi))],
+                         ["", "Omega-squared Fixed-effect", fmt(omega), fmt(to_omega(e_lo)),
+                          fmt(to_omega(e_hi))],
+                         ["", "Omega-squared Random-effect"] + _omega_random(
+                             f, dfb, dfw, groups, level)]
         if welch or brown_forsythe:
             from statsmodels.stats.oneway import anova_oneway
 
@@ -175,8 +327,21 @@ def oneway(ds: Dataset, dependents: list[str], factor: str, descriptives: bool =
                     cells = ["", "", "", ""]
                 robust_rows.append([var.title if first else "", title] + cells)
                 first = False
-        for method in [m for m in POSTHOC_ORDER if m in posthoc_methods]:
-            mc.append((var.title, groups, method, posthoc(groups, method, msw, dfw, level)))
+        if contrasts:
+            _contrast_rows(var, groups, contrasts, msw, dfw, level, coef_rows, ctest_rows,
+                           first_dep=dep == dependents[0])
+        methods = [m for m in posthoc_ext.ORDER if m in posthoc_methods]
+        pair = [m for m in posthoc_ext.PAIRWISE if m in posthoc_methods]
+        for method in pair:
+            mc.append((var.title, groups, method,
+                       posthoc_ext.pairwise(groups, method, msw, dfw, popts)))
+        sub_m = [m for m in methods if m in posthoc_ext.SUBSETS]
+        if sub_m:
+            t = posthoc_ext.subsets_table(var.title, fvar.title, groups, sub_m, msw, dfw,
+                                          popts, f, d)
+            if t is not None:
+                t.title = f"Homogeneous Subsets: {var.title}"
+                subset_tables.append(t)
         if means_plot:
             section.image(f"Means Plot: {var.title}",
                           charts.means_plot([g.label for g in groups],
@@ -185,31 +350,111 @@ def oneway(ds: Dataset, dependents: list[str], factor: str, descriptives: bool =
                                             f"Mean of {var.title}"))
 
     if descriptives:
-        section.table(Table("Descriptives", ["", "", "N", "Mean", "Std. Deviation",
-                                             "Std. Error",
-                                             (f"{pct(level)} CI for Mean", "Lower Bound"),
-                                             (f"{pct(level)} CI for Mean", "Upper Bound"),
-                                             "Minimum", "Maximum"], desc_rows,
-                            row_header_cols=2))
+        cols = ["", "", "", "N", "Mean", "Std. Deviation", "Std. Error",
+                (f"{pct(level)} Confidence Interval for Mean", "Lower Bound"),
+                (f"{pct(level)} Confidence Interval for Mean", "Upper Bound"),
+                "Minimum", "Maximum"]
+        if effects:
+            cols.append("Between-Component Variance")
+        if not effects:
+            desc_rows = [r[:1] + r[2:] for r in desc_rows]
+            cols = cols[:1] + cols[2:]
+        foot = []
+        if warn_negative:
+            foot.append("a. Warning: Between-component variance is negative. It was replaced "
+                        "by 0.0 in computing this random effects measure.")
+        section.table(Table("Descriptives", cols, desc_rows, row_header_cols=3 if effects else 2,
+                            footnotes=foot))
     if lev_rows:
         section.table(Table("Tests of Homogeneity of Variances",
                             ["", "", "Levene Statistic", "df1", "df2", "Sig."], lev_rows,
                             row_header_cols=2))
     if anova_rows:
-        section.table(Table("ANOVA", ["", "", "Sum of Squares", "df", "Mean Square", "F",
-                                      "Sig."], anova_rows, row_header_cols=2))
-    if eff_rows:
-        section.table(Table("ANOVA Effect Sizes", ["", "", "Point Estimate"], eff_rows,
-                            row_header_cols=2))
+        if polynomial:
+            section.table(Table("ANOVA", ["", "", "", "Sum of Squares", "df", "Mean Square",
+                                          "F", "Sig."], anova_rows, row_header_cols=3))
+        else:
+            section.table(Table("ANOVA", ["", "", "Sum of Squares", "df", "Mean Square", "F",
+                                          "Sig."], anova_rows, row_header_cols=2))
     if robust_rows:
         section.table(Table("Robust Tests of Equality of Means",
                             ["", "", "Statisticᵃ", "df1", "df2", "Sig."], robust_rows,
                             row_header_cols=2, footnotes=["a. Asymptotically F distributed."]))
+    if eff_rows:
+        section.table(Table("ANOVA Effect Sizes" + sup("a") + "," + sup("b"),
+                            ["", "", "Point Estimate",
+                             (f"{pct(level)} Confidence Interval", "Lower"),
+                             (f"{pct(level)} Confidence Interval", "Upper")], eff_rows,
+                            row_header_cols=2,
+                            footnotes=["a. Eta-squared and Epsilon-squared are estimated based "
+                                       "on the fixed-effect model.",
+                                       "b. Negative but less biased estimates are retained, "
+                                       "not rounded to zero."]))
+    if coef_rows:
+        groups0 = [g for g in groups_of(ds, dependents[0], factor) if g.n > 0]
+        section.table(Table("Contrast Coefficients",
+                            ["Contrast"] + [(fvar.title, g.label) for g in groups0],
+                            coef_rows))
+    if ctest_rows:
+        section.table(Table("Contrast Tests",
+                            ["", "", "Contrast", "Value of Contrast", "Std. Error", "t", "df",
+                             "Sig. (2-tailed)",
+                             (f"{pct(level)} Confidence Interval", "Lower"),
+                             (f"{pct(level)} Confidence Interval", "Upper")],
+                            ctest_rows, row_header_cols=3))
     if mc:
-        section.table(multiple_comparisons_table(mc, level, fvar.title))
+        section.table(multiple_comparisons_table(mc, ph_level, fvar.title, popts))
+    for t in subset_tables:
+        section.table(t)
     # Charts were appended while looping; keep tables first, as SPSS does.
     section.items.sort(key=lambda it: it.kind == "image")
     return section
+
+
+def _omega_random(F: float, dfb: int, dfw: int, groups: list[Group], level: float
+                  ) -> list[str]:
+    """Random-effect omega squared (intraclass correlation) with its F-based interval."""
+    n = sum(g.n for g in groups)
+    n0 = (n - sum(g.n ** 2 for g in groups) / n) / dfb
+    a = (1 - level) / 2
+
+    def om(fv):
+        return (fv - 1) / (fv + n0 - 1)
+
+    lo = F / stats.f.ppf(1 - a, dfb, dfw)
+    hi = F / stats.f.ppf(a, dfb, dfw)
+    return [fmt(om(F)), fmt(om(lo)), fmt(om(hi))]
+
+
+def _contrast_rows(var, groups: list[Group], contrasts, msw, dfw, level, coef_rows,
+                   ctest_rows, first_dep: bool) -> None:
+    k = len(groups)
+    n = np.array([g.n for g in groups], float)
+    m = np.array([g.data.mean() for g in groups])
+    v = np.array([g.data.var(ddof=1) if g.n > 1 else np.nan for g in groups])
+    eq_block, uneq_block = [], []
+    for ci, c in enumerate(contrasts, start=1):
+        c = np.array((list(c) + [0.0] * k)[:k], float)
+        if first_dep:
+            coef_rows.append([str(ci)] + [f"{x:g}" for x in c])
+        val = float(c @ m)
+        se_e = math.sqrt(msw * np.sum(c * c / n))
+        t_e = val / se_e if se_e > 0 else float("nan")
+        lo, hi = t_interval(val, se_e, dfw, level)
+        eq_block.append([str(ci), fmt(val), fmt(se_e), fmt(t_e), fmt_df(dfw),
+                         fmt_p(2 * stats.t.sf(abs(t_e), dfw)), fmt(lo), fmt(hi)])
+        terms = c * c * v / n
+        se_u = math.sqrt(np.nansum(terms))
+        df_u = se_u ** 4 / np.nansum(terms ** 2 / (n - 1)) if se_u > 0 else float("nan")
+        t_u = val / se_u if se_u > 0 else float("nan")
+        lo, hi = t_interval(val, se_u, df_u, level)
+        uneq_block.append([str(ci), fmt(val), fmt(se_u), fmt(t_u), fmt(df_u),
+                           fmt_p(2 * stats.t.sf(abs(t_u), df_u)), fmt(lo), fmt(hi)])
+    for bi, (name, block) in enumerate((("Assume equal variances", eq_block),
+                                        ("Does not assume equal variances", uneq_block))):
+        for ri, r in enumerate(block):
+            ctest_rows.append([var.title if bi == 0 and ri == 0 else "",
+                               name if ri == 0 else ""] + r)
 
 
 # ------------------------------------------------------------------ GLM univariate
@@ -217,141 +462,17 @@ def univariate(ds: Dataset, dependent: str, factors: list[str],
                covariates: list[str] | None = None,
                descriptives: bool = False, effect_size: bool = True, homogeneity: bool = False,
                posthoc_factors: list[str] | None = None, posthoc_methods=(),
-               level: float = 0.95) -> Section:
-    import statsmodels.formula.api as smf
-    from statsmodels.stats.anova import anova_lm
+               level: float = 0.95, options=None) -> Section:
+    """GLM Univariate with the default full-factorial Type III model (older signature);
+    pass a :class:`glm_output.GLMOptions` as ``options`` for every other setting."""
+    from rsstatchem.core.stats.glm_output import GLMOptions
+    from rsstatchem.core.stats.glm_output import univariate as glm_univariate
 
-    covariates = covariates or []
-    posthoc_factors = posthoc_factors or []
-    dvar = ds.var(dependent)
-    section = Section("Univariate Analysis of Variance")
-    log = f"UNIANOVA {dependent} BY {' '.join(factors)}"
-    if covariates:
-        log += f" WITH {' '.join(covariates)}"
-    section.log(log + "\n  /METHOD=SSTYPE(3)\n  /DESIGN=" +
-                " ".join(["*".join(c) for r in range(1, len(factors) + 1)
-                          for c in itertools.combinations(factors, r)] + covariates) + ".")
-
-    alias = {"y": dependent}
-    data = {"y": numeric(ds, dependent)}
-    fnames, cnames = [], []
-    for i, f in enumerate(factors):
-        data[f"f{i}"] = ds.analysis_series(f)
-        alias[f"f{i}"] = f
-        fnames.append(f"f{i}")
-    for i, c in enumerate(covariates):
-        data[f"c{i}"] = numeric(ds, c)
-        alias[f"c{i}"] = c
-        cnames.append(f"c{i}")
-    frame = pd.DataFrame(data).dropna()
-    if len(frame) < 3 or not factors and not covariates:
-        section.note("Warning", "Not enough valid cases for the model.", style="warning")
-        return section
-    for fname in fnames:  # keep categories as strings so codes like 1.0 stay categorical
-        frame[fname] = frame[fname].map(lambda v: repr(v))
-
-    terms = [":".join(f"C({f}, Sum)" for f in combo)
-             for r in range(1, len(fnames) + 1) for combo in itertools.combinations(fnames, r)]
-    formula = "y ~ " + " + ".join(terms + cnames) if terms or cnames else "y ~ 1"
-    model = smf.ols(formula, data=frame).fit()
-    table = anova_lm(model, typ=3)
-
-    y = frame["y"].to_numpy(float)
-    n = len(y)
-    sse = float(model.ssr)
-    df_e = float(model.df_resid)
-    mse = sse / df_e if df_e > 0 else float("nan")
-    ss_ct = float(((y - y.mean()) ** 2).sum())
-    ss_model = ss_ct - sse
-    df_model = float(model.df_model)
-
-    def label(term: str) -> str:
-        if term == "Intercept":
-            return "Intercept"
-        parts = []
-        for piece in term.split(":"):
-            key = piece.replace("C(", "").replace(", Sum)", "")
-            parts.append(ds.var(alias[key]).name)
-        return " * ".join(parts)
-
-    def row(source, ss, df, f=None, p=None):
-        cells = [source, fmt(ss), fmt_int(df), fmt(ss / df) if df else "",
-                 fmt(f) if f is not None else "", fmt_p(p) if p is not None else ""]
-        if effect_size:
-            cells.append(fmt(ss / (ss + sse)) if f is not None and ss + sse > 0 else "")
-        return cells
-
-    rows = []
-    f_model = (ss_model / df_model) / mse if df_model > 0 and mse > 0 else float("nan")
-    rows.append(row("Corrected Model", ss_model, df_model, f_model,
-                    stats.f.sf(f_model, df_model, df_e)))
-    for term, r in table.iterrows():
-        if term == "Residual":
-            continue
-        rows.append(row(label(term), r["sum_sq"], r["df"], r["F"], r["PR(>F)"]))
-    rows.append(row("Error", sse, df_e))
-    rows.append(row("Total", float((y ** 2).sum()), n))
-    rows.append(row("Corrected Total", ss_ct, n - 1))
-    rows[0][0] = "Corrected Modelᵃ"
-    r2 = ss_model / ss_ct if ss_ct > 0 else float("nan")
-    adj = 1 - (1 - r2) * (n - 1) / df_e if df_e > 0 else float("nan")
-
-    if descriptives and fnames:
-        drows = []
-        cells = frame.groupby(fnames, sort=True)["y"]
-        for key, x in cells:
-            key = key if isinstance(key, tuple) else (key,)
-            labels = [value_text(ds.var(alias[f]), _unrepr(v)) for f, v in zip(fnames, key)]
-            drows.append(labels + [fmt(x.mean(), dvar.decimals + 2),
-                                   fmt(x.std(ddof=1), dvar.decimals + 3), fmt_int(len(x))])
-        drows.append(["Total"] + [""] * (len(fnames) - 1) +
-                     [fmt(y.mean(), dvar.decimals + 2), fmt(y.std(ddof=1), dvar.decimals + 3),
-                      fmt_int(n)])
-        section.table(Table("Descriptive Statistics",
-                            [ds.var(f).name for f in factors] + ["Mean", "Std. Deviation", "N"],
-                            drows, row_header_cols=len(fnames),
-                            footnotes=[f"Dependent Variable: {dvar.title}"]))
-
-    if homogeneity and fnames:
-        source = model.resid if cnames else frame["y"]
-        cell_key = frame[fnames].astype(str).agg("|".join, axis=1)
-        samples = [source[cell_key == c].to_numpy(float) for c in sorted(cell_key.unique())]
-        lrows = [[basis, fmt(f), fmt_df(df1), fmt_df(df2), fmt_p(p)]
-                 for basis, f, df1, df2, p in levene_rows(samples)]
-        section.table(Table("Levene's Test of Equality of Error Variances",
-                            ["", "Levene Statistic", "df1", "df2", "Sig."], lrows,
-                            footnotes=["Tests the null hypothesis that the error variance of "
-                                       "the dependent variable is equal across groups.",
-                                       f"Dependent variable: {dvar.title}"]))
-
-    columns = ["Source", "Type III Sum of Squares", "df", "Mean Square", "F", "Sig."]
-    if effect_size:
-        columns.append("Partial Eta Squared")
-    section.table(Table("Tests of Between-Subjects Effects", columns, rows,
-                        footnotes=[f"Dependent Variable: {dvar.title}",
-                                   f"a. R Squared = {fmt(r2)} (Adjusted R Squared = {fmt(adj)})"]))
-
-    if posthoc_factors and posthoc_methods:
-        if cnames:
-            section.note("Warning", "Post hoc tests are not performed when covariates are in "
-                         "the model.", style="warning")
-        else:
-            for f in posthoc_factors:
-                fn = fnames[factors.index(f)]
-                sub = pd.DataFrame({"y": frame["y"], "g": frame[fn].map(_unrepr)})
-                groups = groups_of(ds, dependent, f, frame=sub)
-                mc = [(dvar.title, groups, m, posthoc(groups, m, mse, df_e, level))
-                      for m in POSTHOC_ORDER if m in posthoc_methods]
-                if len(groups) > 2 and mc:
-                    table_ = multiple_comparisons_table(mc, level, ds.var(f).title)
-                    table_.title = f"Multiple Comparisons — {ds.var(f).title}"
-                    table_.footnotes.append(f"Based on observed means. The error term is Mean "
-                                            f"Square(Error) = {fmt(mse)}.")
-                    section.table(table_)
-                elif len(groups) <= 2:
-                    section.note("", f"Post hoc tests are not performed for {ds.var(f).title} "
-                                 "because there are fewer than three groups.")
-    return section
+    opts = options or GLMOptions(descriptives=descriptives, effect_size=effect_size,
+                                 homogeneity=homogeneity,
+                                 posthoc_factors=list(posthoc_factors or []),
+                                 posthoc_methods=list(posthoc_methods), alpha=1 - level)
+    return glm_univariate(ds, dependent, factors, covariates or [], opts).section
 
 
 def _unrepr(text: str):
