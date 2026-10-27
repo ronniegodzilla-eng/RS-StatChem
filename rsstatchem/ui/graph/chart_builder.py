@@ -58,11 +58,13 @@ class ChartBuilderDialog(QDialog):
         self.hint.setStyleSheet("color:#555;")
         self.preview = QLabel("Preview")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(460, 380)
+        self.preview.setMinimumSize(300, 300)
+        self._full = QPixmap()
         self.preview.setStyleSheet("background:white; border:1px solid #ccc;")
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.preview)
+        self.scroll = scroll
         self.status = QLabel()
         self.status.setStyleSheet("color:#8E1B1B;")
         self.widgets: dict = {}
@@ -214,22 +216,38 @@ class ChartBuilderDialog(QDialog):
         error = sc.check_roles(chart, roles)
         self.ok_button.setEnabled(error is None)
         if error:
+            self._full = QPixmap()
             self.preview.setPixmap(QPixmap())
             self.preview.setText("Assign the variables to see a preview.")
             self.status.setText("")
             return
         try:
             fig, _ = sc.render(self.ds, chart.key, roles, self.options())
-            image = QImage.fromData(sc._png(fig))
-            pix = QPixmap.fromImage(image)
-            if pix.width() > 620:
-                pix = pix.scaledToWidth(620, Qt.TransformationMode.SmoothTransformation)
-            self.preview.setPixmap(pix)
+            self._full = QPixmap.fromImage(QImage.fromData(sc._png(fig)))
+            self._show_pixmap()
             self.status.setText("")
         except Exception as exc:  # noqa: BLE001 - show the problem instead of a chart
+            self._full = QPixmap()
             self.preview.setPixmap(QPixmap())
             self.preview.setText("")
             self.status.setText(str(exc))
+
+    def _show_pixmap(self) -> None:
+        if self._full.isNull():
+            return
+        room = max(self.scroll.viewport().width() - 12, 280)
+        pix = self._full
+        if pix.width() > room:
+            pix = pix.scaledToWidth(room, Qt.TransformationMode.SmoothTransformation)
+        self.preview.setPixmap(pix)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._show_pixmap()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._show_pixmap()
 
     def accept(self) -> None:
         type(self)._last.update({"key": self.chart().key, "roles": self.roles()})

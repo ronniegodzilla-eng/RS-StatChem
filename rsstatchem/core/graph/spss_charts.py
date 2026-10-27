@@ -439,7 +439,7 @@ def pyramid_counts(ds: Dataset, yname: str, split: str, bins: int = 0
     if var.measure == "scale" and var.type == "numeric":
         y = _num(ds, yname)
         edges = _bins(y, bins)
-        rows = [f"{edges[i]:.4g}–{edges[i + 1]:.4g}" for i in range(len(edges) - 1)]
+        rows = [f"{edges[i]:.3g}–{edges[i + 1]:.3g}" for i in range(len(edges) - 1)]
         counts = np.array([np.histogram(y[(arr == c) & ~np.isnan(y)], bins=edges)[0]
                            for c in codes]).T
     else:
@@ -463,12 +463,16 @@ def _pyramid(ds, r, o):
     ax.set_yticks(pos)
     ax.set_yticklabels(rows, fontsize=7)
     ax.axvline(0, color="#333", lw=0.8)
+    limit = float(values.max()) * 1.08 if values.size and values.max() > 0 else 1.0
+    ax.set_xlim(-limit, limit)
     ticks = ax.get_xticks()
     ax.set_xticks(ticks)
     ax.set_xticklabels([f"{abs(t):g}" for t in ticks], fontsize=7)
     ax.set_xlabel("Percent" if o.get("percent") else "Frequency", fontsize=8)
     ax.set_ylabel(_title(ds, r["y"]), fontsize=8)
-    ax.legend(fontsize=7, title=_title(ds, r["split"]), title_fontsize=7, loc="upper right")
+    ax.set_xlim(-limit, limit)
+    ax.legend(fontsize=7, title=_title(ds, r["split"]), title_fontsize=7, ncol=2,
+              loc="lower center", bbox_to_anchor=(0.5, 1.0), frameon=False)
     _style(ax)
     return fig
 

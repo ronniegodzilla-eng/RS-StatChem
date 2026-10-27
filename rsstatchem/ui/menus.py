@@ -91,6 +91,21 @@ MENU_ORDER: dict[str, list] = {
         "Missing Value Analysis...", "Multiple Imputation", "Complex Samples", "Simulation...",
         "Quality Control", "Spatial and Temporal Modeling", "Direct Marketing",
     ],
+    "Analyze/Power Analysis": ["Means", "Proportions", "Correlations", "Regression"],
+    "Analyze/Power Analysis/Means": [
+        "One-Sample T Test...", "Paired-Samples T Test...", "Independent-Samples T Test...",
+        "One-Way ANOVA..."],
+    "Analyze/Power Analysis/Proportions": [
+        "One-Sample Binomial Test...", "Related-Samples Binomial Test...",
+        "Independent-Samples Binomial Test..."],
+    "Analyze/Power Analysis/Correlations": [
+        "Pearson Product-Moment...", "Spearman Rank-Order...", "Partial Correlation..."],
+    "Analyze/Meta Analysis": ["Continuous Outcomes", "Binary Outcomes", "Meta-Regression..."],
+    "Analyze/Bayesian Statistics": [
+        "One Sample Normal...", "One Sample Binomial...", "One Sample Poisson...",
+        "Related Samples Normal...", "Independent Samples Normal...", "Pearson Correlation...",
+        "Linear Regression...", "One-way ANOVA...", "One-way Repeated Measures ANOVA...",
+        "Log-Linear Models..."],
     "Analyze/Reports": [
         "Codebook...", "OLAP Cubes...", "Case Summaries...",
         "Report Summaries in Rows...", "Report Summaries in Columns...",

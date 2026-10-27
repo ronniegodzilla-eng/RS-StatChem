@@ -252,6 +252,39 @@ def test_menu_order_follows_spss():
                        "Report Summaries in Rows...", "Report Summaries in Columns..."]
 
 
+def test_wp1_wp5_entries_land_in_spss_positions():
+    from rsstatchem.ui.data_editor import menu_tree
+
+    tree = menu_tree()
+    top = [t for t in _labels(tree["Analyze"]) if t]
+    if "Power Analysis" in top:
+        assert top[:3] == ["Power Analysis", "Meta Analysis", "Reports"]
+    if "Bayesian Statistics" in top:
+        assert top.index("Descriptive Statistics") < top.index("Bayesian Statistics") \
+            < top.index("Tables")
+    cm = [t for t in _labels(_sub(tree["Analyze"], "Compare Means")) if t]
+    if "One-Sample Proportions..." in cm:
+        assert cm.index("One-Way ANOVA...") < cm.index("One-Sample Proportions...") \
+            < cm.index("Independent-Samples Proportions...") \
+            < cm.index("Paired-Samples Proportions...")
+    if "Summary Independent-Samples T Test..." in cm:
+        assert cm.index("Independent-Samples T Test...") + 1 == \
+            cm.index("Summary Independent-Samples T Test...")
+    glm = [t for t in _labels(_sub(tree["Analyze"], "General Linear Model")) if t]
+    assert glm[:3] == ["Univariate...", "Multivariate...", "Repeated Measures..."]
+    if "Variance Components..." in glm:
+        assert glm[3] == "Variance Components..."
+    dr = [t for t in _labels(_sub(tree["Analyze"], "Dimension Reduction")) if t]
+    assert dr[0] == "Factor..."
+    if "Correspondence Analysis..." in dr:
+        assert dr[1] == "Correspondence Analysis..."
+    scale = [t for t in _labels(_sub(tree["Analyze"], "Scale")) if t]
+    assert scale[0] == "Reliability Analysis..."
+    mds = [t for t in scale if t.startswith("Multidimensional Scaling")]
+    if mds:
+        assert scale[-len(mds):] == mds
+
+
 def test_order_entries_puts_unknown_last():
     from rsstatchem.ui.menus import _tidy, order_entries
 
