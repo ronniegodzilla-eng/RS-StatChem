@@ -1,4 +1,5 @@
-"""Reading and writing datasets: RS-StatChem project (.rsd), SPSS (.sav), CSV/TXT and Excel.
+"""Reading and writing datasets: RS-StatChem project (.rsd), SPSS (.sav, .por), Stata (.dta),
+SAS (.sas7bdat, .xpt), CSV/TXT and Excel. Statistical formats go through pyreadstat.
 
 A ``.rsd`` file is a zip archive with ``meta.json`` (variable dictionary) and ``data.csv``
 (values as text, decoded per variable type on load), so it stays readable by other tools.
@@ -22,10 +23,15 @@ from rsstatchem.core.dataset import (DATE, MEASURES, NOMINAL, NUMERIC, SCALE, ST
 PROJECT_EXT = ".rsd"
 PROJECT_FORMAT = "rs-statchem-dataset"
 
-OPEN_FILTER = ("All supported (*.rsd *.sav *.csv *.txt *.tsv *.dat *.xlsx *.xlsm *.rsg *.rsc);;"
+OPEN_FILTER = ("All supported (*.rsd *.sav *.csv *.txt *.tsv *.dat *.xlsx *.xlsm *.rsg *.rsc "
+               "*.rso *.dta *.sas7bdat *.xpt *.por);;"
                "RS-StatChem data (*.rsd);;SPSS data (*.sav);;"
                "Text / CSV (*.csv *.txt *.tsv *.dat);;Excel (*.xlsx *.xlsm);;"
-               "Graph (*.rsg);;Chemical drawing (*.rsc)")
+               "Graph (*.rsg);;Chemical drawing (*.rsc);;RS-StatChem output (*.rso);;"
+               "Stata (*.dta);;SAS (*.sas7bdat *.xpt);;SPSS portable (*.por)")
+STATA_FILTER = "Stata (*.dta)"
+SAS_FILTER = "SAS (*.sas7bdat *.xpt)"
+POR_FILTER = "SPSS portable (*.por)"
 
 
 # ------------------------------------------------------------------ project
@@ -165,16 +171,73 @@ def write_text(ds: Dataset, path: str | Path, delimiter: str = ",", decimal: str
 _FMT_RE = re.compile(r"^([A-Z]+)(\d+)?(?:\.(\d+))?$")
 
 
+_STATA_FMT = re.compile(r"^%-?(\d+)(?:\.(\d+))?([a-z]+)")
+_SAS_FMT = re.compile(r"^([A-Z$]*?)(\d+)?\.(\d+)?$")
+
+
 def read_sav(path: str | Path) -> Dataset:
     import pyreadstat
 
     df, meta = pyreadstat.read_sav(str(path), user_missing=True, dates_as_pandas_datetime=True)
+    return _from_readstat(df, meta, path)
+
+
+def read_por(path: str | Path) -> Dataset:
+    import pyreadstat
+
+    df, meta = pyreadstat.read_por(str(path), dates_as_pandas_datetime=True)
+    return _from_readstat(df, meta, path)
+
+
+def read_stata(path: str | Path) -> Dataset:
+    import pyreadstat
+
+    df, meta = pyreadstat.read_dta(str(path), dates_as_pandas_datetime=True)
+    return _from_readstat(df, meta, path, "stata")
+
+
+def read_sas(path: str | Path) -> Dataset:
+    """SAS data (.sas7bdat) or SAS transport (.xpt)."""
+    import pyreadstat
+
+    if Path(path).suffix.lower() == ".xpt":
+        df, meta = pyreadstat.read_xport(str(path), dates_as_pandas_datetime=True)
+    else:
+        df, meta = pyreadstat.read_sas7bdat(str(path), dates_as_pandas_datetime=True)
+    return _from_readstat(df, meta, path, "sas")
+
+
+def _format_parts(fmt: str | None, source: str) -> tuple[str, str | None, str | None]:
+    """(SPSS-like kind, width, decimals) from a SPSS/Stata/SAS display format."""
+    fmt = fmt or ""
+    if source == "stata":
+        m = _STATA_FMT.match(fmt)
+        if not m:
+            return "F", "8", "2"
+        width, dec, kind = m.groups()
+        if kind.startswith("t"):
+            return "DATE", width, None
+        return ("A" if kind.endswith("s") else "F"), width, dec
+    if source == "sas":
+        m = _SAS_FMT.match(fmt.upper())
+        if not m:
+            return "F", "8", None
+        kind, width, dec = m.groups()
+        if kind.startswith("$"):
+            return "A", width, None
+        if any(k in kind for k in ("DATE", "DDMM", "MMDD", "YYMM", "TIME")):
+            return "DATE", width, None
+        return "F", width or "8", dec
+    m = _FMT_RE.match(fmt)
+    return (m.group(1), m.group(2), m.group(3)) if m else ("F", "8", "2")
+
+
+def _from_readstat(df: pd.DataFrame, meta, path: str | Path, source: str = "spss") -> Dataset:
     labels = dict(zip(meta.column_names, meta.column_labels or [None] * len(meta.column_names)))
     variables = []
     for name in meta.column_names:
         fmt = (meta.original_variable_types or {}).get(name, "F8.2")
-        m = _FMT_RE.match(fmt or "")
-        kind, width, dec = (m.group(1), m.group(2), m.group(3)) if m else ("F", "8", "2")
+        kind, width, dec = _format_parts(fmt, source)
         series = df[name]
         if kind == "A" or series.dtype == object and not pd.api.types.is_numeric_dtype(series):
             vtype = STRING
@@ -191,6 +254,9 @@ def read_sav(path: str | Path) -> Dataset:
             lo, hi = rng.get("lo"), rng.get("hi")
             if lo == hi and lo is not None:
                 missing.append(lo)
+        if vtype == NUMERIC and dec is None and source != "spss":
+            values = pd.to_numeric(series, errors="coerce").dropna()
+            dec = "0" if len(values) == 0 or bool(np.all(np.mod(values, 1) == 0)) else "2"
         if vtype == NUMERIC:
             value_labels = {float(k): str(v) for k, v in value_labels.items()}
             missing = [float(x) for x in missing]
@@ -202,7 +268,7 @@ def read_sav(path: str | Path) -> Dataset:
             name=name, type=vtype, width=int(width or 8),
             decimals=int(dec or 0) if vtype == NUMERIC else 0,
             label=labels.get(name) or "", value_labels=value_labels, missing=missing,
-            columns=int((meta.variable_display_width or {}).get(name) or 8),
+            columns=int((getattr(meta, "variable_display_width", None) or {}).get(name) or 8),
             align=align if align in ("left", "right", "center")
             else ("left" if vtype == STRING else "right"),
             measure=measure))
@@ -239,6 +305,57 @@ def write_sav(ds: Dataset, path: str | Path) -> None:
         variable_format=formats)
 
 
+def _export_frame(ds: Dataset, max_name: int, pattern: str) -> tuple[pd.DataFrame, dict]:
+    """Copy of the data with names valid for Stata/SAS (letters, digits, underscore)."""
+    rename, used = {}, set()
+    for v in ds.variables:
+        base = re.sub(pattern, "_", v.name)[:max_name] or "v"
+        if base[0].isdigit():
+            base = ("v" + base)[:max_name]
+        name, k = base, 1
+        while name.lower() in used:
+            suffix = f"_{k}"
+            name = base[:max_name - len(suffix)] + suffix
+            k += 1
+        used.add(name.lower())
+        rename[v.name] = name
+    df = ds.df.copy()
+    for v in ds.variables:
+        if v.type == STRING:
+            df[v.name] = df[v.name].fillna("").astype(str)
+    return df.rename(columns=rename), rename
+
+
+def write_stata(ds: Dataset, path: str | Path) -> dict:
+    """Stata 15 .dta with variable and (integer) value labels; returns the name mapping."""
+    import pyreadstat
+
+    df, rename = _export_frame(ds, 32, r"[^A-Za-z0-9_]")
+    labels, formats = {}, {}
+    for v in ds.variables:
+        name = rename[v.name]
+        if v.type == NUMERIC and v.value_labels and \
+                all(float(k).is_integer() for k in v.value_labels):
+            labels[name] = {int(k): str(t) for k, t in v.value_labels.items()}
+        if v.type == NUMERIC:
+            formats[name] = f"%{max(v.width, v.decimals + 2)}.{v.decimals}f"
+    pyreadstat.write_dta(df, str(path), column_labels=[v.label or "" for v in ds.variables],
+                         variable_value_labels=labels or None, variable_format=formats or None)
+    return rename
+
+
+def write_xport(ds: Dataset, path: str | Path) -> dict:
+    """SAS transport file (XPORT version 8); returns the name mapping."""
+    import pyreadstat
+
+    df, rename = _export_frame(ds, 32, r"[^A-Za-z0-9_]")
+    pyreadstat.write_xport(df, str(path), column_labels=[(v.label or "")[:40]
+                                                         for v in ds.variables],
+                           table_name=re.sub(r"[^A-Za-z0-9_]", "_", ds.name)[:32] or "DATA",
+                           file_format_version=8)
+    return rename
+
+
 # ------------------------------------------------------------------ dispatch
 def kind_of(path: str | Path) -> str:
     ext = Path(path).suffix.lower()
@@ -246,6 +363,14 @@ def kind_of(path: str | Path) -> str:
         return "project"
     if ext == ".sav":
         return "sav"
+    if ext == ".por":
+        return "por"
+    if ext == ".dta":
+        return "stata"
+    if ext in (".sas7bdat", ".xpt"):
+        return "sas"
+    if ext == ".rso":
+        return "output"
     if ext in (".xlsx", ".xlsm"):
         return "excel"
     if ext in (".csv", ".txt", ".tsv", ".dat"):

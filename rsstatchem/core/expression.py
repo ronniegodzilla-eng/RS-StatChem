@@ -9,6 +9,11 @@ Semantics follow SPSS:
 * comparisons/logicals give 1 (true), 0 (false) or missing; ``0 AND missing`` is 0
 * statistical functions (SUM, MEAN, …) use the valid arguments; ``MEAN.3(…)`` needs ≥ 3
 * ``X1 TO X5`` inside a function expands to the variables between them in file order
+* system variables ``$CASENUM``, ``$SYSMIS``, ``$JDATE``, ``$TIME``; SPSS formats such as
+  ``F8.2`` or ``DATE11`` may be written unquoted as arguments (STRING, NUMBER)
+
+The date/time, distribution and string families live in :mod:`rsstatchem.core.expr_functions`
+and are merged into :data:`FUNCTIONS` at import.
 """
 from __future__ import annotations
 
@@ -29,7 +34,7 @@ _TOKEN = re.compile(r"""
     (?P<space>\s+)
   | (?P<str>'(?:[^']|'')*'|"(?:[^"]|"")*")
   | (?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)
-  | (?P<name>[^\W\d][\w.$#@]*)
+  | (?P<name>\$?[^\W\d][\w.$#@]*)
   | (?P<op><=|>=|<>|~=|\*\*|[-+*/(),<>=&|~])
 """, re.VERBOSE | re.UNICODE)
 
@@ -305,8 +310,7 @@ FUNCTIONS: dict[str, tuple[Callable, str, str]] = {
     "RV.UNIFORM": (_random(lambda a, b, size: _RNG.uniform(a, b, size), 2), "Random Numbers",
                    "RV.UNIFORM(min, max) — random uniform value"),
 }
-STAT_FUNCTIONS = {"SUM", "MEAN", "SD", "VARIANCE", "MIN", "MAX", "MEDIAN"}
-FUNCTION_GROUPS = ["All"] + sorted({g for _, g, _ in FUNCTIONS.values()})
+STAT_FUNCTIONS = {"SUM", "MEAN", "SD", "VARIANCE", "MIN", "MAX", "MEDIAN", "CFVAR"}
 
 
 # ------------------------------------------------------------------ translation
@@ -380,6 +384,13 @@ def compile_expression(ds: Dataset, text: str) -> Compiled:
             upper = t.text.upper()
             if upper in _KEYWORDS:
                 parts.append(_KEYWORDS[upper])
+            elif upper.startswith("$") and (nxt is None or nxt.text != "("):
+                from rsstatchem.core.expr_functions import SYSTEM_VARIABLES
+
+                if upper not in SYSTEM_VARIABLES:
+                    raise ExpressionError(f"Unknown system variable: {t.text}")
+                functions.append(("$", upper))
+                parts.append(f"__s{len(functions) - 1}")
             elif nxt is not None and nxt.text == "(":
                 base, minimum = upper, None
                 if upper not in FUNCTIONS:
@@ -394,6 +405,11 @@ def compile_expression(ds: Dataset, text: str) -> Compiled:
                 try:
                     idx = ds.index_of(t.text)
                 except KeyError:
+                    from rsstatchem.core.expr_functions import FORMAT_TOKEN
+
+                    if FORMAT_TOKEN.match(t.text):  # STRING(x, F8.2): an unquoted format
+                        parts.append(repr(t.text.upper()))
+                        continue
                     raise ExpressionError(f"Unknown variable: {t.text}") from None
                 variables.append(idx)
                 parts.append(f"__v{idx}")
@@ -448,12 +464,18 @@ class _Evaluator:
         if var.type == NUMERIC:
             return pd.to_numeric(s, errors="coerce").astype(float)
         if var.type == "date":
-            return (s - pd.Timestamp("1582-10-14")).dt.total_seconds()  # SPSS date numbers
+            from rsstatchem.core.expr_functions import from_timestamps
+
+            return from_timestamps(s)  # SPSS date numbers (seconds since 14 Oct 1582)
         return s.astype(object)
 
     def visit_Name(self, node):
         if node.id.startswith("__v"):
             return self._var(node)
+        if node.id.startswith("__s"):
+            from rsstatchem.core.expr_functions import system_value
+
+            return system_value(self.c.functions[int(node.id[3:])][1], self.index)
         raise ExpressionError("A function name must be followed by its arguments.")
 
     def visit_UnaryOp(self, node):
@@ -536,6 +558,13 @@ class _Evaluator:
             if len(node.args) != 1:
                 raise ExpressionError("VALUE takes one variable.")
             return self._var(node.args[0], raw=True)
+        if name == "VALUELABEL":
+            if len(node.args) != 1:
+                raise ExpressionError("VALUELABEL takes one variable.")
+            raw = self._var(node.args[0], raw=True)
+            var = self.ds.variables[int(node.args[0].id[3:])]
+            return raw.map(lambda v: var.value_labels.get(v, "") if not pd.isna(v) else ""
+                           ).astype(object)
         if name == "SYSMIS" and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
             return self._var(node.args[0], raw=True).isna().astype(float)
         args = [self.visit(a) for a in node.args]
@@ -544,6 +573,11 @@ class _Evaluator:
         if name in STAT_FUNCTIONS:
             return impl(args, name, minimum)
         return impl(args, name)
+
+
+FUNCTION_GROUPS = ["All"] + sorted({g for _, g, _ in FUNCTIONS.values()})
+# merges the date/distribution/string families into FUNCTIONS (and FUNCTION_GROUPS in place)
+from rsstatchem.core import expr_functions as _extra  # noqa: E402,F401 - needs helpers above
 
 
 def evaluate(ds: Dataset, text: str) -> pd.Series:

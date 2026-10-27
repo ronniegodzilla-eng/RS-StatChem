@@ -26,6 +26,11 @@ class Table:
     footnotes: list[str] = field(default_factory=list)
     id: int = field(default_factory=_next_id)
     kind: str = "table"
+    # Pivot Table Editor state (see core/pivot.py): rows/columns hidden by the user and the
+    # unpivoted original with the current tray layout.
+    hidden_rows: list = field(default_factory=list)
+    hidden_cols: list = field(default_factory=list)
+    pivot: dict | None = None
 
     @property
     def has_groups(self) -> bool:
@@ -36,7 +41,7 @@ class Table:
 class Text:
     title: str
     text: str
-    style: str = "note"  # note | log | warning
+    style: str = "note"  # note | log | warning | title (inserted heading)
     id: int = field(default_factory=_next_id)
     kind: str = "text"
 

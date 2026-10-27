@@ -1,4 +1,9 @@
-"""Data Editor window: Data View / Variable View tabs and the SPSS-style menu structure."""
+"""Data Editor window: Data View / Variable View tabs and the SPSS-style menu structure.
+
+The File, Edit and View menus are built here; Data, Transform, Analyze, Graphs and Utilities
+come from :func:`menu_tree` (built-in entries merged with the feature modules' ``MENUS`` and
+put in SPSS order by :data:`rsstatchem.ui.menus.MENU_ORDER`).
+"""
 from __future__ import annotations
 
 import json
@@ -9,10 +14,11 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QLabel, QMainWindow,
-                               QMenu, QMessageBox, QTabWidget)
+from PySide6.QtCore import QMimeData, Qt
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QFileDialog, QFormLayout, QInputDialog, QLabel, QMainWindow,
+                               QMenu, QMessageBox, QTabWidget, QVBoxLayout)
 
 from rsstatchem import APP_NAME
 from rsstatchem.core import selection
@@ -48,7 +54,7 @@ if TYPE_CHECKING:
 # "FREQ"/"DESC" are the phase-1 actions, (title, [...]) is a submenu.
 ANALYZE = [
     ("Descriptive Statistics", ["FREQ", "DESC", ("Explore...", ExploreDialog),
-                                ("Crosstabs...", CrosstabsDialog), "Ratio..."]),
+                                ("Crosstabs...", CrosstabsDialog)]),
     ("Compare Means", ["Means...", ("One-Sample T Test...", OneSampleTDialog),
                        ("Independent-Samples T Test...", IndependentTDialog),
                        ("Paired-Samples T Test...", PairedTDialog),
@@ -56,11 +62,9 @@ ANALYZE = [
     ("General Linear Model", [("Univariate...", UnivariateDialog), "Multivariate...",
                               "Repeated Measures..."]),
     ("Mixed Models", ["Linear..."]),
-    ("Correlate", [("Bivariate...", BivariateDialog), ("Partial...", PartialDialog),
-                   "Distances..."]),
+    ("Correlate", [("Bivariate...", BivariateDialog), ("Partial...", PartialDialog)]),
     ("Regression", [("Linear...", LinearRegressionDialog), "Curve Estimation...",
-                    "Binary Logistic...", "Multinomial Logistic...", "Ordinal...",
-                    "Nonlinear..."]),
+                    "Binary Logistic...", "Multinomial Logistic...", "Ordinal..."]),
     ("Mediation && Moderation", ["PROCESS-style Model..."]),
     ("Dimension Reduction", ["Factor..."]),
     ("Scale", [("Reliability Analysis...", ReliabilityDialog)]),
@@ -80,7 +84,7 @@ PLANNED = {
                   ("Recode into Same Variables...", RecodeSameDialog),
                   ("Recode into Different Variables...", RecodeDifferentDialog),
                   "Automatic Recode...", "Visual Binning...", None, "Rank Cases...",
-                  "Replace Missing Values..."],
+                  "Replace Missing Values...", None, "Run Pending Transforms"],
     "RSM": [
         ("Create Design", ["Central Composite (CCD)...", "Box-Behnken...",
                            "Full / Fractional Factorial...", "Mixture Design..."]),
@@ -96,23 +100,33 @@ PLANNED = {
 _TREE: dict | None = None
 
 
+def _sort_cases(editor) -> None:
+    editor.sort_cases()
+
+
 def menu_tree() -> dict[str, list]:
     """Built-in menus merged with the feature modules' MENUS (computed once)."""
     global _TREE
     if _TREE is None:
         _TREE = build_tree({
             "File": [],
-            "Data": [None, ("Split File...", SplitFileDialog),
+            "Data": [("Sort Cases...", _sort_cases), None,
+                     ("Split File...", SplitFileDialog),
                      ("Select Cases...", SelectCasesDialog),
                      ("Weight Cases...", WeightCasesDialog)],
             "Transform": PLANNED["Transform"],
             "Analyze": ANALYZE,
             "Graphs": PLANNED["Graphs"],
+            "Utilities": [],
             "Analysis": [],
             "RSM": PLANNED["RSM"],
             "Chemistry": PLANNED["Chemistry"],
         })
     return _TREE
+
+
+# top-level menus in SPSS order after File / Edit / View
+MAIN_MENUS = ("Data", "Transform", "Analyze", "Graphs", "Utilities")
 
 
 def _compute_with(dlg, ds: Dataset):
@@ -157,6 +171,7 @@ class DataEditorWindow(QMainWindow):
         self.var_view.doubleClicked.connect(self._variable_cell_activated)
         self.doc.structure_changed.connect(self._update_counts)
         self.doc.structure_changed.connect(self._fit_columns)
+        self.doc.structure_changed.connect(self.apply_variable_sets)
         self.doc.modified_changed.connect(self.setWindowModified)
 
         self._build_actions()
@@ -170,11 +185,25 @@ class DataEditorWindow(QMainWindow):
         self.counts = QLabel()
         self.statusBar().addPermanentWidget(self.counts)
         self.statusBar().showMessage(f"{APP_NAME} Processor is ready")
+        self._apply_settings()
         self._update_counts()
         self._fit_columns()
         self._update_title()
+        self.apply_variable_sets()
 
     # ------------------------------------------------------------------ setup
+    def _apply_settings(self) -> None:
+        """Edit > Options saved earlier: leading zero and value labels in Data View."""
+        from rsstatchem.core.stats import common
+
+        settings = getattr(self.ctx, "settings", None)
+        if settings is None:
+            return
+        common.LEADING_ZERO = settings.value("options/leading_zero", False) in (True, "true")
+        if settings.value("data/show_labels", False) in (True, "true"):
+            self.act_labels.setChecked(True)
+            self.data_model.set_show_labels(True)
+
     @property
     def ds(self) -> Dataset:
         return self.doc.ds
@@ -215,11 +244,24 @@ class DataEditorWindow(QMainWindow):
         self.act_import_text = a("&Text / CSV Data...", lambda: self.import_dialog("text"),
                                  icon="import", tip="Import text or CSV data")
         self.act_import_excel = a("&Excel...", lambda: self.import_dialog("excel"))
+        self.act_import_sav = a("&SPSS Statistics (.sav)...", lambda: self.import_dialog("sav"))
+        self.act_import_por = a("SPSS &Portable (.por)...", lambda: self.import_dialog("por"))
+        self.act_import_stata = a("S&tata (.dta)...", lambda: self.import_dialog("stata"))
+        self.act_import_sas = a("S&AS (.sas7bdat, .xpt)...", lambda: self.import_dialog("sas"))
+        self.act_new_output = a("&Output", self._new_output)
+        self.act_open_output = a("&Output...", self._open_output)
+        self.act_close = a("&Close", self.close, QKeySequence.StandardKey.Close)
+        self.act_rename = a("Rena&me Dataset...", self.rename_dataset)
+        self.act_info_working = a("&Working File", self.display_file_info)
+        self.act_info_external = a("&External File...", self.display_external_info)
         self.act_save = a("&Save", self.save, QKeySequence.StandardKey.Save, "save",
                           "Save this document")
         self.act_save_as = a("Save &As...", self.save_as, QKeySequence.StandardKey.SaveAs)
         self.act_export_csv = a("&CSV / Text...", lambda: self.export("csv"), icon="export")
         self.act_export_excel = a("&Excel...", lambda: self.export("excel"))
+        self.act_export_sav = a("&SPSS Statistics (.sav)...", lambda: self.export("sav"))
+        self.act_export_stata = a("S&tata (.dta)...", lambda: self.export("stata"))
+        self.act_export_sas = a("SAS &Transport (.xpt)...", lambda: self.export("sas"))
         self.act_exit = a("E&xit", lambda: QApplication.closeAllWindows(),
                           QKeySequence.StandardKey.Quit)
 
@@ -242,6 +284,25 @@ class DataEditorWindow(QMainWindow):
         self.act_delete_var = a("Delete Variable(s)", self.delete_variables)
         self.act_delete_case = a("Delete Case(s)", self.delete_cases)
         self.act_goto = a("&Go to Case...", self.go_to_case, "Ctrl+G", "goto", "Go to case")
+        self.act_goto_var = a("Go to &Variable...", self.go_to_variable, "Ctrl+Shift+G")
+        self.act_copy_names = a("Copy with Variable &Names", lambda: self.copy_with_header("name"))
+        self.act_copy_labels = a("Copy with Variable &Labels",
+                                 lambda: self.copy_with_header("label"))
+        self.act_find = a("&Find...", lambda: self.find_dialog(False), QKeySequence.StandardKey.Find,
+                          tip="Find data")
+        self.act_find_next = a("Find Ne&xt", self.find_next, QKeySequence.StandardKey.FindNext)
+        self.act_replace = a("&Replace...", lambda: self.find_dialog(True), "Ctrl+H")
+        self.act_options = a("&Options...", self.options_dialog)
+        self.act_status_bar = a("&Status Bar", lambda on: self.statusBar().setVisible(on),
+                                checkable=True)
+        self.act_status_bar.setChecked(True)
+        self.act_toolbar = a("&Toolbar", lambda on: self.toolbar.setVisible(on), checkable=True)
+        self.act_toolbar.setChecked(True)
+        self.act_grid = a("&Grid Lines", lambda on: (self.data_view.setShowGrid(on),
+                                                      self.var_view.setShowGrid(on)),
+                          checkable=True)
+        self.act_grid.setChecked(True)
+        self.act_fonts = a("&Fonts...", self.choose_font)
 
         self.act_labels = a("&Value Labels", self.data_model.set_show_labels, icon="labels",
                             tip="Show value labels", checkable=True)
@@ -282,48 +343,59 @@ class DataEditorWindow(QMainWindow):
 
         file_menu = mb.addMenu("&File")
         new_menu = file_menu.addMenu("&New")
-        new_menu.addAction(self.act_new)
-        file_menu.addAction(self.act_open)
+        new_menu.addActions([self.act_new, self.act_new_output])
+        open_menu = file_menu.addMenu("&Open")
+        open_menu.addActions([self.act_open, self.act_open_output])
         import_menu = file_menu.addMenu("&Import Data")
-        import_menu.addActions([self.act_import_text, self.act_import_excel])
-        self.recent_menu = file_menu.addMenu("Recently Used &Data")
-        self.recent_menu.aboutToShow.connect(self._fill_recent)
+        import_menu.addActions([self.act_import_text, self.act_import_excel, self.act_import_sav,
+                                self.act_import_por, self.act_import_stata,
+                                self.act_import_sas])
+        file_menu.addAction(self.act_close)
         file_menu.addSeparator()
         file_menu.addActions([self.act_save, self.act_save_as])
         export_menu = file_menu.addMenu("&Export")
-        export_menu.addActions([self.act_export_csv, self.act_export_excel])
+        export_menu.addActions([self.act_export_csv, self.act_export_excel, self.act_export_sav,
+                                self.act_export_stata, self.act_export_sas])
+        file_menu.addAction(self.act_rename)
+        info = file_menu.addMenu("Display Data File &Information")
+        info.addActions([self.act_info_working, self.act_info_external])
         tree = menu_tree()
         if tree["File"]:
             file_menu.addSeparator()
             self._planned(file_menu, tree["File"])
+        file_menu.addSeparator()
+        self.recent_menu = file_menu.addMenu("Recently Used &Data")
+        self.recent_menu.aboutToShow.connect(self._fill_recent)
         file_menu.addSeparator()
         file_menu.addAction(self.act_exit)
 
         edit = mb.addMenu("&Edit")
         edit.addActions([self.act_undo, self.act_redo])
         edit.addSeparator()
-        edit.addActions([self.act_cut, self.act_copy, self.act_paste, self.act_clear])
+        edit.addActions([self.act_cut, self.act_copy, self.act_copy_names, self.act_copy_labels,
+                         self.act_paste, self.act_clear])
         edit.addSeparator()
         edit.addActions([self.act_insert_var, self.act_insert_case])
         edit.addSeparator()
-        edit.addAction(self.act_goto)
+        edit.addActions([self.act_find, self.act_find_next, self.act_replace])
+        edit.addSeparator()
+        edit.addActions([self.act_goto, self.act_goto_var])
+        edit.addSeparator()
+        edit.addAction(self.act_options)
 
         view = mb.addMenu("&View")
+        view.addActions([self.act_status_bar, self.act_toolbar, self.act_fonts, self.act_grid])
+        view.addSeparator()
         view.addAction(self.act_labels)
+        view.addSeparator()
         view.addAction(self.act_toggle_view)
 
-        data = mb.addMenu("&Data")
-        data.addActions([self.act_insert_var, self.act_insert_case, self.act_goto])
-        data.addSeparator()
-        data.addAction(self.act_sort)
-        self._planned(data, tree["Data"])
-        self._planned(mb.addMenu("&Transform"), tree["Transform"])
-        self._planned(mb.addMenu("&Analyze"), tree["Analyze"])
-        self._planned(mb.addMenu("&Graphs"), tree["Graphs"])
+        for title in MAIN_MENUS:
+            if tree.get(title):
+                self._planned(mb.addMenu(f"&{title}"), tree[title])
         # Curve fitting / signal analysis, RSM and chemistry are modules of their own now
         # (Graph & Analysis, RSM / DOE, Chemical Drawing), opened from Window > Modules.
-        known = {"File", "Data", "Transform", "Analyze", "Graphs", "Analysis", "RSM",
-                 "Chemistry"}
+        known = {"File", "Analysis", "RSM", "Chemistry", *MAIN_MENUS}
         for title, entries in tree.items():
             if title not in known and entries:
                 self._planned(mb.addMenu(title), entries)
@@ -339,6 +411,7 @@ class DataEditorWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         tb = self.addToolBar("Main")
+        self.toolbar = tb
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         tb.addActions([self.act_open, self.act_save, self.act_import_text])
@@ -349,6 +422,7 @@ class DataEditorWindow(QMainWindow):
         tb.addSeparator()
         tb.addActions([self.act_goto, self.act_insert_var, self.act_insert_case, self.act_sort])
         tb.addSeparator()
+        tb.addAction(self.act_find)
         tb.addAction(self.act_labels)
         tb.addSeparator()
         tb.addActions([self.act_freq, self.act_desc])
@@ -439,7 +513,11 @@ class DataEditorWindow(QMainWindow):
             self.open_path(path)
 
     def import_dialog(self, kind: str) -> None:
-        pattern = files.OPEN_FILTER.split(";;")[3 if kind == "text" else 4]
+        patterns = {"text": files.OPEN_FILTER.split(";;")[3],
+                    "excel": files.OPEN_FILTER.split(";;")[4], "sav": "SPSS data (*.sav)",
+                    "por": files.POR_FILTER, "stata": files.STATA_FILTER,
+                    "sas": files.SAS_FILTER}
+        pattern = patterns[kind]
         start = self.ctx.settings.value("last_dir", str(Path.home()))
         path, _ = QFileDialog.getOpenFileName(self, "Import Data", start, pattern)
         if path:
@@ -453,6 +531,12 @@ class DataEditorWindow(QMainWindow):
             graph = self._guard("Open Graph", lambda: load_graph(path))
             if graph is not None:
                 show_graph(graph, self, path)
+                self.ctx.add_recent(path)
+            return
+        if Path(path).suffix.lower() == ".rso":  # output document
+            viewer = self.ctx.output()
+            if viewer.open_path(path):
+                self.ctx.show_output_window()
                 self.ctx.add_recent(path)
             return
         if Path(path).suffix.lower() == ".rsc":  # chemical drawing
@@ -471,6 +555,12 @@ class DataEditorWindow(QMainWindow):
             dataset = self._guard("Open Data", lambda: files.load_project(path))
         elif kind == "sav":
             dataset = self._guard("Open Data", lambda: files.read_sav(path))
+        elif kind == "por":
+            dataset = self._guard("Open Data", lambda: files.read_por(path))
+        elif kind == "stata":
+            dataset = self._guard("Open Data", lambda: files.read_stata(path))
+        elif kind == "sas":
+            dataset = self._guard("Open Data", lambda: files.read_sas(path))
         elif kind == "text":
             dlg = TextImportDialog(path, self)
             if not dlg.exec():
@@ -494,7 +584,7 @@ class DataEditorWindow(QMainWindow):
             return
         self.ctx.settings.setValue("last_dir", str(Path(path).parent))
         self.ctx.add_recent(path)
-        if kind in ("text", "excel"):
+        if kind in ("text", "excel", "por", "stata", "sas"):
             dataset.path = None
             dataset.modified = True
         self.ctx.show_dataset(dataset, reuse=self if self.is_pristine() else None)
@@ -551,6 +641,18 @@ class DataEditorWindow(QMainWindow):
                 fn = lambda: files.write_text(self.ds, path, "\t")  # noqa: E731
             else:
                 fn = lambda: files.write_text(self.ds, path)  # noqa: E731
+        elif kind in ("sav", "stata", "sas"):
+            ext, pattern, writer = {"sav": (".sav", "SPSS data (*.sav)", files.write_sav),
+                                    "stata": (".dta", files.STATA_FILTER, files.write_stata),
+                                    "sas": (".xpt", "SAS transport (*.xpt)", files.write_xport)
+                                    }[kind]
+            path, _ = QFileDialog.getSaveFileName(self, "Export Data",
+                                                  str(Path(start) / f"{base}{ext}"), pattern)
+            if not path:
+                return
+            if not path.lower().endswith(ext):
+                path += ext
+            fn = lambda: writer(self.ds, path)  # noqa: E731
         else:
             path, _ = QFileDialog.getSaveFileName(self, "Export Data",
                                                   str(Path(start) / f"{base}.xlsx"),
@@ -677,6 +779,162 @@ class DataEditorWindow(QMainWindow):
 
     def _toggle_view(self) -> None:
         self.tabs.setCurrentIndex(1 - self.tabs.currentIndex())
+
+    def select_cell(self, row: int, col: int) -> None:
+        self.tabs.setCurrentIndex(0)
+        idx = self.data_model.index(row, col)
+        self.data_view.setCurrentIndex(idx)
+        self.data_view.scrollTo(idx)
+
+    def go_to_variable_index(self, col: int) -> None:
+        if not 0 <= col < self.ds.n_vars:
+            return
+        if self.tabs.currentIndex() == 1:
+            self.var_view.setCurrentIndex(self.var_model.index(col, 0))
+            return
+        self.select_cell(max(self.data_view.currentIndex().row(), 0), col)
+
+    def go_to_variable(self) -> None:
+        """Edit > Go to Variable (SPSS: Ctrl+Shift+G)."""
+        if not self.ds.n_vars:
+            return
+        items = [f"{v.name}" + (f"  ({v.label})" if v.label else "") for v in self.ds.variables]
+        col = max(self.data_view.currentIndex().column(), 0)
+        choice, ok = QInputDialog.getItem(self, "Go To", "Go to variable:", items,
+                                          min(col, len(items) - 1), False)
+        if ok:
+            self.go_to_variable_index(items.index(choice))
+
+    def copy_with_header(self, kind: str = "name") -> None:
+        """Copy the selected cells with variable names (or labels) as the first row."""
+        block = self.data_view.selected_block()
+        if not block or not self.ds.n_vars:
+            return
+        top, left, bottom, right = block
+        right = min(right, self.ds.n_vars - 1)
+        bottom = min(bottom, self.ds.n_cases - 1)
+        header = [(v.title if kind == "label" else v.name)
+                  for v in self.ds.variables[left:right + 1]]
+        lines = ["\t".join(header)]
+        for r in range(top, bottom + 1):
+            lines.append("\t".join(self.ds.edit_text(r, c) for c in range(left, right + 1)))
+        mime = QMimeData()
+        mime.setText("\n".join(lines))
+        QGuiApplication.clipboard().setMimeData(mime)
+        self.statusBar().showMessage(f"Copied {bottom - top + 1} case(s) with variable "
+                                     f"{'labels' if kind == 'label' else 'names'}.", 4000)
+
+    def find_dialog(self, replace: bool = False):
+        from rsstatchem.ui.find_replace import show_find
+
+        return show_find(self, replace)
+
+    def find_next(self) -> None:
+        from rsstatchem.ui.find_replace import _OPEN, show_find
+
+        dlg = _OPEN.get(id(self))
+        if dlg is None or not dlg.find_edit.text():
+            show_find(self)
+        else:
+            dlg.find_next()
+
+    def apply_variable_sets(self) -> None:
+        """Utilities > Use Variable Sets: hide the variables outside the active sets."""
+        from rsstatchem.core.data_props import visible_variables
+
+        keep = visible_variables(self.ds)
+        keep_set = None if keep is None else {n.lower() for n in keep}
+        for c, var in enumerate(self.ds.variables):
+            hidden = keep_set is not None and var.name.lower() not in keep_set
+            self.data_view.setColumnHidden(c, hidden)
+            self.var_view.setRowHidden(c, hidden)
+        for c in range(self.ds.n_vars, self.data_model.columnCount()):
+            self.data_view.setColumnHidden(c, False)
+        if hasattr(self, "state_label"):
+            self._update_counts()
+
+    def rename_dataset(self) -> None:
+        name, ok = QInputDialog.getText(self, "Rename Dataset", "Dataset name:",
+                                        text=self.ds.name)
+        if ok and name.strip():
+            self.ds.name = name.strip()
+            self._update_title()
+
+    def display_file_info(self) -> None:
+        from rsstatchem.core.stats.reports import file_info
+
+        self.ctx.show_output(file_info(self.ds))
+
+    def display_external_info(self) -> None:
+        from rsstatchem.core.stats.reports import file_info
+        from rsstatchem.ui.dialogs.data_props import load_any
+
+        start = self.ctx.settings.value("last_dir", str(Path.home()))
+        path, _ = QFileDialog.getOpenFileName(self, "Display Data File Information", start,
+                                              "Data files (*.rsd *.sav *.por *.dta "
+                                              "*.sas7bdat *.xpt)")
+        if not path:
+            return
+        ds = self._guard("Display Data File Information", lambda: load_any(path))
+        if ds is not None:
+            self.ctx.show_output(file_info(ds, path))
+
+    def _new_output(self) -> None:
+        self.ctx.output().new_document()
+        self.ctx.show_output_window()
+
+    def _open_output(self) -> None:
+        self.ctx.output().open_dialog()
+        self.ctx.show_output_window()
+
+    def choose_font(self) -> None:
+        from PySide6.QtWidgets import QFontDialog
+
+        result = QFontDialog.getFont(self.data_view.font(), self, "Fonts")
+        ok = next((r for r in result if isinstance(r, bool)), False)
+        font = next((r for r in result if not isinstance(r, bool)), None)
+        if ok and font is not None:
+            self.data_view.setFont(font)
+            self.var_view.setFont(font)
+
+    def options_dialog(self) -> None:
+        """Edit > Options: TableLook, leading zero for numbers below 1, value labels."""
+        from rsstatchem.core import report
+        from rsstatchem.core.stats import common
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Options")
+        look = QComboBox()
+        for key, label in report.LOOKS.items():
+            look.addItem(label, key)
+        current = self.ctx.settings.value("output/look", report.DEFAULT_LOOK)
+        look.setCurrentIndex(max(list(report.LOOKS).index(current)
+                                 if current in report.LOOKS else 0, 0))
+        zero = QCheckBox("Display a leading zero for numbers below 1 (0.045 instead of .045)")
+        zero.setChecked(bool(common.LEADING_ZERO))
+        labels = QCheckBox("Show value labels in Data View by default")
+        labels.setChecked(self.ctx.settings.value("data/show_labels", "false") in
+                          ("true", True))
+        form = QFormLayout()
+        form.addRow("Output TableLook:", look)
+        layout = QVBoxLayout(dlg)
+        layout.addLayout(form)
+        layout.addWidget(zero)
+        layout.addWidget(labels)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if not dlg.exec():
+            return
+        self.ctx.settings.setValue("output/look", look.currentData())
+        self.ctx.settings.setValue("options/leading_zero", zero.isChecked())
+        self.ctx.settings.setValue("data/show_labels", labels.isChecked())
+        common.LEADING_ZERO = zero.isChecked()
+        viewer = getattr(self.ctx, "_output", None)
+        if viewer is not None:
+            viewer.set_look(look.currentData())
 
     def _go_to_variable(self, col: int) -> None:
         if col >= self.ds.n_vars:

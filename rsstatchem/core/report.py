@@ -6,6 +6,10 @@ Three renderings of the same tables:
 * the clipboard for Word ("Copy", like SPSS): inline-styled HTML that Word turns into a real
   table, sized to fit a portrait page (smaller font, then wrap) when it would be too wide;
 * Word export (.docx) with the same fitting rules.
+
+Two TableLooks, as in SPSS: ``"spss"`` (the default look) and ``"apa"`` (APA 7th edition:
+"Table N" plus an italic title, no shading, horizontal rules only, *Note.* footnotes, Times New
+Roman). Hidden rows/columns of an edited pivot table are dropped by every renderer.
 """
 from __future__ import annotations
 
@@ -16,9 +20,13 @@ from typing import Callable
 
 from rsstatchem import APP_NAME, __version__
 from rsstatchem.core.output import Image, OutputDocument, Section, Table, Text
+from rsstatchem.core.pivot import visible
 
 ACCENT = "#B71C1C"
 FONT = "Arial, Helvetica, sans-serif"
+APA_FONT = "'Times New Roman', Times, serif"
+LOOKS = {"spss": "SPSS Default", "apa": "APA (7th edition)"}
+DEFAULT_LOOK = "spss"
 PORTRAIT_WIDTH_IN = 6.3   # A4/Letter portrait text width with ~2.5 cm margins
 _PAD_IN = 0.15            # left+right cell padding
 
@@ -44,7 +52,13 @@ def _text_em(text: str, bold: bool = False) -> float:
     return sum(widths.get(ch, 556) for ch in text) / 1000.0
 
 
-def css(scale: float = 1.0) -> str:
+def _look(look: str | None) -> str:
+    return look if look in LOOKS else DEFAULT_LOOK
+
+
+def css(scale: float = 1.0, look: str | None = None) -> str:
+    look = _look(look)
+
     def pt(size: float) -> str:
         return f"{size * scale:.2f}pt"
 
@@ -67,7 +81,15 @@ pre.log {{ font-family: Menlo, Consolas, monospace; font-size: {pt(8)}; color: #
            background: #f7f7f7; border-left: 3px solid {ACCENT}; padding: 3px 8px; }}
 p.note {{ margin: {pt(3)} 0; }}
 p.warning {{ margin: {pt(3)} 0; color: #8a5a00; background: #fff7e0; padding: 4px 8px; }}
-"""
+p.title {{ font-size: {pt(14)}; font-weight: bold; margin-top: {px(16)}; }}
+p.tabno {{ font-size: {pt(9.5)}; font-weight: bold; margin-top: {px(12)}; margin-bottom: 0; }}
+p.apatitle {{ font-size: {pt(9.5)}; font-style: italic; margin-top: {px(2)};
+              margin-bottom: {px(4)}; }}
+""" + (f"""
+body, table.rs th, table.rs td, p.caption, p.foot, p.section, p.title, p.tabno,
+p.apatitle, p.note {{ font-family: {APA_FONT}; }}
+table.rs th {{ font-weight: normal; background: #ffffff; }}
+""" if look == "apa" else "")
 
 
 CSS = css()
@@ -155,6 +177,7 @@ def fit_for_portrait(table: Table) -> tuple[float, bool]:
 def transpose(table: Table) -> Table:
     """Swap rows and columns (SPSS: pivot), e.g. to turn a very wide table into a tall one
     that fits a portrait page. Two-level headers become "Group Sub" labels."""
+    table = visible(table)
     rh = table.row_header_cols
     labels = [" ".join(p for p in c if p) if isinstance(c, tuple) else str(c)
               for c in table.columns]
@@ -180,9 +203,22 @@ _UNDER = "border-bottom: 1px solid #000;"
 _BOTTOM = "border-bottom: 1.5px solid #000;"
 
 
-def table_html(table: Table, anchor: str = "") -> str:
-    out = [f'<a name="{anchor}"></a>' if anchor else "",
-           f'<p class="caption">{_esc(table.title)}</p>',
+def _apa_note(index: int, note: str, html_out: bool = True) -> str:
+    if index or note.lower().startswith("note."):
+        return _esc(note) if html_out else note
+    return f"<i>Note.</i> {_esc(note)}" if html_out else f"Note. {note}"
+
+
+def table_html(table: Table, anchor: str = "", look: str | None = None,
+               number: int | None = None) -> str:
+    look = _look(look)
+    table = visible(table)
+    if look == "apa":
+        caption = (f'<p class="tabno">Table {number or 1}</p>'
+                   f'<p class="apatitle">{_esc(table.title)}</p>')
+    else:
+        caption = f'<p class="caption">{_esc(table.title)}</p>'
+    out = [f'<a name="{anchor}"></a>' if anchor else "", caption,
            '<table class="rs" cellspacing="0">', "<thead>"]
     rh = table.row_header_cols
     rows = _header_rows(table)
@@ -214,8 +250,9 @@ def table_html(table: Table, anchor: str = "") -> str:
                 cells.append(f'<td class="num" align="{align}"{style}>{_esc(text)}</td>')
         out.append("<tr>" + "".join(cells) + "</tr>")
     out.append("</tbody></table>")
-    for note in table.footnotes:
-        out.append(f'<p class="foot">{_esc(note)}</p>')
+    for k, note in enumerate(table.footnotes):
+        text = _apa_note(k, note) if look == "apa" else _esc(note)
+        out.append(f'<p class="foot">{text}</p>')
     return "\n".join(out)
 
 
@@ -223,11 +260,14 @@ def _png_data_uri(img: Image) -> str:
     return "data:image/png;base64," + base64.b64encode(img.png).decode("ascii")
 
 
-def item_html(item, image_src: Callable[[Image], str] = _png_data_uri, scale: float = 1.0) -> str:
+def item_html(item, image_src: Callable[[Image], str] = _png_data_uri, scale: float = 1.0,
+              look: str | None = None, number: int | None = None) -> str:
     anchor = f"i{item.id}"
     if isinstance(item, Table):
-        return table_html(item, anchor)
+        return table_html(item, anchor, look, number)
     if isinstance(item, Text):
+        if item.style == "title":
+            return f'<a name="{anchor}"></a><p class="title">{_esc(item.text)}</p>'
         if item.style == "log":
             return f'<a name="{anchor}"></a><pre class="log">{_esc(item.text)}</pre>'
         title = f'<p class="caption">{_esc(item.title)}</p>' if item.title else ""
@@ -247,10 +287,15 @@ def _framed(content: str) -> str:
 
 
 def section_html(section: Section, image_src: Callable[[Image], str] = _png_data_uri,
-                 scale: float = 1.0, selected: str | None = None) -> str:
+                 scale: float = 1.0, selected: str | None = None, look: str | None = None,
+                 counter: list | None = None) -> str:
+    """``counter`` ([n]) numbers the tables across sections for the APA look."""
+    counter = [0] if counter is None else counter
     parts = [f'<a name="s{section.id}"></a><p class="section">{_esc(section.title)}</p>']
     for item in section.items:
-        block = item_html(item, image_src, scale)
+        if isinstance(item, Table):
+            counter[0] += 1
+        block = item_html(item, image_src, scale, look, counter[0])
         parts.append(_framed(block) if selected == f"i{item.id}" else block)
     body = "\n".join(parts)
     return _framed(body) if selected == f"s{section.id}" else body
@@ -258,9 +303,11 @@ def section_html(section: Section, image_src: Callable[[Image], str] = _png_data
 
 def document_html(doc: OutputDocument, image_src: Callable[[Image], str] = _png_data_uri,
                   standalone: bool = True, scale: float = 1.0,
-                  selected: str | None = None) -> str:
-    body = "\n<br>\n".join(section_html(s, image_src, scale, selected) for s in doc.sections)
-    style = css(scale)
+                  selected: str | None = None, look: str | None = None) -> str:
+    counter = [0]
+    body = "\n<br>\n".join(section_html(s, image_src, scale, selected, look, counter)
+                            for s in doc.sections)
+    style = css(scale, look)
     if not standalone:
         return f"<html><head><style>{style}</style></head><body>{body}</body></html>"
     return ("<!doctype html><html><head><meta charset='utf-8'>"
@@ -275,14 +322,27 @@ def _cell_p(text: str) -> str:
     return f'<p style="margin:0; line-height:normal;">{_esc(text)}</p>'
 
 
-def word_table_html(table: Table) -> str:
+def word_table_html(table: Table, look: str | None = None, number: int | None = None) -> str:
     """A table as Word-friendly HTML: inline styles only, fitted to a portrait page."""
+    look = _look(look)
+    table = visible(table)
+    font = APA_FONT if look == "apa" else FONT
+    head_weight = "normal" if look == "apa" else "bold"
     size, stretch = fit_for_portrait(table)
+    if look == "apa":
+        size = min(size + 1, 10)
     pad = "1pt 3pt" if stretch else "1pt 5pt"
-    base = f"font-family:{FONT}; font-size:{size:g}pt; padding:{pad};"
+    base = f"font-family:{font}; font-size:{size:g}pt; padding:{pad};"
     width = "width:100%;" if stretch else ""
-    out = [f'<p style="font-family:{FONT}; font-size:{size + 1:g}pt; font-weight:bold; '
-           f'margin:0 0 3pt 0;">{_esc(table.title)}</p>',
+    if look == "apa":
+        caption = (f'<p style="font-family:{font}; font-size:{size + 1:g}pt; font-weight:bold; '
+                   f'margin:0;">Table {number or 1}</p>'
+                   f'<p style="font-family:{font}; font-size:{size + 1:g}pt; font-style:italic; '
+                   f'margin:0 0 3pt 0;">{_esc(table.title)}</p>')
+    else:
+        caption = (f'<p style="font-family:{font}; font-size:{size + 1:g}pt; font-weight:bold; '
+                   f'margin:0 0 3pt 0;">{_esc(table.title)}</p>')
+    out = [caption,
            f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse; {width}">']
     rh = table.row_header_cols
     rows = _header_rows(table)
@@ -299,7 +359,7 @@ def word_table_html(table: Table) -> str:
             align = "left" if col < rh else "center"
             span = (f' colspan="{colspan}"' if colspan > 1 else "") + \
                 (f' rowspan="{rowspan}"' if rowspan > 1 else "")
-            cells.append(f'<td{span} style="{base} {border} font-weight:bold; '
+            cells.append(f'<td{span} style="{base} {border} font-weight:{head_weight}; '
                          f'text-align:{align}; vertical-align:bottom;">{_cell_p(text)}</td>')
         out.append("<tr>" + "".join(cells) + "</tr>")
     for r, row in enumerate(table.rows):
@@ -316,15 +376,16 @@ def word_table_html(table: Table) -> str:
                              f'vertical-align:top; white-space:nowrap;">{_cell_p(text)}</td>')
         out.append("<tr>" + "".join(cells) + "</tr>")
     out.append("</table>")
-    for note in table.footnotes:
-        out.append(f'<p style="font-family:{FONT}; font-size:{max(size - 1.5, 7):g}pt; '
-                   f'margin:0;">{_esc(note)}</p>')
+    for k, note in enumerate(table.footnotes):
+        text = _apa_note(k, note) if look == "apa" else _esc(note)
+        out.append(f'<p style="font-family:{font}; font-size:{max(size - 1.5, 7):g}pt; '
+                   f'margin:0;">{text}</p>')
     return "\n".join(out)
 
 
-def word_item_html(item) -> str:
+def word_item_html(item, look: str | None = None, number: int | None = None) -> str:
     if isinstance(item, Table):
-        return word_table_html(item)
+        return word_table_html(item, look, number)
     if isinstance(item, Text):
         if item.style == "log":
             return (f'<p style="font-family:Consolas, monospace; font-size:8pt; color:#555;">'
@@ -341,23 +402,29 @@ def word_item_html(item) -> str:
     return ""
 
 
-def clipboard_html(items: list) -> str:
+def clipboard_html(items: list, look: str | None = None, number: int | None = None) -> str:
     """Complete HTML document for the clipboard (Qt wraps it as CF_HTML on Windows)."""
     parts = []
+    n = (number or 1) - 1
     for item in items:
         if isinstance(item, Section):
             parts.append(f'<p style="font-family:{FONT}; font-size:12pt; font-weight:bold; '
                          f'margin:8pt 0 4pt 0;">{_esc(item.title)}</p>')
-            parts.extend(word_item_html(i) for i in item.items
-                         if getattr(i, "style", "") != "log")
+            for i in item.items:
+                if getattr(i, "style", "") == "log":
+                    continue
+                n += isinstance(i, Table)
+                parts.append(word_item_html(i, look, n))
         else:
-            parts.append(word_item_html(item))
+            n += isinstance(item, Table)
+            parts.append(word_item_html(item, look, n))
     body = "\n<p style='margin:0'>&nbsp;</p>\n".join(parts)
     return f"<html><head><meta charset='utf-8'></head><body>{body}</body></html>"
 
 
 def table_tsv(table: Table) -> str:
     """Tab-separated text (pastes into Excel cell by cell)."""
+    table = visible(table)
     header = [" ".join(c) if isinstance(c, tuple) else str(c) for c in table.columns]
     lines = [table.title, "\t".join(header)]
     lines += ["\t".join("" if v is None else str(v) for v in row) for row in table.rows]
@@ -458,18 +525,18 @@ def _row_flags(row, header: bool) -> None:
         tr_pr.append(el)
 
 
-def _cell_style(document, size: float):
+def _cell_style(document, size: float, font: str = "Arial"):
     """Paragraph style for table cells at ``size`` pt: no spacing, single lines. Empty cells
     take their height from it too, so they no longer stretch rows to the 10 pt body size."""
     from docx.enum.style import WD_STYLE_TYPE
     from docx.shared import Pt
 
-    name = f"RS Table {size:g}pt"
+    name = f"RS Table {size:g}pt" + ("" if font == "Arial" else f" {font}")
     if name in [s.name for s in document.styles]:
         return document.styles[name]
     style = document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
     style.base_style = document.styles["Normal"]
-    style.font.name = "Arial"
+    style.font.name = font
     style.font.size = Pt(size)
     style.paragraph_format.space_before = Pt(1)
     style.paragraph_format.space_after = Pt(1)
@@ -477,18 +544,35 @@ def _cell_style(document, size: float):
     return style
 
 
-def _docx_table(document, table: Table) -> None:
+def _docx_table(document, table: Table, look: str | None = None,
+                number: int | None = None) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
 
+    look = _look(look)
+    table = visible(table)
+    apa = look == "apa"
+    font = "Times New Roman" if apa else "Arial"
     size, stretch = fit_for_portrait(table)
-    cell_style = _cell_style(document, size)
+    if apa:
+        size = min(size + 1, 10)
+    cell_style = _cell_style(document, size, font)
+    if apa:
+        num = document.add_paragraph()
+        num.paragraph_format.keep_with_next = True
+        num.paragraph_format.space_after = Pt(0)
+        r = num.add_run(f"Table {number or 1}")
+        r.bold = True
+        r.font.name = font
+        r.font.size = Pt(size + 2)
     cap = document.add_paragraph()
     cap.paragraph_format.keep_with_next = True
     cap.paragraph_format.space_after = Pt(3)
     run = cap.add_run(table.title)
-    run.bold = True
-    run.font.size = Pt(size + 1)
+    run.bold = not apa
+    run.italic = apa
+    run.font.name = font
+    run.font.size = Pt(size + (2 if apa else 1))
 
     header_rows = 2 if table.has_groups else 1
     n_cols = len(table.columns)
@@ -518,7 +602,7 @@ def _docx_table(document, table: Table) -> None:
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER if r < header_rows else (
                         WD_ALIGN_PARAGRAPH.RIGHT if numeric else WD_ALIGN_PARAGRAPH.LEFT)
                 for run in p.runs:
-                    run.bold = r < header_rows
+                    run.bold = r < header_rows and not apa
             edges = {"left": 0, "right": 0}
             if r == 0:
                 edges["top"] = 12
@@ -528,33 +612,46 @@ def _docx_table(document, table: Table) -> None:
                 edges["bottom"] = 12
             _set_cell_border(cell, **edges)
 
-    for note in table.footnotes:
+    for k, note in enumerate(table.footnotes):
         p = document.add_paragraph()
         p.paragraph_format.space_after = Pt(0)
+        if apa and k == 0 and not note.lower().startswith("note."):
+            lead = p.add_run("Note. ")
+            lead.italic = True
+            lead.font.size = Pt(max(size - 1, 7))
+            lead.font.name = font
         run = p.add_run(note)
-        run.font.size = Pt(max(size - 1.5, 7))
+        run.font.size = Pt(max(size - (1 if apa else 1.5), 7))
+        run.font.name = font
     document.add_paragraph()
 
 
-def export_docx(doc: OutputDocument, path: str) -> None:
+def export_docx(doc: OutputDocument, path: str, look: str | None = None) -> None:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
 
+    look = _look(look)
+    font = "Times New Roman" if look == "apa" else "Arial"
     document = Document()
     style = document.styles["Normal"]
-    style.font.name = "Arial"
+    style.font.name = font
     style.font.size = Pt(10)
+    number = 0
     for section in doc.sections:
         heading = document.add_heading(section.title, level=1)
         for run in heading.runs:
             run.font.color.rgb = RGBColor(0x1B, 0x1B, 0x1B)
-            run.font.name = "Arial"
+            run.font.name = font
             run.font.size = Pt(13)
         for item in section.items:
             if isinstance(item, Table):
-                _docx_table(document, item)
+                number += 1
+                _docx_table(document, item, look, number)
             elif isinstance(item, Text):
                 if item.style == "log":
+                    continue
+                if item.style == "title":
+                    document.add_heading(item.text, level=2)
                     continue
                 if item.title:
                     document.add_paragraph().add_run(item.title).bold = True
