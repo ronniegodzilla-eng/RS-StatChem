@@ -7,3 +7,8 @@ pingouin>=0.5.5
 scikit-learn>=1.5
 semopy>=2.3
 plspm>=0.5.7
+# Optional survival reference for tests/test_wp4_survival.py (KM restricted mean, Cox baseline
+# and residuals, counting-process Cox); those tests are skipped without it. lifelines 0.30
+# declares pandas<3, so a plain pip install would downgrade pandas: install it separately with
+#   uv pip install --no-deps lifelines autograd autograd-gamma
+# lifelines>=0.30
