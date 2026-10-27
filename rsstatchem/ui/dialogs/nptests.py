@@ -422,3 +422,13 @@ def selftest() -> None:
     mc = nptests.exact_kruskal([x[:10], x[10:20], x[20:30]], method="mc", samples_mc=500)
     assert mc.method == "monte carlo" and mc.lower <= mc.p <= mc.upper
     assert abs(nptests.jonckheere_test([x[:5], x[5:10]])["mean"] - 12.5) < 1e-9
+    # WP6b: shared bootstrap engine, procedure bootstraps and the Exact... rows
+    from rsstatchem.core.stats import boot_procs, npar_exact, resample
+
+    resample.selftest()
+    boot_procs.selftest()
+    sec = npt.two_independent(ds, ["y"], "g2", (1.0, 2.0), True, False, False, False)
+    npar_exact.two_independent(sec, ds, ["y"], "g2", (1.0, 2.0),
+                               resample.ExactSpec("mc", mc_samples=500))
+    assert any(r[0].startswith("Monte Carlo Sig. (2-tailed)") for t in sec.items
+               for r in getattr(t, "rows", []))

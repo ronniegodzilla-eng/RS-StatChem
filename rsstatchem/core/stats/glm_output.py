@@ -86,6 +86,7 @@ class GLMOptions:
 class GLMResult:
     section: Section
     saved: dict = field(default_factory=dict)
+    models: list = field(default_factory=list)   # resample.ModelInfo (Bootstrap, MI pooling)
 
 
 # ------------------------------------------------------------------ data
@@ -1024,7 +1025,26 @@ def univariate(ds: Dataset, dependent: str, factors: list[str], covariates: list
         section.image(f"Residual Plot: {dvar.title}", residual_plot(fit, 0, dvar.title))
     saved = saved_variables(fit, opts.save, frame.index, ds.df.index, [dvar.name]) \
         if opts.save else {}
-    return GLMResult(section, saved)
+    return GLMResult(section, saved, _param_model(fit, frame, random))
+
+
+def _param_model(fit: GLMFit, frame: pd.DataFrame, random) -> list:
+    """Parameter estimates (non-redundant) for the Bootstrap option and MI pooling."""
+    from rsstatchem.core.stats import boot_models as bm
+
+    keep = ~fit.redundant
+    if not keep.any():
+        return []
+    X = fit.Xo[:, keep]
+    labels = [lb for lb, red in zip(fit.param_labels, fit.redundant) if not red]
+    try:
+        info = bm.ols_model(fit.Y[:, 0], X, labels, fit.w, rows=frame.index.to_numpy(),
+                            table="Parameter Estimates", headers=["Parameter"])
+    except np.linalg.LinAlgError:
+        return []
+    if random:
+        info.note = "Random factors are treated as fixed in the bootstrap samples."
+    return [info]
 
 
 def _syntax(dependent: str, factors: list[str], random: list[str], covariates: list[str],

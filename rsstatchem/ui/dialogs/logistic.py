@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDia
                                QRadioButton, QVBoxLayout, QAbstractItemView)
 
 from rsstatchem.core.dataset import NUMERIC, format_code
-from rsstatchem.core.stats import curvefit_spss, logistic, means, roc
+from rsstatchem.core.stats import boot_procs, curvefit_spss, logistic, means, mi_pool, roc
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 from rsstatchem.ui.dialogs.base import (BASE_TEXT_ROLE, NAME_ROLE, SubDialog, VariablePickerDialog,
                                         is_numeric)
 
@@ -102,7 +103,7 @@ class _CategoricalDialog(QDialog):
                 if cb.isChecked()}
 
 
-class BinaryLogisticDialog(VariablePickerDialog):
+class BinaryLogisticDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"method": "enter", "blocks": [["enter", []]], "categorical": {},
                 "save": [], "hosmer": True, "ci": False, "level": 95.0,
                 "iteration_history": False, "each_step": True, "p_enter": 0.05,
@@ -143,6 +144,7 @@ class BinaryLogisticDialog(VariablePickerDialog):
         self.add_option_button("Categorical...", self._categorical)
         self.add_option_button("Save...", self._save)
         self.add_option_button("Options...", self._options)
+        self.add_bootstrap_button()
         self._blocks = [[m, [n for n in names if all(self.ds.has_name(p)
                                                      for p in n.split("*"))]]
                         for m, names in self.opts.get("blocks") or [["enter", []]]] \
@@ -320,6 +322,13 @@ class BinaryLogisticDialog(VariablePickerDialog):
         o = self.opts
         names = self._variables()
         cats = {n: tuple(v) for n, v in o["categorical"].items() if n in names}
+        return self.resampled(
+            lambda: self._binary(cats),
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec),
+            pool="models", level=self.level())
+
+    def _binary(self, cats):
+        o = self.opts
         return logistic.binary_logistic(
             self.ds, self.selected_one("dep"), None, cats, cut=o["cut"],
             p_enter=o["p_enter"], p_remove=o["p_remove"], max_iter=int(o["max_iter"]),
@@ -423,7 +432,7 @@ class TermBuilderDialog(QDialog):
 
 
 # ============================================================================ multinomial
-class MultinomialDialog(VariablePickerDialog):
+class MultinomialDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"reference": "last", "custom": "", "classification": True, "gof": True,
                 "lr_tests": True, "level": 95.0, "save": [], "model": "main", "terms": [],
                 "stepwise_terms": [], "step_method": "forward_entry", "pseudo": True,
@@ -443,6 +452,7 @@ class MultinomialDialog(VariablePickerDialog):
         self.add_option_button("Criteria...", self._criteria)
         self.add_option_button("Options...", self._options)
         self.add_option_button("Save...", self._save)
+        self.add_bootstrap_button()
         self.finish()
 
     def targets_changed(self) -> None:
@@ -569,6 +579,13 @@ class MultinomialDialog(VariablePickerDialog):
 
     def compute(self):
         o = self.opts
+        return self.resampled(
+            self._multinomial,
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec),
+            pool="models", level=self.level())
+
+    def _multinomial(self):
+        o = self.opts
         ref = o["custom"] if o["reference"] == "custom" else o["reference"]
         custom = o["model"] == "custom"
         return logistic.multinomial(
@@ -586,7 +603,7 @@ class MultinomialDialog(VariablePickerDialog):
 
 
 # ============================================================================ ordinal
-class OrdinalDialog(VariablePickerDialog):
+class OrdinalDialog(ResampleMixin, VariablePickerDialog):
     DEFAULTS = {"link": "logit", "gof": True, "parallel": False, "classification": False,
                 "level": 95.0, "save": [], "location": [], "scale_terms": [],
                 "summary": True, "estimates": True, "correlations": False,
@@ -602,6 +619,7 @@ class OrdinalDialog(VariablePickerDialog):
         self.add_option_button("Output...", self._output)
         self.add_option_button("Location...", lambda: self._terms("location", "Location"))
         self.add_option_button("Scale...", lambda: self._terms("scale_terms", "Scale"))
+        self.add_bootstrap_button()
         self.finish()
 
     def _terms(self, key: str, what: str) -> None:
@@ -659,6 +677,12 @@ class OrdinalDialog(VariablePickerDialog):
         return None
 
     def compute(self):
+        return self.resampled(
+            self._ordinal,
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec),
+            pool="models", level=self.level())
+
+    def _ordinal(self):
         o = self.opts
         return logistic.ordinal(
             self.ds, self.selected_one("dep"), self.selected("factors"), self.selected("covs"),
@@ -750,7 +774,7 @@ class CurveEstimationDialog(VariablePickerDialog):
 
 
 # ============================================================================ means
-class MeansDialog(VariablePickerDialog):
+class MeansDialog(ResampleMixin, VariablePickerDialog):
     """Means with unlimited layers (Layer n of m, Previous / Next) as in SPSS."""
 
     DEFAULTS = {"statistics": list(means.DEFAULT), "anova": False, "linearity": False,
@@ -772,6 +796,7 @@ class MeansDialog(VariablePickerDialog):
         self._targets_column.addLayout(header)
         self.add_target("layer", "Independent List:", required=False)
         self.add_option_button("Options...", self._options)
+        self.add_bootstrap_button()
         self._layers = [[n for n in names if ds.has_name(n)]
                         for names in self.opts.get("layers") or [[]]] or [[]]
         self._li = 0
@@ -834,8 +859,12 @@ class MeansDialog(VariablePickerDialog):
 
     def compute(self):
         o = self.opts
-        return means.means(self.ds, self.selected("deps"), self.layers(),
-                           tuple(o["statistics"]), o["anova"], o["linearity"])
+        deps, layers = self.selected("deps"), self.layers()
+        return self.resampled(
+            lambda: means.means(self.ds, deps, layers, tuple(o["statistics"]), o["anova"],
+                                o["linearity"]),
+            boot=lambda sec, spec: boot_procs.means(sec, self.ds, deps, layers, spec),
+            pool=lambda views: mi_pool.pooled_means(views, deps, layers))
 
 
 # ============================================================================ ROC

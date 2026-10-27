@@ -55,6 +55,7 @@ ADJUSTMENTS = {"lsd": "Least significant difference", "bonferroni": "Bonferroni"
 class GenlinResult:
     section: Section
     saved: dict = field(default_factory=dict)
+    models: list = field(default_factory=list)   # resample.ModelInfo (Bootstrap, MI pooling)
 
 
 def _sort_key(v):
@@ -434,6 +435,16 @@ def genlin(ds: Dataset, dependent: str, factors: list[str] = (), covariates: lis
                    method, n_trials, tweedie_p, max_iter, nb_estimate, link, power)
     if nb_estimate:
         family = _family("negbin", link, power, nb_k=fit.nb_k)
+    from rsstatchem.core.stats import boot_models as bm
+    info = bm.glm_model(y, X, family, w if n_trials is None else w * n_trials, off, names,
+                        fit.params, se=np.sqrt(np.clip(np.diag(fit.cov), 0, None)),
+                        rows=frame.index.to_numpy(), table="Parameter Estimates",
+                        headers=["Parameter"], stat="wald", exp=bool(exp_params),
+                        stat_label="Wald Chi-Square")
+    if nb_estimate:
+        info.note = ("The negative binomial ancillary parameter is held at its estimate in "
+                     "the bootstrap samples.")
+    result.models = [info]
     if iteration_history:
         section.note("Iteration History", f"Iteratively reweighted least squares (Fisher "
                      f"scoring) converged: {'yes' if fit.converged else 'no'}; final "

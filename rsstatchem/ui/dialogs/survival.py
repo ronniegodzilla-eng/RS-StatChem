@@ -9,8 +9,10 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBo
                                QRadioButton, QVBoxLayout)
 
 from rsstatchem.core.dataset import NUMERIC, format_code
+from rsstatchem.core.stats import boot_procs
 from rsstatchem.core.stats import survival as sv
 from rsstatchem.core.stats.wp4_util import CONTRASTS
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 from rsstatchem.ui.dialogs.base import (BASE_TEXT_ROLE, NAME_ROLE, DefineRangeDialog, SubDialog,
                                         VariablePickerDialog, is_numeric)
 
@@ -304,7 +306,7 @@ class KaplanMeierDialog(_StatusMixin, VariablePickerDialog):
 
 
 # =========================================================================== Cox
-class CoxRegressionDialog(_StatusMixin, VariablePickerDialog):
+class CoxRegressionDialog(ResampleMixin, _StatusMixin, VariablePickerDialog):
     TITLE = "Cox Regression"
     TIME_DEPENDENT = False
     DEFAULTS = {"method": "enter", "categorical": {}, "contrast": "indicator",
@@ -323,6 +325,8 @@ class CoxRegressionDialog(_StatusMixin, VariablePickerDialog):
         self.add_option_button("Plots...", self._plots)
         self.add_option_button("Save...", self._save)
         self.add_option_button("Options...", self._options)
+        if not self.TIME_DEPENDENT:
+            self.add_bootstrap_button()
         form = QFormLayout()
         self.method_box = QComboBox()
         for key, text in sv.COX_METHODS.items():
@@ -460,6 +464,13 @@ class CoxRegressionDialog(_StatusMixin, VariablePickerDialog):
         if self.TIME_DEPENDENT:
             tcov = o["tcov"]
             covs = covs + ["T_COV_"]
+        return self.resampled(
+            lambda: self._cox(covs, cats, tcov),
+            boot=lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec),
+            pool="models", level=self.level())
+
+    def _cox(self, covs, cats, tcov):
+        o = self.opts
         return sv.cox_regression(self.ds, self.selected_one("time"), self.selected_one("status"),
                                  tuple(o["event"]["spec"]), covs, cats, o["method"],
                                  self.selected_one("strata"), o["p_enter"], o["p_remove"],

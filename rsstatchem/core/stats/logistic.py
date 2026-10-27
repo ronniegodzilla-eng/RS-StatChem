@@ -37,6 +37,7 @@ LINKS = {"logit": "Logit", "probit": "Probit", "cloglog": "Complementary Log-log
 class LogisticResult:
     section: Section
     saved: dict[str, tuple[str, pd.Series]] = field(default_factory=dict)
+    models: list = field(default_factory=list)   # resample.ModelInfo (Bootstrap, MI pooling)
 
 
 def _sort_key(v):
@@ -784,6 +785,18 @@ def binary_logistic(ds: Dataset, dependent: str, covariates: list[str] | None = 
         return result
     Xa = design[last_fit.cols].to_numpy(float)
     dg = logistic_diagnostics(Xa, y, last_fit.beta)
+    if last_fit.cols:
+        from rsstatchem.core.stats import boot_models as bm
+        step_label = f"Step {len(steps)}" if steps else "Step 1"
+        info = bm.logit_model(y, Xa, [(step_label if i == 0 else "", c)
+                                      for i, c in enumerate(last_fit.cols)],
+                              last_fit.beta, max_iter, se=last_fit.se(),
+                              rows=frame.index.to_numpy(), table="Variables in the Equation",
+                              headers=["", ""], stat="wald", exp=True, stat_label="Wald")
+        if any(m != "enter" for m, _ in blocks):
+            info.note = ("Variable selection is not repeated in the bootstrap samples: the "
+                         "final model is re-estimated with the selected variables.")
+        result.models = [info]
     if class_plot:
         section.image("Observed Groups and Predicted Probabilities",
                       _class_plot(y, dg["prob"], dlabels, cut, dvar.title), width=520)
@@ -1297,6 +1310,18 @@ def multinomial(ds: Dataset, dependent: str, factors: list[str] = (),
     params = np.asarray(res.params)
     cov_all = np.asarray(res.cov_params()) * phi
     bse = np.sqrt(np.clip(np.diag(cov_all), 0, None)).reshape(params.shape, order="F")
+    from rsstatchem.core.stats import boot_models as bm
+    pn = ["Intercept"] + all_cols
+    info = bm.mnlogit_model(yr, design(all_cols), J,
+                            [(data.labels[j] if i == 0 else "", nm)
+                             for j in order[1:] for i, nm in enumerate(pn)], params,
+                            se=bse.T.ravel(), rows=data.frame.index.to_numpy(),
+                            table="Parameter Estimates", headers=[dvar.title, ""],
+                            stat="wald", exp=True, stat_label="Wald")
+    if stepwise_terms:
+        info.note = ("Term selection is not repeated in the bootstrap samples: the final "
+                     "model is re-estimated with the selected terms.")
+    result.models = [info]
     z = stats.norm.ppf(0.5 + level / 2)
     ci_g = f"{pct(level)} Confidence Interval for Exp(B)"
     if estimates:
@@ -1686,6 +1711,18 @@ def ordinal(ds: Dataset, dependent: str, factors: list[str] = (), covariates: li
     z = stats.norm.ppf(0.5 + level / 2)
     ci_g = f"{pct(level)} Confidence Interval"
     pnames = [f"[{dependent} = {format_code(data.levels[i])}]" for i in range(J - 1)]
+    from rsstatchem.core.stats import boot_models as bm
+    info = bm.ordinal_model(data.y, X, J, link,
+                            [("Threshold" if i == 0 else "", pnames[i]) for i in range(J - 1)]
+                            + [("Location" if i == 0 else "", c)
+                               for i, c in enumerate(data.X.columns)], th, beta,
+                            se=se[:J - 1 + k], rows=data.frame.index.to_numpy(),
+                            table="Parameter Estimates", headers=["", ""],
+                            est_label="Estimate", stat="wald", stat_label="Wald")
+    if m:
+        info.bootable = False
+        info.note = "Bootstrap results are not available for models with a scale component."
+    result.models = [info]
     if estimates:
         rows = []
         for i in range(J - 1):

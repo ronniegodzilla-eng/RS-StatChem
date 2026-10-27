@@ -31,6 +31,7 @@ class Result:
     """An analysis result with SPSS-style saved variables (``BASE`` -> (label, series))."""
     section: Section
     saved: dict = field(default_factory=dict)
+    models: list = field(default_factory=list)   # resample.ModelInfo (Bootstrap, pooling)
 
 
 def figure(width: float = 6.0, height: float = 4.2) -> Figure:

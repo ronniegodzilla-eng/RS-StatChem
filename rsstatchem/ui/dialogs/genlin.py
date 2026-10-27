@@ -10,12 +10,13 @@ from __future__ import annotations
 from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit
 
 from rsstatchem.core.dataset import NUMERIC
-from rsstatchem.core.stats import genlin
+from rsstatchem.core.stats import boot_procs, genlin
 from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog, is_numeric
+from rsstatchem.ui.dialogs.resample_ui import ResampleMixin
 from rsstatchem.ui.dialogs.logistic import TermBuilderDialog, _multi
 
 
-class GenlinDialog(VariablePickerDialog):
+class GenlinDialog(ResampleMixin, VariablePickerDialog):
     GEE = False
     TITLE = "Generalized Linear Models"
     DEFAULTS = {"model_type": "linear", "distribution": "normal", "link": "identity",
@@ -56,6 +57,8 @@ class GenlinDialog(VariablePickerDialog):
         self.add_option_button("Save...", self._save)
         if self.GEE:
             self.add_option_button("Repeated...", self._repeated)
+        else:
+            self.add_bootstrap_button()
         self.summary = QLabel()
         self.summary.setStyleSheet("color:#555")
         self.options_layout.addWidget(self.summary)
@@ -253,6 +256,14 @@ class GenlinDialog(VariablePickerDialog):
             repeated = {"subject": self.selected("subject"), "within": self.selected("within"),
                         "corr": o["corr"], "m": o["m"], "cov": o["gee_cov"]}
         factors = self.selected("factors")
+        return self.resampled(
+            lambda: self._genlin(trials, repeated, factors),
+            boot=None if self.GEE else
+            (lambda r, spec: boot_procs.models(r.section, self.ds, r.models, spec)),
+            pool="models", level=o["level"] / 100)
+
+    def _genlin(self, trials, repeated, factors):
+        o = self.opts
         return genlin.genlin(
             self.ds, self.selected_one("dep"), factors, self.selected("covs"),
             o["distribution"], o["link"], terms=o["terms"] or None, intercept=o["intercept"],
