@@ -350,6 +350,18 @@ def test_graph_menus_install_and_actions(ctx, monkeypatch, tmp_path, qapp):
     assert any(name.startswith("FFT") for name in win.project.windows)
     gadgets_ui.clear_roi(gwin)
     assert "roi" not in gwin.graph.layers[0].options and gwin.gadget is None
+    # mask points from the graph (Origin's Mask tool): the worksheet cells get masked
+    if hasattr(win.project.windows["Book1"].sheets[0], "set_mask"):
+        ws1 = gwin.graph.layers[0].plots[0].options["source"]
+        tool = graph_menus.start_gadget(win, "mask")
+        assert tool.run(0, 2.0, 3.0)["Points"] > 0
+        sheet = win.project.windows[ws1["book"]].sheet(ws1["sheet"])
+        assert sheet.masked_rows(ws1["y"])
+        assert gwin.graph.layers[0].plots[0].options.get("mask")
+        assert graph_menus._mask_all_off(win, gwin) > 0
+        assert not sheet.masked_rows(ws1["y"])
+        assert "mask" not in gwin.graph.layers[0].plots[0].options
+        gadgets_ui.stop(gwin)
     # layers
     graph_menus.panel_preset(win, "v2")
     assert len(gwin.graph.layers) == 2
@@ -416,3 +428,35 @@ def test_graph_menus_install_and_actions(ctx, monkeypatch, tmp_path, qapp):
     win2.close()
     win.modified = False
     win.close()
+
+
+# ====================================================================== masks (WP-2 API)
+def test_worksheet_masks_drawn_red_and_left_out():
+    book = _book(20)
+    ws = book.sheets[0]
+    if not hasattr(ws, "set_mask"):
+        pytest.skip("mask API not available")
+    ws.set_mask(1, [3, 7])          # Y cells
+    ws.set_mask(0, [10])            # an X cell masks the point as well
+    g = plot_columns(book, ws, [1], "line_symbol", "G")
+    p = g.layers[0].plots[0]
+    assert p.options["mask"] == [3, 7, 10]
+    fig, rmap = figure_for(g)
+    assert rmap.errors == []
+    ax = rmap.axes[0]["ax"]
+    reds = [ln for ln in ax.get_lines() if ln.get_markerfacecolor() == "#FF0000"]
+    assert len(reds) == 1 and len(reds[0].get_xdata()) == 3
+    main_line = next(ln for ln in ax.get_lines() if ln.get_label() == p.name)
+    assert len(main_line.get_xdata()) == 17          # masked points left out of the line
+    assert not any(k.startswith("\x00") for k in g.data)   # temporary columns removed
+    # statistics plots leave masked values out
+    h = plot_columns(book, ws, [1], "histogram", "H")
+    assert h.layers[0].plots[0].options["mask"] == [3, 7]
+    fig, rmap = figure_for(h)
+    assert sum(pt.get_height() for pt in rmap.axes[0]["ax"].patches
+               if hasattr(pt, "get_height")) == pytest.approx(18)
+    # unmasking in the worksheet updates the graph through refresh_links
+    from rsstatchem.ui.origin.plotting import refresh_links
+    ws.clear_mask()
+    assert refresh_links(g, {"Book1": book})
+    assert "mask" not in g.layers[0].plots[0].options

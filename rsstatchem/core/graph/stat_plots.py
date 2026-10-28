@@ -245,8 +245,8 @@ def _R():
     return sys.modules["rsstatchem.core.graph.render"]
 
 
-def _values(ctx, key):
-    v = ctx.arr(key)
+def _values(ctx, key, p=None):
+    v = ctx.parr(p, key) if p is not None else ctx.arr(key)
     if v is None or v.dtype == object:
         raise ValueError("no numeric data")
     return v[np.isfinite(v)]
@@ -270,7 +270,7 @@ def _box_ticks(state):
 
 
 def draw_violin(ctx, li, layer, ax, p, i, state):
-    v = _values(ctx, p.y)
+    v = _values(ctx, p.y, p)
     if len(v) < 2:
         raise ValueError("a violin needs at least 2 values")
     pos = _box_position(p, state)
@@ -330,7 +330,7 @@ def _dark(color) -> bool:
 
 
 def draw_meanbar(ctx, li, layer, ax, p, i, state):
-    v = _values(ctx, p.y)
+    v = _values(ctx, p.y, p)
     mean, err, _ = mean_interval(v, p.options.get("stat", "sd"))
     pos = _box_position(p, state)
     w = float(p.options.get("width", 0.6))
@@ -369,7 +369,7 @@ def _ref_color(ctx, layer, p, i) -> str:
 
 
 def draw_qq(ctx, li, layer, ax, p, i, state):
-    v = _values(ctx, p.y)
+    v = _values(ctx, p.y, p)
     osm, osr, (slope, icpt, r) = qq_data(v, p.options.get("dist", "norm"),
                                          p.options.get("positions", "filliben"))
     col = ctx.line_color(p, i)
@@ -392,7 +392,7 @@ def draw_qq(ctx, li, layer, ax, p, i, state):
 
 
 def draw_probability(ctx, li, layer, ax, p, i, state):
-    v = _values(ctx, p.y)
+    v = _values(ctx, p.y, p)
     x, pct = probability_data(v, p.options.get("positions", "filliben"))
     (h,) = ax.plot(x, pct, ls="none", **ctx.symbol_kw(p, i))
     arts = [h]
@@ -406,7 +406,7 @@ def draw_probability(ctx, li, layer, ax, p, i, state):
 
 
 def draw_kde(ctx, li, layer, ax, p, i, state):
-    v = _values(ctx, p.y)
+    v = _values(ctx, p.y, p)
     xs, d = kde_curve(v, p.options.get("bw", "scott"))
     if p.options.get("scale") == "count":
         d = d * len(v)
@@ -425,7 +425,7 @@ def draw_kde(ctx, li, layer, ax, p, i, state):
 
 
 def draw_kde2d(ctx, li, layer, ax, p, i, state):
-    x, y = ctx.arr(p.x), ctx.arr(p.y)
+    x, y = ctx.parr(p, p.x), ctx.parr(p, p.y)
     if x is None or y is None:
         raise ValueError("2D kernel density needs X and Y")
     X, Y, Z = kde2d(x, y, p.options.get("bw", "scott"), int(p.options.get("grid_size", 80)))
@@ -448,7 +448,7 @@ def draw_kde2d(ctx, li, layer, ax, p, i, state):
 
 
 def draw_ecdf(ctx, li, layer, ax, p, i, state):
-    v = _values(ctx, p.y)
+    v = _values(ctx, p.y, p)
     x, f = ecdf(v)
     scale = 100.0 if p.options.get("percent") else 1.0
     col = ctx.line_color(p, i)
@@ -517,7 +517,7 @@ def draw_pareto(ctx, li, layer, ax, p, i, state):
 
 
 def draw_bland_altman(ctx, li, layer, ax, p, i, state):
-    a, b = ctx.arr(p.x), ctx.arr(p.y)
+    a, b = ctx.parr(p, p.x), ctx.parr(p, p.y)
     if a is None or b is None:
         raise ValueError("Bland-Altman needs two method columns (X and Y)")
     k = float(p.options.get("k", 1.96))
@@ -541,7 +541,7 @@ def draw_bland_altman(ctx, li, layer, ax, p, i, state):
 
 
 def draw_control(ctx, li, layer, ax, p, i, state):
-    v = ctx.arr(p.y)
+    v = ctx.parr(p, p.y)
     if v is None:
         raise ValueError("no Y column")
     c = control_limits(v, int(p.options.get("size", 5)), p.options.get("chart", "xbar"))

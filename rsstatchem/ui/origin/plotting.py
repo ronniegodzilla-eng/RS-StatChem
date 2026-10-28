@@ -282,8 +282,61 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
     if kind in PANELS:
         from rsstatchem.core.graph import layout
         layout.split_to_panels(graph, *PANELS[kind])
+    update_masks(graph, {book.name: book})
     update_data_ranges(graph)
     return graph
+
+
+# ====================================================================== masks (WP-2 API)
+MASKABLE = ("line", "scatter", "line_symbol", "lollipop", "column", "bar", "area",
+            "histogram", "box", "violin", "meanbar", "kde", "ecdf", "qq", "probability",
+            "kde2d", "bubble", "color_scatter", "bland_altman", "control", "vector",
+            "floating_column", "pareto")
+
+
+def plot_mask_rows(ws: Worksheet, src: dict, n: int) -> list[int]:
+    """Masked rows of a plot (0-based, relative to its snapshot of ``n`` rows): Origin
+    leaves a point out when its X or its Y cell is masked."""
+    if not hasattr(ws, "point_mask"):
+        return []
+    cols = []
+    for key in ("x", "y", "yerr"):
+        name = src.get(key)
+        if not name:
+            continue
+        try:
+            cols.append(ws.find(name))
+        except KeyError:
+            continue
+    if not cols:
+        return []
+    lo = (src.get("rows") or [1])[0] - 1
+    full = ws.point_mask(cols, max(ws.n_rows, lo + n))
+    return [int(r) for r in np.flatnonzero(full[lo:lo + n])]
+
+
+def update_masks(graph: Graph, books: dict) -> bool:
+    """Copy the worksheet masks into each plot (``plot.options["mask"]``, drawn red and
+    left out of the line and of statistics by the renderer); True when anything changed."""
+    changed = False
+    for layer in graph.layers:
+        for p in layer.plots:
+            src = p.options.get("source") or {}
+            if src.get("matrix") or p.type not in MASKABLE:
+                continue
+            book = books.get(src.get("book"))
+            ws = book.sheet(src.get("sheet", "")) if isinstance(book, Workbook) else None
+            y = graph.values(p.y)
+            if not isinstance(ws, Worksheet) or y is None:
+                continue
+            rows = plot_mask_rows(ws, src, len(y))
+            if rows != list(p.options.get("mask") or []):
+                if rows:
+                    p.options["mask"] = rows
+                else:
+                    p.options.pop("mask", None)
+                changed = True
+    return changed
 
 
 def plot_spec(book: Workbook, ws: Worksheet, spec: PlotSpec, title: str = "Graph1",
@@ -524,6 +577,8 @@ def refresh_links(graph: Graph, books: dict) -> bool:
         if new.values != col.values or new.label != col.label:
             graph.data[key] = new
             changed = True
+    if update_masks(graph, books):
+        changed = True
     return changed
 
 

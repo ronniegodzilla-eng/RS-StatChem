@@ -165,6 +165,13 @@ def _install_graph(main) -> None:
     gad.addSeparator()
     _add(main, gad, "gadget:clear", "Remove ROI", lambda: _with_gwin(main,
                                                                     gadgets_ui.clear_roi))
+    mask = g.addMenu("&Mask Points")
+    _add(main, mask, "mask:range", "Mask Points in X Range (drag)...",
+         lambda: start_gadget(main, "mask"))
+    _add(main, mask, "unmask:range", "Unmask Points in X Range (drag)...",
+         lambda: start_gadget(main, "unmask"))
+    _add(main, mask, "unmask:all", "Unmask All Points of the Plot",
+         lambda: _with_gwin(main, lambda gw: _mask_all_off(main, gw)))
 
 
 def _install_file_tools(main) -> None:
@@ -602,6 +609,14 @@ def start_gadget(main, key: str):
     if gwin is None:
         return None
     return gadgets_ui.start(main, gwin, key)
+
+
+def _mask_all_off(main, gwin) -> int:
+    try:
+        return gadgets_ui.unmask_plot(main, gwin)
+    except ValueError as exc:
+        main._warn(str(exc), "Mask Points")
+        return 0
 
 
 def digitizer(main):

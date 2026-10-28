@@ -13,7 +13,7 @@ from rsstatchem.core.graph import gadgets as gd
 
 LINEISH = ("line", "scatter", "line_symbol", "lollipop", "area")
 LABELS = {**{k: v[0] for k, v in gd.GADGETS.items()}, "intersect": "Intersect",
-          "cursor": "Vertical Cursor"}
+          "cursor": "Vertical Cursor", "mask": "Mask Points", "unmask": "Unmask Points"}
 
 
 def target_plot(gwin, li: int):
@@ -94,6 +94,48 @@ def compute(gwin, li: int, key: str, x0: float, x1: float, main=None) -> dict:
     return out
 
 
+def mask_range(main, gwin, li: int, x0: float, x1: float, on: bool = True,
+               plot=None) -> int:
+    """Origin's Mask tool on a graph: mask (``on``) or unmask the worksheet cells of the
+    active plot's points whose X lies in [x0, x1]; the graph follows through its links.
+    Returns the number of points changed."""
+    p = plot or target_plot(gwin, li)
+    src = (p.options.get("source") or {}) if p is not None else {}
+    if not src.get("book") or not src.get("y") or src.get("matrix"):
+        raise ValueError("The plot does not come from a worksheet.")
+    book = main.project.windows.get(src["book"])
+    ws = book.sheet(src.get("sheet", "")) if book is not None else None
+    if ws is None or not hasattr(ws, "set_mask"):
+        raise ValueError("Masking needs the worksheet of the plot.")
+    y = gwin.graph.values(p.y)
+    x = gwin.graph.values(p.x)
+    if x is None or x.dtype == object:
+        x = np.arange(1, len(y) + 1, dtype=float)
+    lo_x, hi_x = sorted((x0, x1))
+    hit = np.flatnonzero(np.isfinite(x) & np.isfinite(y) & (x >= lo_x) & (x <= hi_x))
+    if not len(hit):
+        return 0
+    first = (src.get("rows") or [1])[0] - 1
+    rows = [int(first + k) for k in hit]
+    ycol = src["y"]
+
+    def fn():
+        ws.set_mask(ycol, rows, on)
+    bw = main.book_window(book) if hasattr(main, "book_window") else None
+    if bw is not None:
+        bw.change("Mask Points" if on else "Unmask Points", fn, recalc=False)
+    else:
+        fn()
+    main.refresh_graphs()
+    return len(rows)
+
+
+def unmask_plot(main, gwin) -> int:
+    """Unmask every point of the active plot."""
+    li = gwin.active_index()
+    return mask_range(main, gwin, li, -np.inf, np.inf, on=False)
+
+
 class GadgetTool:
     """ROI interaction on an :class:`OriginGraphWindow` (the window forwards its mouse
     events here while ``gwin.gadget`` is set)."""
@@ -145,6 +187,16 @@ class GadgetTool:
 
     # ------------------------------------------------------------------ results
     def run(self, li: int, x0: float, x1: float) -> dict | None:
+        if self.key in ("mask", "unmask"):
+            try:
+                n = mask_range(self.main, self.gwin, li, x0, x1, self.key == "mask")
+            except ValueError as exc:
+                self._report_error(str(exc))
+                return None
+            if self.main is not None:
+                self.main.show_status(f"{LABELS[self.key]}: {n} point(s) between "
+                                      f"{min(x0, x1):.4g} and {max(x0, x1):.4g}.")
+            return {"Points": n}
         try:
             result = compute(self.gwin, li, self.key, x0, x1, self.main)
         except (ValueError, IndexError) as exc:

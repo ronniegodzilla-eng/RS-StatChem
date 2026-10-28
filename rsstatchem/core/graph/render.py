@@ -50,6 +50,7 @@ class RenderMap:
 class _Ctx:
     def __init__(self, graph: Graph, fig, rmap: RenderMap):
         self.g, self.fig, self.map = graph, fig, rmap
+        self.tmp_keys: set = set()   # temporary columns (masked views), removed after render
 
     # ------------------------------------------------------------------ styles
     def font(self, font: Font, size_scale: float = 1.0) -> dict:
@@ -103,6 +104,23 @@ class _Ctx:
     def arr(self, key):
         return self.g.values(key)
 
+    @staticmethod
+    def masked(p: Plot, n: int) -> np.ndarray:
+        """Masked rows of plot ``p`` (Origin's Mask, ``options["mask"]``) as a bool array."""
+        out = np.zeros(n, bool)
+        rows = [int(r) for r in p.options.get("mask") or [] if 0 <= int(r) < n]
+        out[rows] = True
+        return out
+
+    def parr(self, p: Plot, key):
+        """Column ``key`` of plot ``p`` with its masked rows set to NaN."""
+        v = self.g.values(key)
+        if v is None or v.dtype == object or not p.options.get("mask"):
+            return v
+        v = v.copy()
+        v[self.masked(p, len(v))] = np.nan
+        return v
+
     def col(self, key):
         return self.g.column(key)
 
@@ -125,11 +143,15 @@ def render(graph: Graph, fig) -> RenderMap:
     rows = max([graph.rows] + [l.grid[0] + l.grid[2] for l in gridded]) if gridded else 1
     cols = max([graph.cols] + [l.grid[1] + l.grid[3] for l in gridded]) if gridded else 1
     gs = fig.add_gridspec(rows, cols)
-    for li, layer in enumerate(graph.layers):
-        try:
-            _render_layer(ctx, gs, li, layer)
-        except Exception as exc:  # noqa: BLE001 - one bad layer must not kill the graph
-            rmap.errors.append(f"Layer {li + 1}: {exc}")
+    try:
+        for li, layer in enumerate(graph.layers):
+            try:
+                _render_layer(ctx, gs, li, layer)
+            except Exception as exc:  # noqa: BLE001 - one bad layer must not kill the graph
+                rmap.errors.append(f"Layer {li + 1}: {exc}")
+    finally:
+        for key in ctx.tmp_keys:
+            graph.data.pop(key, None)
     _link_layers(graph, rmap)
     return rmap
 
@@ -194,8 +216,8 @@ def _safe(ctx: _Ctx, li: int, plot: Plot, fn, *args):
         return None
 
 
-def _xy(ctx: _Ctx, p: Plot):
-    y = ctx.arr(p.y)
+def _xy(ctx: _Ctx, p: Plot, honor_mask: bool = True):
+    y = ctx.parr(p, p.y) if honor_mask else ctx.arr(p.y)
     if y is None:
         raise ValueError("no Y column")
     x = ctx.arr(p.x)
@@ -450,7 +472,18 @@ def _labels(ctx, li, ax, p, x, y, mask, i, order=None):
 
 
 def _line(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
-    x, y = _xy(ctx, p)
+    x, y = _xy(ctx, p, honor_mask=False)
+    masked = ctx.masked(p, len(y))
+    if masked.any():   # Origin draws masked points red and leaves them out of the line
+        mx, my = x[masked], y[masked]
+        ok = np.isfinite(mx) & np.isfinite(my)
+        red = ax.plot(mx[ok], my[ok], ls="none", marker=ctx.marker(p, i) if p.symbol.visible
+                      else "o", ms=max(4.0, p.symbol.size), mfc="#FF0000", mec="#FF0000",
+                      zorder=3.2)
+        ctx.map.add(red, ("plot", li, p.id))
+        keep = ~masked
+        x, y = x[keep], y[keep]
+        p = _without_mask_rows(ctx, p, keep)
     if layer.offset_x or layer.offset_y:
         x = x + state["wf"] * layer.offset_x
         y = y + state["wf"] * layer.offset_y
@@ -546,6 +579,35 @@ def _line(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
     return handle, ticks
 
 
+class _MaskedView:
+    """A plot whose error/label columns are read without its masked rows (for _line)."""
+
+    def __init__(self, p: Plot):
+        self._p = p
+
+    def __getattr__(self, name):
+        return getattr(self._p, name)
+
+
+def _without_mask_rows(ctx: _Ctx, p: Plot, keep: np.ndarray):
+    """Error and label columns follow the points kept after masking: they are sliced
+    through temporary snapshot columns so the drawing code needs no changes."""
+    g = ctx.g
+    view = _MaskedView(p)
+    for attr in ("xerr", "yerr", "labels"):
+        key = getattr(p, attr)
+        col = g.column(key)
+        if col is None:
+            continue
+        vals = list(col.values)[:len(keep)]
+        vals = [v for v, k in zip(vals, keep[:len(vals)]) if k]
+        tmp = f"\x00masked:{p.id}:{attr}"
+        g.data[tmp] = type(col)(col.name, col.label, col.kind, vals, col.value_labels)
+        ctx.tmp_keys.add(tmp)
+        view.__dict__[attr] = tmp
+    return view
+
+
 def _fill_to(ctx: _Ctx, layer: Layer, ax, p: Plot, i, x, y, state) -> list:
     """Fill under a curve (Plot Details > Fill Area): to zero, to a value or to another
     plot ("next" or a plot id), interpolating the other curve onto this one's X."""
@@ -561,8 +623,9 @@ def _fill_to(ctx: _Ctx, layer: Layer, ax, p: Plot, i, x, y, state) -> list:
     else:
         plots = [q for q in layer.plots if q.visible and q.type in LINEISH]
         other = None
+        base_p = getattr(p, "_p", p)   # a _MaskedView wraps the layer's plot
         if mode == "next":
-            k = plots.index(p) if p in plots else -1
+            k = plots.index(base_p) if base_p in plots else -1
             other = plots[k + 1] if 0 <= k < len(plots) - 1 else None
         else:
             other = next((q for q in layer.plots if q.id == mode), None)
@@ -686,7 +749,7 @@ def _prepare_stacks(ctx: _Ctx, layer: Layer, state: dict) -> None:
         state["area_info"] = {"grid": grid, "ys": ys, "cum": np.vstack([np.zeros(len(grid)),
                                                                        np.cumsum(ys, 0)])}
     if state["hists"]:
-        values = [ctx.arr(p.y) for p in state["hists"]]
+        values = [ctx.parr(p, p.y) for p in state["hists"]]
         allv = np.concatenate([v[np.isfinite(v)] for v in values if v is not None])
         p0 = state["hists"][0]
         bins = p0.options.get("bins", "auto")
@@ -791,7 +854,7 @@ def _area(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
 
 
 def _histogram(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
-    v = ctx.arr(p.y)
+    v = ctx.parr(p, p.y)
     v = v[np.isfinite(v)]
     if not len(v):
         raise ValueError("no valid data")
@@ -834,7 +897,7 @@ def _histogram(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
 
 
 def _box(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
-    v = ctx.arr(p.y)
+    v = ctx.parr(p, p.y)
     v = v[np.isfinite(v)]
     if not len(v):
         raise ValueError("no valid data")
