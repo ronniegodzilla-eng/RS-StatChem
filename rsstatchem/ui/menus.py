@@ -46,6 +46,11 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.mds",
     "rsstatchem.ui.dialogs.survival_param",
     "rsstatchem.ui.dialogs.glmm",
+    "rsstatchem.ui.dialogs.classify_ml",
+    "rsstatchem.ui.dialogs.neural",
+    "rsstatchem.ui.dialogs.regression_ml",
+    "rsstatchem.ui.dialogs.optscale",
+    "rsstatchem.ui.dialogs.complex_samples",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
@@ -138,9 +143,10 @@ MENU_ORDER: dict[str, list] = {
         "Partial Least Squares...", None, "Binary Logistic...", "Multinomial Logistic...",
         "Ordinal...", "Probit...", None, "Nonlinear...", "Weight Estimation...",
         "2-Stage Least Squares...", "Quantile...", None, "Optimal Scaling (CATREG)...",
-        "Linear OLS Alternatives",
+        "Kernel Ridge...", "Linear OLS Alternatives",
     ],
     "Analyze/Loglinear": ["General...", "Logit...", "Model Selection..."],
+    "Analyze/Neural Networks": ["Multilayer Perceptron...", "Radial Basis Function..."],
     "Analyze/Classify": [
         "TwoStep Cluster...", "K-Means Cluster...", "Hierarchical Cluster...",
         "Cluster Silhouettes...", "Tree...", "Discriminant...", "Nearest Neighbor...", None,
@@ -164,6 +170,11 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Multiple Response": ["Define Variable Sets...", "Frequencies...",
                                   "Crosstabs..."],
+    "Analyze/Complex Samples": [
+        "Prepare for Analysis...", "Select a Sample...", None, "Frequencies...",
+        "Descriptives...", "Crosstabs...", "Ratios...", "General Linear Model...",
+        "Logistic Regression...", "Ordinal Regression...", "Cox Regression...",
+    ],
     "Graphs": ["Chart Builder...", "Graphboard Template Chooser...", "Weibull Plot...",
                "Compare Subgroups...", "Regression Variable Plots...", "Legacy Dialogs", None,
                "Graph Studio (Plot Setup)..."],
