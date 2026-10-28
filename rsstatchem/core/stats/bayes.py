@@ -81,8 +81,12 @@ def _want_bf(o):
 
 
 # =========================================================================== Bayes factors
-def jzs_ttest_bf10(t: float, n1: int, n2: int | None = None, r: float = 0.707) -> float:
-    """JZS Bayes factor BF10 for a one-sample / paired (n2 None) or two-sample t statistic."""
+def jzs_ttest_bf10(t: float, n1: int, n2: int | None = None, r: float = 1.0) -> float:
+    """JZS Bayes factor BF10 for a one-sample / paired (n2 None) or two-sample t statistic.
+
+    IBM SPSS Algorithms (BAYES ONESAMPLE eq. 20, BAYES INDEPENDENT eq. 14) integrate against
+    the Inverse-Gamma(1/2, 1/2) mixing density, i.e. delta ~ Cauchy(0, 1): the default scale is
+    r = 1 (BayesFactor / JASP use r = sqrt(2)/2 = 0.707, available through ``r``)."""
     if n2 is None:
         n, df = n1, n1 - 1
     else:
@@ -118,9 +122,44 @@ def pearson_bf10(r: float, n: int, kappa: float = 1.0) -> float:
                         special.gammaln((n + 2 / k) / 2) + log_hyper))
 
 
-def binom_bf10(k: int, n: int, p0: float = 0.5, a: float = 1.0, b: float = 1.0) -> float:
+def binom_bf10(k: int, n: int, p0: float = 0.5, a: float = 1.0, b: float = 1.0,
+               a0: float | None = None, b0: float | None = None) -> float:
+    """Binomial Bayes factor BF10 with Beta(a, b) under H1.
+
+    With ``a0``/``b0`` the null proportion has a Beta(a0, b0) prior and the Bayes factor is the
+    IBM SPSS Algorithms (BAYES ONESAMPLE binomial, eq. 1) beta-binomial ratio
+    B(a1+y, b1+N-y) B(a0, b0) / (B(a0+y, b0+N-y) B(a1, b1)). Without them H0 is the point
+    null p = p0 (the a0, b0 -> infinity limit of IBM's form)."""
+    if a0 is not None and b0 is not None:
+        return float(np.exp(special.betaln(k + a, n - k + b) + special.betaln(a0, b0)
+                            - special.betaln(k + a0, n - k + b0) - special.betaln(a, b)))
     return float(np.exp(special.betaln(k + a, n - k + b) - special.betaln(a, b) -
                         k * np.log(p0) - (n - k) * np.log1p(-p0)))
+
+
+def wetzels_pearson_bf10(r: float, n: int) -> float:
+    """JZS Bayes factor BF10 for rho = 0 of Wetzels & Wagenmakers (2012), the method of IBM
+    SPSS Statistics Algorithms, BAYES CORRELATION eq. (10):
+    (W/2)^(1/2)/Gamma(1/2) int_0^inf (1+g)^((W-2)/2) [1+(1-r^2)g]^(-(W-1)/2)
+    g^(-3/2) exp(-W/(2g)) dg. Not defined for |r| = 1 or W < 2."""
+    if n < 2 or not np.isfinite(r) or abs(r) >= 1:
+        return float("nan")
+    W = float(n)
+
+    def f(u):
+        g = math.exp(u)
+        return ((W - 2) / 2 * math.log1p(g) - (W - 1) / 2 * math.log1p((1 - r * r) * g)
+                - 1.5 * u - W / (2 * g) + u)
+    return float(math.exp(0.5 * math.log(W / 2) - special.gammaln(0.5) + _logint(f)))
+
+
+def hyper_prior_ttest_bf10(t: float, n1: int, n2: int, a: float = -0.75) -> float:
+    """Hyper-prior Bayes factor BF10 for the two-sample t test (Wang & Liu, 2016), closed form
+    of IBM SPSS Algorithms, BAYES INDEPENDENT eq. (18); IBM's default a = -0.75."""
+    nu = n1 + n2 - 2
+    return float(math.exp(special.gammaln(nu / 2) + special.gammaln(a + 1.5)
+                          - special.gammaln((nu + 1) / 2) - special.gammaln(a + 1)
+                          + (nu - 2 * a - 2) / 2 * math.log1p(t * t / nu)))
 
 
 def poisson_bf10(total: float, n: int, lam0: float, shape: float, rate: float) -> float:
@@ -277,6 +316,49 @@ def variance_posterior(shape: float, scale: float, level=0.95) -> Posterior:
     return _from_dist(dist, mode, level)
 
 
+def behrens_fisher_posterior(a: np.ndarray, b: np.ndarray, level=0.95) -> Posterior:
+    """Posterior of mean(a) - mean(b) under diffuse priors with unequal variances, as in IBM
+    SPSS Statistics Algorithms (BAYES INDEPENDENT eqs. 47-58): Behrens-Fisher distribution
+    approximated by Patil's scaled t with nu = eta3 degrees of freedom."""
+    n1, n2 = len(a), len(b)
+    v1, v2 = a.var(ddof=1) / n1, b.var(ddof=1) / n2
+    S = v1 + v2
+    s1, c1 = v1 / S, v2 / S                       # sin^2 psi (group a), cos^2 psi (group b)
+    eta1 = (n1 - 1) / (n1 - 3) * s1 + (n2 - 1) / (n2 - 3) * c1
+    eta2 = ((n1 - 1) ** 2 / ((n1 - 3) ** 2 * (n1 - 5)) * s1 ** 2
+            + (n2 - 1) ** 2 / ((n2 - 3) ** 2 * (n2 - 5)) * c1 ** 2)
+    nu = 4 + eta1 ** 2 / eta2
+    sigma2 = eta1 * (nu - 2) / nu * S
+    mu = float(a.mean() - b.mean())
+    dist = stats.t(nu, loc=mu, scale=math.sqrt(sigma2))
+    post = _from_dist(dist, mu, level)
+    post.var = float(nu / (nu - 2) * sigma2)
+    return post
+
+
+def correlation_posterior_fisher(r: float, n: int, level=0.95) -> Posterior:
+    """Posterior of rho as in IBM SPSS Algorithms, BAYES CORRELATION eqs. (18)-(21): with a
+    uniform prior xi = atanh(rho) ~ Normal(z - 5r/(2W), 1/(W - 3/2 + 5/2 (1 - r^2))), z =
+    atanh(r). IBM summarises 10^4 simulated draws of tanh(xi); here the same distribution is
+    summarised deterministically (exact quantiles, numerical mode / mean / variance)."""
+    W = float(n)
+    z = math.atanh(max(min(r, 0.999999999), -0.999999999))
+    mu = z - 5 * r / (2 * W)
+    sd = 1 / math.sqrt(W - 1.5 + 2.5 * (1 - r * r))
+    xi = np.linspace(mu - 9 * sd, mu + 9 * sd, 20001)
+    w = stats.norm.pdf(xi, mu, sd)
+    rho = np.tanh(xi)
+    mean = float(np.trapezoid(rho * w, xi))
+    var = float(np.trapezoid((rho - mean) ** 2 * w, xi))
+    dens_rho = w / (1 - rho ** 2)                     # density of rho = tanh(xi)
+    mode = float(rho[np.argmax(dens_rho)])
+    lo = float(np.tanh(mu + sd * stats.norm.ppf((1 - level) / 2)))
+    hi = float(np.tanh(mu + sd * stats.norm.ppf((1 + level) / 2)))
+    post = Posterior(mode, mean, var, lo, hi)
+    post.dist = (rho, dens_rho)
+    return post
+
+
 def correlation_posterior(r: float, n: int, kappa: float = 1.0, level=0.95) -> Posterior:
     rho = np.linspace(-0.9999, 0.9999, 20001)
     loglik = (n - 1) / 2 * np.log1p(-rho ** 2) - (n - 1.5) * np.log1p(-rho * r)
@@ -326,7 +408,7 @@ def _post_cols(level):
 
 
 def one_sample_normal(ds: Dataset, variables: list[str], null: float = 0.0,
-                      o: BayesOptions | None = None, r: float = 0.707,
+                      o: BayesOptions | None = None, r: float = 1.0,
                       prior: str = "diffuse", known_var: float | None = None, mu0=0.0,
                       kappa0=1.0, a0=1.0, b0=1.0, paired: list | None = None) -> Section:
     """One Sample Normal (``variables``) or Related Samples Normal (``paired`` pairs)."""
@@ -384,14 +466,17 @@ def one_sample_normal(ds: Dataset, variables: list[str], null: float = 0.0,
 
 
 def independent_normal(ds: Dataset, variables: list[str], group: str, g1, g2,
-                       o: BayesOptions | None = None, method: str = "rouder", r: float = 0.707,
+                       o: BayesOptions | None = None, method: str = "rouder", r: float = 1.0,
                        mu_delta: float = 0.0, var_delta: float = 1.0, equal_var: bool = True,
-                       seed: int = 2000000) -> Section:
+                       seed: int = 2000000, hyper_a: float = -0.75) -> Section:
+    """``method``: "rouder" (JZS, IBM default scale r = 1), "gonen" or "hyper" (Wang & Liu
+    hyper-prior, IBM default a = -0.75)."""
     o = o or BayesOptions()
     sec = Section("Bayesian Independent Sample Inference")
     sec.log(f"BAYES INDEPENDENT {' '.join(variables)} BY {group}({g1} {g2})"
             f" /ANALYSIS={o.analysis.upper()} /ESTBF " +
-            ("ROUDER" if method == "rouder" else f"GONEN({mu_delta:g} {var_delta:g})"))
+            ("ROUDER" if method == "rouder" else f"HYPER({hyper_a:g})" if method == "hyper"
+             else f"GONEN({mu_delta:g} {var_delta:g})"))
     gser = ds.analysis_series(group)
     gv = ds.var(group)
     stat_rows, bf_rows, post_rows, plots = [], [], [], []
@@ -409,13 +494,16 @@ def independent_normal(ds: Dataset, variables: list[str], group: str, g1, g2,
         n1, n2 = len(a), len(b)
         if n1 < 2 or n2 < 2:
             continue
-        diff = a.mean() - b.mean()
+        # IBM BAYES INDEPENDENT eq. (2): d = mean(group 2) - mean(group 1)
+        diff = b.mean() - a.mean()
         sp2 = ((n1 - 1) * a.var(ddof=1) + (n2 - 1) * b.var(ddof=1)) / (n1 + n2 - 2)
         se = math.sqrt(sp2 * (1 / n1 + 1 / n2))
         t = diff / se
         df = n1 + n2 - 2
         if method == "gonen":
             bf10 = gonen_bf10(t, n1, n2, mu_delta, var_delta)
+        elif method == "hyper":
+            bf10 = hyper_prior_ttest_bf10(t, n1, n2, hyper_a)
         else:
             bf10 = jzs_ttest_bf10(t, n1, n2, r)
         bf_rows.append([name, _f(diff), _f(se), _bf(_bf_out(bf10, o)), _f(t), fmt_int(df),
@@ -424,23 +512,17 @@ def independent_normal(ds: Dataset, variables: list[str], group: str, g1, g2,
             dist = stats.t(df, loc=diff, scale=se)
             p = _from_dist(dist, diff, o.level)
         else:
-            rng = np.random.default_rng(seed)
-            da = a.mean() + a.std(ddof=1) / math.sqrt(n1) * rng.standard_t(n1 - 1, 200000)
-            db = b.mean() + b.std(ddof=1) / math.sqrt(n2) * rng.standard_t(n2 - 1, 200000)
-            dd = da - db
-            hist, edges = np.histogram(dd, bins=200)
-            mode = float((edges[np.argmax(hist)] + edges[np.argmax(hist) + 1]) / 2)
-            lo, hi = np.quantile(dd, [(1 - o.level) / 2, (1 + o.level) / 2])
-            p = Posterior(mode, float(dd.mean()), float(dd.var()), float(lo), float(hi))
-            centers = (edges[:-1] + edges[1:]) / 2
-            p.dist = (centers, hist / (hist.sum() * (edges[1] - edges[0])))
+            # IBM BAYES INDEPENDENT, diffuse priors with unequal variances: Behrens-Fisher
+            # posterior with Patil's (1965) scaled-t approximation, eqs. (47)-(58)
+            p = behrens_fisher_posterior(b, a, o.level)
         post_rows.append([name, fmt_int(n1 + n2)] + p.row())
         plots.append((name, p))
     sec.table(Table("Group Statistics", ["", gv.title, "N", "Mean", "Std. Deviation",
                                          "Std. Error Mean"], stat_rows, row_header_cols=2))
     if _want_bf(o):
         how = (f"Rouder's method (JZS), Cauchy scale r = {r:g}." if method == "rouder" else
-               f"Gönen's method, effect size prior N({mu_delta:g}, {var_delta:g}).")
+               f"Hyper-prior method (Wang & Liu, 2016), a = {hyper_a:g}." if method == "hyper"
+               else f"Gönen's method, effect size prior N({mu_delta:g}, {var_delta:g}).")
         sec.table(Table("Bayes Factor Independent Sample Test",
                         ["", "Mean Difference", "Pooled Std. Error Difference", "Bayes Factorᵃ",
                          "t", "df", "Sig. (2-tailed)"], bf_rows,
@@ -450,7 +532,9 @@ def independent_normal(ds: Dataset, variables: list[str], group: str, g1, g2,
                         ["", "N"] + _post_cols(o.level), post_rows,
                         footnotes=["Diffuse (reference) priors. Variances " +
                                    ("assumed equal." if equal_var else
-                                    "not assumed equal (Monte Carlo, 200,000 draws).")]))
+                                    "not assumed equal (Behrens-Fisher posterior, Patil's "
+                                    "approximation)."),
+                                   "Difference = group 2 minus group 1 (as in SPSS)."]))
         if o.plots:
             for name, p in plots:
                 sec.image(f"Posterior Distribution: {name}",
@@ -459,11 +543,16 @@ def independent_normal(ds: Dataset, variables: list[str], group: str, g1, g2,
 
 
 def pearson_correlation(ds: Dataset, variables: list[str], o: BayesOptions | None = None,
-                        kappa: float = 1.0) -> Section:
+                        kappa: float = 1.0, method: str = "jzs") -> Section:
+    """``method`` "jzs": IBM's Wetzels-Wagenmakers JZS Bayes factor and Fisher-z posterior
+    (uniform prior); "stretched": Ly et al. (2016) stretched-beta prior with ``kappa`` (as in
+    JASP; not an IBM SPSS method)."""
     o = o or BayesOptions()
+    ibm = method != "stretched"
     sec = Section("Bayesian Pearson Correlation")
     sec.log(f"BAYES CORRELATION {' '.join(variables)} /ANALYSIS={o.analysis.upper()}"
-            f" /ESTBF KAPPA={kappa:g}")
+            + (" /ESTBF COMPUTATION=JZS" if method != "stretched" else
+               f" /ESTBF KAPPA={kappa:g}"))
     k = len(variables)
     titles = [ds.var(v).title for v in variables]
     rows, post_rows, plots = [], [], []
@@ -481,11 +570,13 @@ def pearson_correlation(ds: Dataset, variables: list[str], o: BayesOptions | Non
             r = float(np.corrcoef(pair.iloc[:, 0], pair.iloc[:, 1])[0, 1]) if n > 2 else \
                 float("nan")
             stat_lines["Pearson Correlation"].append(_f(r))
-            stat_lines["Bayes Factor"].append(_bf(_bf_out(pearson_bf10(r, n, kappa), o))
-                                              if n > 2 else "")
+            bf = wetzels_pearson_bf10(r, n) if ibm else pearson_bf10(r, n, kappa)
+            stat_lines["Bayes Factor"].append(_bf(_bf_out(bf, o))
+                                              if n > 2 and np.isfinite(bf) else "")
             stat_lines["N"].append(fmt_int(n))
             if j > i and n > 3:
-                p = correlation_posterior(r, n, kappa, o.level)
+                p = (correlation_posterior_fisher(r, n, o.level) if ibm else
+                     correlation_posterior(r, n, kappa, o.level))
                 post_rows.append([f"{titles[i]} - {titles[j]}", fmt_int(n)] + p.row())
                 plots.append((f"{titles[i]} - {titles[j]}", p))
         for name, vals in stat_lines.items():
@@ -494,12 +585,16 @@ def pearson_correlation(ds: Dataset, variables: list[str], o: BayesOptions | Non
             rows.append([titles[i], name + ("ᵃ" if name == "Bayes Factor" else "")] + vals)
     sec.table(Table("Bayes Factor Inference on Pairwise Correlations", ["", ""] + titles, rows,
                     row_header_cols=2,
-                    footnotes=["a. " + _bf_note(o, f"Stretched beta prior, kappa = {kappa:g} "
-                                                   "(Ly et al., 2016).")]))
+                    footnotes=["a. " + _bf_note(o, "JZS prior (Wetzels & Wagenmakers, 2012)."
+                                                if ibm else
+                                                f"Stretched beta prior, kappa = {kappa:g} "
+                                                "(Ly et al., 2016).")]))
     if _want_post(o) and post_rows:
         sec.table(Table("Posterior Distribution Characterization for Pairwise Correlations",
                         ["", "N"] + _post_cols(o.level), post_rows,
-                        footnotes=[f"Posterior under the stretched beta prior (kappa = "
+                        footnotes=["Uniform prior on rho; Fisher-z normal approximation "
+                                   "(IBM BAYES CORRELATION eq. 20)." if ibm else
+                                   f"Posterior under the stretched beta prior (kappa = "
                                    f"{kappa:g}), computed numerically."]))
         if o.plots:
             for name, p in plots:
@@ -586,8 +681,11 @@ def linear_regression(ds: Dataset, dependent: str, factors: list[str], covariate
 
 
 def oneway_anova(ds: Dataset, dependents: list[str], factor: str,
-                 o: BayesOptions | None = None, method: str = "rouder", r: float = 0.5,
+                 o: BayesOptions | None = None, method: str = "rouder", r: float = 1.0,
                  g: float | None = None, a: float = 3.0) -> Section:
+    """``method``: "rouder" (IBM: g ~ Inverse-Gamma(1/2, N s^2/2) on the R^2 form, scale
+    s = ``r``), "jzs" (Zellner-Siow), "zellner", "hyperg", or "rouder2012" (BayesFactor's
+    anovaBF multivariate-g prior on the effects, not an IBM SPSS method; use r = 0.5)."""
     o = o or BayesOptions()
     sec = Section("Bayesian One-way ANOVA")
     sec.log(f"BAYES ANOVA {' '.join(dependents)} BY {factor} /ANALYSIS={o.analysis.upper()}"
@@ -609,9 +707,13 @@ def oneway_anova(ds: Dataset, dependents: list[str], factor: str,
         ssw = sst - ssb
         dfb, dfw = k - 1, n - k
         F = (ssb / dfb) / (ssw / dfw)
-        if method == "rouder":
+        if method == "rouder2012":
             bf10 = rouder_anova_bf10(y, gvals, r)
-            how = f"Rouder's method (JZS fixed effects), scale r = {r:g}"
+            how = (f"Rouder et al. (2012) multivariate JZS prior (BayesFactor anovaBF), "
+                   f"scale r = {r:g}")
+        elif method == "rouder":
+            bf10 = regression_bf10(ssb / sst, n, k - 1, "jzs", None, r)
+            how = f"Rouder's method, scale s = {r:g}"
         else:
             bf10 = regression_bf10(ssb / sst, n, k - 1, method, g, r if method == "jzs" else 1,
                                    a)
@@ -650,7 +752,7 @@ def oneway_anova(ds: Dataset, dependents: list[str], factor: str,
 
 
 def repeated_measures_anova(ds: Dataset, variables: list[str], o: BayesOptions | None = None,
-                            r: float = 0.707, pairwise: bool = True) -> Section:
+                            r: float = 1.0, pairwise: bool = True) -> Section:
     o = o or BayesOptions()
     sec = Section("Bayesian One-way Repeated Measures ANOVA")
     sec.log(f"BAYES REPANOVA {' '.join(variables)} /ANALYSIS={o.analysis.upper()}")
@@ -714,9 +816,12 @@ def repeated_measures_anova(ds: Dataset, variables: list[str], o: BayesOptions |
 
 def one_sample_binomial(ds: Dataset, variables: list[str], success, null: float = 0.5,
                         o: BayesOptions | None = None, a: float = 1.0, b: float = 1.0,
-                        a_post: float | None = None, b_post: float | None = None) -> Section:
+                        a_post: float | None = None, b_post: float | None = None,
+                        null_a: float | None = None, null_b: float | None = None) -> Section:
     """``success``: a value (string or number) or ("le", cut) for "value <= cut" as SPSS's
-    success categories (default: last category)."""
+    success categories (default: last category). ``null_a``/``null_b``: Beta(a0, b0) prior on
+    the proportion under H0 (IBM BAYES ONESAMPLE binomial Bayes factor); when omitted H0 is
+    the point null p = ``null``."""
     o = o or BayesOptions()
     sec = Section("Bayesian One Sample Binomial Inference")
     sec.log(f"BAYES BINOMIAL {' '.join(variables)} /SUCCESS={success} /TESTVAL={null:g}"
@@ -738,7 +843,7 @@ def one_sample_binomial(ds: Dataset, variables: list[str], success, null: float 
             stext = str(value_text(ds.var(v), success))
         n, k = len(s), int(hit.sum())
         name = ds.var(v).title
-        bf10 = binom_bf10(k, n, null, a, b)
+        bf10 = binom_bf10(k, n, null, a, b, null_a, null_b)
         bf_rows.append([name, stext, fmt_int(n), fmt_int(k), _f(k / n if n else float("nan")),
                         _bf(_bf_out(bf10, o))])
         dist = stats.beta(k + ap, n - k + bp)
@@ -752,8 +857,12 @@ def one_sample_binomial(ds: Dataset, variables: list[str], success, null: float 
         sec.table(Table("Binomial Test", ["", "Success Category", "N", "Successes",
                                           "Observed Success Rate", "Bayes Factorᵃ"], bf_rows,
                         footnotes=["a. " + _bf_note(o, f"Beta({a:g}, {b:g}) prior under the "
-                                                       f"alternative; null proportion "
-                                                       f"{null:g}.")]))
+                                                       "alternative; " +
+                                                       (f"Beta({null_a:g}, {null_b:g}) prior "
+                                                        "under the null (IBM)."
+                                                        if null_a is not None and
+                                                        null_b is not None else
+                                                        f"point null proportion {null:g}."))]))
     if _want_post(o):
         sec.table(Table("Posterior Distribution Characterization for Binomial Inference",
                         ["", "N"] + _post_cols(o.level), post_rows,

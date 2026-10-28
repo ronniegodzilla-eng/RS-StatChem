@@ -126,7 +126,11 @@ def test_curve_model_geometry_and_round_trips(tmp_path):
     # curved electron-pushing arrows are written as two-point curves now
     d4 = Document()
     d4.add_arrow(0, 0, 40, 0, "curved", bend=-12)
-    d5 = cdxml.from_cdxml(cdxml.to_cdxml(d4))
+    xml4 = cdxml.to_cdxml(d4)
+    (ar5,) = cdxml.from_cdxml(xml4).arrows.values()      # RS-StatChem tag: exact arrow back
+    assert ar5.kind == "curved" and ar5.bend == pytest.approx(-12)
+    import re
+    d5 = cdxml.from_cdxml(re.sub(r"<objecttag [^>]*/>", "", xml4))   # as other programs
     (cv,) = d5.curves.values()
     assert cv.arrow_end == "full" and len(cv.anchors()) == 2
     mid = geo.bezier_point(*geo.curve_segments(cv)[0], 0.5)
@@ -278,7 +282,7 @@ def test_new_bond_tools_in_palette_and_hotkeys(win):
     _mouse(cv, "move", mid)
     key(cv, "o")
     assert win.doc.bonds[b.id].style == "hollow"
-    key(cv, "v")
+    key(cv, "D")                                # ChemDraw 17.1 uses v to fuse a cyclopropane
     assert win.doc.bonds[b.id].style == "dative"
 
 

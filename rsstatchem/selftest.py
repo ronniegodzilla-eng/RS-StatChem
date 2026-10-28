@@ -87,7 +87,9 @@ def run() -> int:
     from rsstatchem.ui.modules import MODULES
 
     window_modules = ["rsstatchem.ui.launcher", "rsstatchem.ui.dx.window",
-                      "rsstatchem.ui.origin.window", "rsstatchem.ui.chemdraw.window"]
+                      "rsstatchem.ui.origin.window", "rsstatchem.ui.chemdraw.window",
+                      "rsstatchem.ui.imagej.bar", "rsstatchem.ui.imagej.image_window",
+                      "rsstatchem.ui.imagej.dialogs.generic"]
     for name in [m.opener.split(":")[0] for m in MODULES] + window_modules:
         try:
             importlib.import_module(name)
@@ -95,6 +97,14 @@ def run() -> int:
         except Exception:  # noqa: BLE001
             failures += 1
             print(f"selftest FAILED: {name}\n{traceback.format_exc()}")
+    try:  # Image Analysis: core contracts, bundled readers, the area modules' selftests
+        from rsstatchem.ui.imagej import selftest as imagej_selftest
+
+        imagej_selftest()
+        print("selftest ok: rsstatchem.ui.imagej")
+    except Exception:  # noqa: BLE001
+        failures += 1
+        print(f"selftest FAILED: rsstatchem.ui.imagej\n{traceback.format_exc()}")
     if failures:
         return 1
     print("RS-StatChem selftest OK")

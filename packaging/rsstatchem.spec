@@ -75,15 +75,54 @@ def rdkit_datas():
     return [(str(data), "rdkit/Data")]
 
 
+def indigo_binaries():
+    """EPAM Indigo (epam.indigo, Apache-2.0; optional) for automatic reaction atom mapping. Its
+    Python package loads the native library with ctypes from indigo/lib/<platform>/, which
+    PyInstaller cannot see, so only that one library (not the renderer, InChI or Bingo
+    libraries the app does not use) is collected into the same relative folder. Nothing is
+    added when Indigo is not installed."""
+    try:
+        import indigo
+    except Exception:  # noqa: BLE001 - optional dependency
+        return []
+    lib = Path(indigo.__file__).parent / "lib"
+    out = []
+    for path in sorted(lib.rglob("*")):
+        if path.is_file() and path.name in ("libindigo.dylib", "libindigo.so", "indigo.dll"):
+            out.append((str(path), str(Path("indigo/lib") / path.parent.relative_to(lib))))
+    return out
+
+
+def indigo_modules():
+    try:
+        from PyInstaller.utils.hooks import collect_submodules
+        return collect_submodules("indigo", filter=lambda name: not name.startswith(
+            ("indigo.bingo", "indigo.renderer", "indigo.inchi")))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def imaging_hiddenimports():
+    """Image Analysis readers: tifffile/roifile are single packages, but pydicom loads its
+    pixel-data handlers and UID/dictionary modules by name, so list them explicitly (its
+    examples and test data are not bundled)."""
+    from PyInstaller.utils.hooks import collect_submodules
+    mods = ["tifffile", "roifile"]
+    mods += [m for m in collect_submodules("pydicom")
+             if not m.startswith(("pydicom.examples", "pydicom.data"))]
+    return mods
+
+
 a = Analysis(
     [str(ROOT / "run.py")],
     pathex=[str(ROOT)],
+    binaries=indigo_binaries(),
     datas=resource_datas() + rdkit_datas(),
     hiddenimports=["pyreadstat._readstat_parser", "pyreadstat._readstat_writer",
                    "pyreadstat.worker", "mpl_toolkits.mplot3d",
                    "matplotlib.backends.backend_qtagg", "matplotlib.backends.backend_pdf",
                    "matplotlib.backends.backend_svg", "matplotlib.backends.backend_ps",
-                   *APP_MODULES],
+                   *indigo_modules(), *APP_MODULES, *imaging_hiddenimports()],
     excludes=["tkinter", "_tkinter", "IPython", "jupyter", "notebook", "pytest",
               "PyQt5", "PyQt6", "PySide2", "sklearn", "seaborn", "pingouin"],
     noarchive=False,

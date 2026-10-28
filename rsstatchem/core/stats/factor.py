@@ -146,6 +146,58 @@ def orthomax(A: np.ndarray, gamma: float, max_iter: int = 500, tol: float = 1e-8
     return A @ T, T, it
 
 
+def pairwise_orthomax(A: np.ndarray, method: str = "varimax", max_iter: int = 25,
+                      eps: float = 1e-5):
+    """IBM SPSS FACTOR orthogonal rotation (Algorithms, "Orthogonal Rotations (Harman,
+    1976)"): cyclic planar rotations of every factor pair j < k by P = atan2(Y, X)/4 with
+    Y = D - w·2AB/n, X = C - w(A^2 - B^2)/n (w = 1 varimax, m/2·... equamax, 0 quartimax),
+    stopping when |SV(i) - SV(i-1)| <= 1e-5 or after ``max_iter`` iterations (SPSS default
+    25). ``A`` is the (Kaiser-normalised) pattern. Returns (L, T, iterations, converged)."""
+    L = np.array(A, float, copy=True)
+    n, m = L.shape
+    T = np.eye(m)
+
+    def sv(M):
+        s2 = (M ** 2).sum(axis=0)
+        s4 = (M ** 4).sum(axis=0)
+        if method == "varimax":
+            return float(np.sum(n * s4 - s2 ** 2))
+        if method == "equamax":
+            return float(np.sum(n * s4 - m / 2 * s2 ** 2))
+        return float(np.sum(s4))
+
+    prev = None
+    it = 0
+    for it in range(1, max_iter + 1):
+        cur = sv(L)
+        if prev is not None and abs(cur - prev) <= eps:
+            return L, T, it, True
+        prev = cur
+        for j in range(m - 1):
+            for k in range(j + 1, m):
+                x, y = L[:, j], L[:, k]
+                u = x ** 2 - y ** 2
+                v = 2 * x * y
+                a, b = u.sum(), v.sum()
+                c = float(np.sum(u ** 2 - v ** 2))
+                d = float(np.sum(2 * u * v))
+                if method == "varimax":
+                    num, den = d - 2 * a * b / n, c - (a * a - b * b) / n
+                elif method == "equamax":
+                    num, den = d - m * a * b / n, c - m * (a * a - b * b) / n
+                else:
+                    num, den = d, c
+                p = math.atan2(num, den) / 4
+                if abs(math.sin(p)) <= 1e-15:
+                    continue
+                cs, sn = math.cos(p), math.sin(p)
+                L[:, j], L[:, k] = x * cs + y * sn, -x * sn + y * cs
+                tj, tk = T[:, j].copy(), T[:, k].copy()
+                T[:, j], T[:, k] = tj * cs + tk * sn, -tj * sn + tk * cs
+    cur = sv(L)
+    return L, T, it, prev is not None and abs(cur - prev) <= eps
+
+
 def _kaiser(A):
     h = np.sqrt((A ** 2).sum(axis=1))
     h[h == 0] = 1
@@ -158,8 +210,10 @@ def rotate(A: np.ndarray, method: str, delta: float = 0.0, kappa: float = 4.0,
     k = A.shape[1]
     An, h = _kaiser(A)
     if method in ("varimax", "quartimax", "equamax"):
-        gamma = {"varimax": 1.0, "quartimax": 0.0, "equamax": k / 2}[method]
-        Ln, T, it = orthomax(An, gamma, max(max_iter, 500))
+        # IBM's cyclic pairwise algorithm (SPSS default 25 iterations, |dSV| <= 1e-5); the
+        # SVD orthomax iteration stopped short of the optimum (UCLA hsb2 PCA/varimax: SPSS
+        # rotation sums 42.267 % / 36.497 %, SVD 42.265 / 36.499, pairwise 42.267 / 36.497).
+        Ln, T, it, _conv = pairwise_orthomax(An, method, max_iter)
         return Ln * h[:, None], None, T, it
     if method == "oblimin":
         from statsmodels.multivariate.factor_rotation import rotate_factors
@@ -168,7 +222,7 @@ def rotate(A: np.ndarray, method: str, delta: float = 0.0, kappa: float = 4.0,
         phi = T.T @ T
         return Ln * h[:, None], phi, T, None
     if method == "promax":
-        Ln, T0, it = orthomax(An, 1.0, max(max_iter, 500))
+        Ln, T0, it, _conv = pairwise_orthomax(An, "varimax", max_iter)
         L = Ln * h[:, None]
         Lk, hk = _kaiser(L)
         P = Lk * np.abs(Lk) ** (kappa - 1)

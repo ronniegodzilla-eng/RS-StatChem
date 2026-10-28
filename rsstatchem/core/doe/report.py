@@ -101,7 +101,8 @@ def design_section(meta: dict, notes: list[str] | None = None, ds=None) -> Secti
     sec.log(f"DESIGN {meta['design'].upper()} FACTORS={len(meta['factors'])} "
             f"RUNS={meta['runs']} BLOCKS={meta['blocks']}"
             + (f" SEED={meta['seed']}" if meta.get("seed") is not None else ""))
-    study = {"process": "Response Surface", "mixture": "Mixture"}[meta["kind"]]
+    study = {"process": "Response Surface", "mixture": "Mixture",
+             "combined": "Combined Mixture-Process"}.get(meta.get("kind"), "Custom")
     if meta["design"] in designs.FACTORIAL_DESIGNS:
         study = "Factorial"
     elif meta["design"] == "taguchi":

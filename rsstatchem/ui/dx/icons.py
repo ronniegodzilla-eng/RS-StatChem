@@ -170,6 +170,23 @@ _SVG = {
                   f'fill="{O}"/>',
     "flag": f'<path d="M5 2v20" stroke="{D}" stroke-width="1.8"/><path d="M6 3h12l-3 4 3 4H6z" '
             f'fill="{Y}" stroke="{D}" stroke-width="1.1"/>',
+    "augment": f'<rect x="2" y="3" width="13" height="18" fill="#fff" stroke="{D}" '
+               f'stroke-width="1.2"/><path d="M2 9h13M2 15h13" stroke="{L}" stroke-width="1"/>'
+               f'<circle cx="17.5" cy="16.5" r="5" fill="{G}"/><path d="M17.5 14v5M15 16.5h5" '
+               f'stroke="#fff" stroke-width="1.8"/>',
+    "constraints": f'<path d="M3 21V3h18" fill="none" stroke="{D}" stroke-width="1.2"/>'
+                   f'<path d="M3 21L3 9l8-6h10v8l-8 10z" fill="#E3EEFB" stroke="{B}" '
+                   f'stroke-width="1.3"/><path d="M14 2l8 10" stroke="{R}" stroke-width="1.8"/>',
+    "import": f'<rect x="3" y="7" width="18" height="14" fill="#fff" stroke="{D}" '
+              f'stroke-width="1.2"/><path d="M3 12h18M3 16h18M9 7v14M15 7v14" stroke="{L}" '
+              f'stroke-width="0.9"/><path d="M12 1v8M8.5 5.5L12 9l3.5-3.5" fill="none" '
+              f'stroke="{G}" stroke-width="2"/>',
+    "analysis_summary": f'<rect x="3" y="2" width="18" height="20" fill="#fff" stroke="{D}" '
+                        f'stroke-width="1.2"/><path d="M6 7h12M6 11h12M6 15h12" stroke="{B}" '
+                        f'stroke-width="1.2"/><circle cx="17" cy="18" r="3" fill="{G}"/>',
+    "poe": f'<path d="M3 3v18h18" fill="none" stroke="{D}" stroke-width="1.2"/>'
+           f'<path d="M4 18C8 4 12 4 20 16" fill="none" stroke="{B}" stroke-width="1.8"/>'
+           f'<path d="M12 6v6M9 9h6" stroke="{O}" stroke-width="1.6"/>',
     "foldover": f'<rect x="2" y="3" width="9" height="18" fill="#fff" stroke="{D}" '
                 f'stroke-width="1.2"/><rect x="13" y="3" width="9" height="18" fill="#E3EEFB" '
                 f'stroke="{B}" stroke-width="1.2"/><path d="M4 7h5M4 11h3M4 15h5" stroke="{D}"/>'

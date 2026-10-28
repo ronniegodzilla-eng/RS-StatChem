@@ -109,3 +109,27 @@ def save_graph(graph: Graph, path: str | Path) -> Path:
 def load_graph(path: str | Path) -> Graph:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return graph_from_json_dict(data)
+
+
+def export_many(graphs, folder, fmt: str = "png", dpi: int = 300,
+                width_cm: float | None = None) -> list[Path]:
+    """Batch export (Origin's Export Graphs for all graphs in a project/folder):
+    ``graphs`` = {name: Graph} or a list of graphs; one file per graph named after it."""
+    import re
+    fmt = normalize_format(fmt)
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    items = graphs.items() if isinstance(graphs, dict) else [(g.title, g) for g in graphs]
+    out, used = [], set()
+    for name, graph in items:
+        base = re.sub(r"[^\w\- ]+", "_", str(name or "Graph")).strip() or "Graph"
+        stem, k = base, 1
+        while stem.lower() in used:
+            k += 1
+            stem = f"{base}_{k}"
+        used.add(stem.lower())
+        g = sized(graph, width_cm) if width_cm else graph
+        path = folder / f"{stem}.{fmt}"
+        export_graph(g, path, dpi=dpi)
+        out.append(path)
+    return out

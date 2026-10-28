@@ -57,10 +57,66 @@ PLOT_TYPES: dict[str, tuple[str, str]] = {
     "scatter3d": ("3D Scatter", "scatter3d"), "surface3d": ("3D Colormap Surface",
                                                             "surface3d"),
     "polar": ("Polar θ(X) r(Y)", "polar"), "ternary": ("Ternary", "ternary"),
+    # ---- WP-4 additions (Origin's 19 categories)
+    "step": ("Horizontal Step", "step"), "spline": ("Spline", "spline"),
+    "lollipop": ("Lollipop", "lollipop"), "xyerror": ("XY Error", "errorbar"),
+    "error_band": ("Error Band", "error_band"), "bubble_color": ("Bubble + Color Mapped",
+                                                                "bubble_color"),
+    "bar_percent": ("100% Stacked Bar", "bar_percent"),
+    "floating_column": ("Floating Column", "floating_column"),
+    "area_percent": ("100% Stacked Area", "area_percent"),
+    "fill_area": ("Fill Area (between curves)", "fill_area"),
+    "violin": ("Violin Plot", "violin"), "box_half": ("Half Box + Data Points", "box_half"),
+    "meanbar": ("Mean Bar (± SD)", "meanbar"), "interval": ("Interval Plot (95% CI)",
+                                                            "interval"),
+    "hist_kde": ("Histogram + Kernel Density", "hist_kde"),
+    "hist_rug": ("Histogram + Rug", "hist_rug"), "kde": ("Kernel Density", "kde"),
+    "ecdf": ("Cumulative Distribution (ECDF)", "ecdf"), "qq": ("Q-Q Plot", "qq"),
+    "probability": ("Probability Plot", "probability"),
+    "kde2d": ("2D Kernel Density", "kde2d"), "pareto": ("Pareto Chart", "pareto"),
+    "bland_altman": ("Bland-Altman Plot", "bland_altman"),
+    "control_xbar": ("QC Chart (X-bar R)", "control_xbar"),
+    "control_imr": ("QC Chart (I-MR)", "control_imr"),
+    "scatter_matrix": ("Scatter Matrix", "scatter_matrix"),
+    "marginal": ("Scatter + Marginal Histograms", "marginal"),
+    "bar3d": ("3D Bars", "bar3d"), "line3d": ("3D Line / Trajectory", "line3d"),
+    "waterfall3d": ("3D Waterfall", "waterfall3d"), "vector": ("Vector XYAM", "vector"),
+    "radar": ("Radar / Spider", "radar"), "windrose": ("Wind Rose", "windrose"),
+    "panel_v2": ("Vertical 2 Panel", "line_symbol"),
+    "panel_h2": ("Horizontal 2 Panel", "line_symbol"),
+    "panel_4": ("4 Panel", "line_symbol"), "panel_9": ("9 Panel", "line_symbol"),
 }
-XYZ = ("contour", "heatmap", "scatter3d", "surface3d", "ternary")
-XY_SIZE = ("bubble", "color_scatter")
-NO_X = ("histogram", "box")
+PANELS = {"panel_v2": (2, 1), "panel_h2": (1, 2), "panel_4": (2, 2), "panel_9": (3, 3)}
+XYZ = ("contour", "heatmap", "scatter3d", "surface3d", "ternary", "bar3d", "line3d",
+       "vector")
+XY_SIZE = ("bubble", "color_scatter", "bubble_color", "floating_column")
+NO_X = ("histogram", "box", "violin", "box_half", "meanbar", "interval", "hist_kde",
+        "hist_rug", "kde", "ecdf", "qq", "probability", "control_xbar", "control_imr",
+        "scatter_matrix")
+TWO_Y = ("bland_altman",)       # first selected Y = method A, second = method B
+SINGLE = ("pareto", "kde2d", "marginal", "windrose")   # one X/Y pair
+# icon of each Plot menu entry (ui/origin/icons.py names)
+PLOT_ICONS = {
+    "line": "g_line", "scatter": "g_scatter", "line_symbol": "g_line_symbol",
+    "yerror": "g_yerror", "column": "g_column", "column_stacked": "g_column_stacked",
+    "column_percent": "g_column_stacked", "bar": "g_bar", "bar_stacked": "g_bar",
+    "area": "g_area", "area_stacked": "g_area_stacked", "pie": "g_pie",
+    "doughnut": "g_doughnut", "histogram": "g_histogram", "box": "g_box",
+    "double_y": "g_double_y", "stack": "g_stack", "waterfall": "g_waterfall",
+    "bubble": "g_bubble", "color_scatter": "g_color_scatter", "contour": "g_contour",
+    "heatmap": "g_heatmap", "scatter3d": "g_3d", "surface3d": "g_3d", "polar": "g_polar",
+    "ternary": "g_ternary", "step": "g_line", "spline": "g_line", "lollipop": "g_column",
+    "xyerror": "g_yerror", "error_band": "g_area", "bubble_color": "g_bubble",
+    "bar_percent": "g_bar", "floating_column": "g_column", "area_percent": "g_area_stacked",
+    "fill_area": "g_area", "violin": "g_violin", "box_half": "g_violin", "meanbar": "g_column",
+    "interval": "g_yerror", "hist_kde": "g_kde", "hist_rug": "g_histogram",
+    "kde": "g_kde", "ecdf": "g_line", "qq": "g_qq", "probability": "g_qq",
+    "kde2d": "g_contour", "pareto": "g_pareto", "bland_altman": "g_scatter",
+    "control_xbar": "g_control", "control_imr": "g_control",
+    "scatter_matrix": "g_panel4", "marginal": "g_scatter", "bar3d": "g_3d",
+    "line3d": "g_3d", "waterfall3d": "g_waterfall", "vector": "g_vector",
+    "radar": "g_radar", "windrose": "g_polar", "panel_v2": "g_stack",
+    "panel_h2": "g_stack", "panel_4": "g_panel4", "panel_9": "g_panel4"}
 
 
 class PlotError(ValueError):
@@ -122,7 +178,8 @@ def _group_key(ws: Worksheet, y: int, kind: str) -> tuple:
     x = ws.x_of(y)
     yerr = ws.yerr_of(y) if kind not in NO_X else None
     label = ws.label_of(y) if kind in ("pie", "doughnut") else None
-    xerr = ws.xerr_of(y) if kind in ("scatter", "line_symbol", "line", "yerror") else None
+    xerr = ws.xerr_of(y) if kind in ("scatter", "line_symbol", "line", "yerror", "xyerror",
+                                     "error_band") else None
     return x, yerr, label, xerr
 
 
@@ -150,10 +207,27 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
         ys = [c for c in sorted(cols) if ws.columns[c].designation != "X"]
         if len(ys) < 2:
             raise PlotError(f"{PLOT_TYPES[kind][0]} needs a Y column and a second column for "
-                            "the bubble size / colour.")
+                            "the bubble size / colour (the top of floating columns).")
         x = ws.x_of(ys[0])
         specs = [PlotSpec(template, x=name(x).name if x is not None else None,
                           ys=[name(ys[0]).name], z=name(ys[1]).name)]
+    elif kind in TWO_Y:
+        ys = [c for c in sorted(cols) if ws.columns[c].designation not in ("X", "L")]
+        if len(ys) < 2:
+            raise PlotError(f"{PLOT_TYPES[kind][0]} needs two columns (method A and B).")
+        specs = [PlotSpec(template, x=name(ys[0]).name, ys=[name(ys[1]).name])]
+    elif kind in SINGLE:
+        ys = _ys_for(ws, cols, kind)
+        if not ys:
+            raise PlotError("Select a Y column to plot.")
+        x = ws.x_of(ys[0])
+        if x is None and kind != "pareto":
+            raise PlotError(f"{PLOT_TYPES[kind][0]} needs an X column to the left of the Y "
+                            "column.")
+        if kind == "pareto" and x is None:   # raw data: counts of the values
+            specs = [PlotSpec(template, x=name(ys[0]).name)]
+        else:
+            specs = [PlotSpec(template, x=name(x).name, ys=[name(ys[0]).name])]
     else:
         ys = _ys_for(ws, cols, kind)
         if not ys:
@@ -163,8 +237,14 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
             ys = ys[:1]
         if kind in ("double_y", "stack", "waterfall") and len(ys) < 2 and kind != "waterfall":
             raise PlotError(f"{PLOT_TYPES[kind][0]} needs at least two Y columns.")
+        if kind == "scatter_matrix":   # every selected column, X included
+            ys = [c for c in sorted(dict.fromkeys(cols))
+                  if ws.columns[c].designation not in ("L",) and not ws.columns[c].is_text()]
+        if kind in ("control_xbar", "control_imr"):
+            ys = ys[:1]
         groups: dict[tuple, list[int]] = {}
-        if kind in NO_X or kind in ("double_y", "stack"):
+        if kind in NO_X or kind in ("double_y", "stack", "waterfall3d", "radar",
+                                    "fill_area"):
             groups[(None if kind in NO_X else ws.x_of(ys[0]), None, None, None)] = ys
         else:
             for y in ys:
@@ -172,8 +252,10 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
         specs = []
         for (x, yerr, label, xerr), members in groups.items():
             spec_kind = template
-            if kind == "yerror" and yerr is None:
+            if kind in ("yerror", "xyerror") and yerr is None and xerr is None:
                 spec_kind = "scatter"
+            if kind == "error_band" and yerr is None:
+                spec_kind = "line"
             specs.append(PlotSpec(
                 spec_kind, x=name(x).name if x is not None and kind not in NO_X else None,
                 ys=[name(y).name for y in members],
@@ -196,8 +278,109 @@ def plot_columns(book: Workbook, ws: Worksheet, cols: list[int], kind: str,
     graph.meta.pop("spec", None)
     graph.meta["origin_kind"] = kind
     _origin_look(graph, book, ws, kind, rows)
+    _post_look(graph, kind)
+    if kind in PANELS:
+        from rsstatchem.core.graph import layout
+        layout.split_to_panels(graph, *PANELS[kind])
+    update_masks(graph, {book.name: book})
     update_data_ranges(graph)
     return graph
+
+
+# ====================================================================== masks (WP-2 API)
+MASKABLE = ("line", "scatter", "line_symbol", "lollipop", "column", "bar", "area",
+            "histogram", "box", "violin", "meanbar", "kde", "ecdf", "qq", "probability",
+            "kde2d", "bubble", "color_scatter", "bland_altman", "control", "vector",
+            "floating_column", "pareto")
+
+
+def plot_mask_rows(ws: Worksheet, src: dict, n: int) -> list[int]:
+    """Masked rows of a plot (0-based, relative to its snapshot of ``n`` rows): Origin
+    leaves a point out when its X or its Y cell is masked."""
+    if not hasattr(ws, "point_mask"):
+        return []
+    cols = []
+    for key in ("x", "y", "yerr"):
+        name = src.get(key)
+        if not name:
+            continue
+        try:
+            cols.append(ws.find(name))
+        except KeyError:
+            continue
+    if not cols:
+        return []
+    lo = (src.get("rows") or [1])[0] - 1
+    full = ws.point_mask(cols, max(ws.n_rows, lo + n))
+    return [int(r) for r in np.flatnonzero(full[lo:lo + n])]
+
+
+def update_masks(graph: Graph, books: dict) -> bool:
+    """Copy the worksheet masks into each plot (``plot.options["mask"]``, drawn red and
+    left out of the line and of statistics by the renderer); True when anything changed."""
+    changed = False
+    for layer in graph.layers:
+        for p in layer.plots:
+            src = p.options.get("source") or {}
+            if src.get("matrix") or p.type not in MASKABLE:
+                continue
+            book = books.get(src.get("book"))
+            ws = book.sheet(src.get("sheet", "")) if isinstance(book, Workbook) else None
+            y = graph.values(p.y)
+            if not isinstance(ws, Worksheet) or y is None:
+                continue
+            rows = plot_mask_rows(ws, src, len(y))
+            if rows != list(p.options.get("mask") or []):
+                if rows:
+                    p.options["mask"] = rows
+                else:
+                    p.options.pop("mask", None)
+                changed = True
+    return changed
+
+
+def plot_spec(book: Workbook, ws: Worksheet, spec: PlotSpec, title: str = "Graph1",
+              rows: tuple[int, int] | None = None) -> Graph:
+    """Graph from a Plot Setup spec (column names of ``ws``) with Origin's look and links."""
+    try:
+        graph = build_graph(plot_dataset(ws, rows), spec, title=title)
+    except (ValueError, KeyError) as exc:
+        raise PlotError(str(exc)) from None
+    graph.title = title
+    graph.meta.pop("spec", None)
+    graph.meta["origin_kind"] = spec.kind
+    _origin_look(graph, book, ws, spec.kind, rows)
+    _post_look(graph, spec.kind)
+    update_data_ranges(graph)
+    return graph
+
+
+def _post_look(graph: Graph, kind: str) -> None:
+    """Adjustments of the Origin look for the WP-4 graph types."""
+    multi = len(graph.layers) > 1
+    for layer in graph.layers:
+        if multi or kind in ("qq", "probability", "kde2d", "pareto", "bland_altman",
+                             "windrose", "ecdf", "kde") and len(layer.plots) < 2:
+            layer.legend.visible = False
+        if kind == "probability":
+            layer.y.scale = "probability"
+            layer.y.grid_major = True
+        if kind == "bland_altman" and layer.plots:
+            p = layer.plots[0]
+            a = graph.column(p.x).title if graph.column(p.x) else "A"
+            b = graph.column(p.y).title if graph.column(p.y) else "B"
+            layer.x.title = f"Mean of {a} and {b}"
+            layer.y.title = f"Difference ({a} − {b})"
+        if kind == "pareto":
+            layer.y2.title = "Cumulative Percent (%)"
+        if kind == "qq" and layer.plots:
+            layer.x.title = "Expected Normal Quantile"
+        if kind in ("violin", "box_half", "meanbar", "interval"):
+            layer.x.minor_count = 0
+    if kind == "marginal" and len(graph.layers) == 3:
+        main, top, right = graph.layers
+        top.x.title, top.y.title = "", "Count"
+        right.x.title, right.y.title = "Count", ""
 
 
 def _xyz_spec(ws: Worksheet, cols: list[int], template: str) -> PlotSpec:
@@ -394,6 +577,8 @@ def refresh_links(graph: Graph, books: dict) -> bool:
         if new.values != col.values or new.label != col.label:
             graph.data[key] = new
             changed = True
+    if update_masks(graph, books):
+        changed = True
     return changed
 
 

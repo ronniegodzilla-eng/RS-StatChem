@@ -71,6 +71,16 @@ jobs:
       - name: Build
         run: python -m PyInstaller packaging/rsstatchem.spec --noconfirm --clean
 
+      # Indigo (optional atom mapping, from requirements.txt) loads its native library with
+      # ctypes; the spec collects it, this fails the build if it went missing
+      - name: Check the bundled Indigo library
+        shell: bash
+        run: |
+          python -c "import indigo; print('Indigo', indigo.Indigo().version())"
+          found="$(find dist -path '*indigo/lib/*' \( -name 'libindigo.dylib' -o -name 'indigo.dll' \) | head -1)"
+          test -n "$found" || { echo "Indigo library missing from the bundle"; exit 1; }
+          du -h "$found"
+
       - name: Bundle the Java runtime for OPSIN (macOS)
         if: runner.os == 'macOS'
         run: |

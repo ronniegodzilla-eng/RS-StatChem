@@ -12,12 +12,14 @@ from rsstatchem.ui.dx import icons, style
 
 
 class StartPage(QWidget):
-    """Empty workspace: New Design / Open Design / tutorial data / recent designs."""
+    """Empty workspace: New Design / Open Design / Import Data Set (historical data) /
+    tutorial data / recent designs."""
 
     new_design = Signal()
     open_design = Signal()
     open_path = Signal(str)
     open_example = Signal(str)
+    import_data = Signal()
 
     def __init__(self, recent: list[str], parent=None):
         super().__init__(parent)
@@ -36,7 +38,8 @@ class StartPage(QWidget):
         row = QHBoxLayout()
         left = QVBoxLayout()
         for icon_name, text, sig in (("new", "  New Design...", self.new_design),
-                                     ("open", "  Open Design...", self.open_design)):
+                                     ("open", "  Open Design...", self.open_design),
+                                     ("import", "  Import Data Set...", self.import_data)):
             b = QPushButton(icons.icon(icon_name), text)
             b.setObjectName("bigButton")
             b.setIconSize(QSize(28, 28))

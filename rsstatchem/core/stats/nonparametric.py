@@ -240,7 +240,9 @@ def binomial(ds: Dataset, names: list[str], test_prop: float = 0.5,
         p = T.binomial_test(counts[0], n, test_prop)["p"]
         rows.append([var.title, "Group 1", labels[0], fmt_int(counts[0]), fmt(counts[0] / n, 2),
                      fmt(test_prop, 2), fmt_p(p)])
-        rows.append(["", "Group 2", labels[1], fmt_int(counts[1]), fmt(counts[1] / n, 2), "", ""])
+        # SPSS prints group 2's proportion as 1 - p1 (UCLA hsb2 female: 109/200 shown as .54)
+        rows.append(["", "Group 2", labels[1], fmt_int(counts[1]), fmt(1 - counts[0] / n, 2),
+                     "", ""])
         rows.append(["", "Total", "", fmt_int(n), "1.00", "", ""])
     sig = "Exact Sig. (2-tailed)" if two_sided else "Exact Sig. (1-tailed)"
     section.table(Table("Binomial Test", ["", "", "Category", "N", "Observed Prop.",
