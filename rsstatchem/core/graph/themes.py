@@ -114,7 +114,7 @@ def apply_theme(graph: Graph, name_or_theme: str | dict, resize_page: bool = Tru
 
 def apply_theme_to_layer(layer: Layer, t: dict) -> None:
     t = dict(_BASE, **t)
-    for which in ("x", "y", "y2", "z"):
+    for which in ("x", "y", "y2", "z", "x2"):
         _style_axis(layer.axis(which), t, t["font_family"])
     layer.box = t["box"]
     layer.title_font.size = t["title_size"]
@@ -157,7 +157,7 @@ def template_from_graph(graph: Graph) -> dict:
         "font_family": graph.font_family, "math_font": graph.math_font,
         "palette": graph.palette, "fill_palette": graph.fill_palette,
         "dash_cycle": graph.dash_cycle, "hatch_cycle": graph.hatch_cycle,
-        "axes": {w: to_dict(layer.axis(w)) for w in ("x", "y", "y2", "z")},
+        "axes": {w: to_dict(layer.axis(w)) for w in ("x", "y", "y2", "z", "x2")},
         "box": layer.box, "legend": to_dict(layer.legend),
         "title_font": to_dict(layer.title_font),
         "plots": [{"line": to_dict(p.line), "symbol": to_dict(p.symbol),
@@ -165,7 +165,8 @@ def template_from_graph(graph: Graph) -> dict:
     }
 
 
-_KEEP_AXIS = ("title", "min", "max", "major_step", "show_title")
+_KEEP_AXIS = ("title", "min", "max", "major_step", "show_title", "breaks", "custom_ticks",
+              "scale", "scale_offset")
 
 
 def apply_template(graph: Graph, template: dict) -> None:
@@ -241,3 +242,63 @@ def load_user_template(name: str) -> dict:
 
 def delete_user_template(name: str) -> None:
     list_user_templates()[name].unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------- user themes
+def theme_from_graph(graph: Graph) -> dict:
+    """A theme (style only: page, fonts, ticks, frame, widths, colour lists) taken from
+    ``graph`` — Origin's "Save Format as Theme"."""
+    layer = graph.layers[0] if graph.layers else Layer()
+    plots = layer.plots
+    return {
+        "page": [graph.page.width_cm, graph.page.height_cm],
+        "font_family": graph.font_family, "math_font": graph.math_font,
+        "label_size": layer.x.label_font.size, "title_size": layer.x.title_font.size,
+        "legend_size": layer.legend.font.size, "tick_dir": layer.x.tick_dir,
+        "box": layer.box, "grid": layer.x.grid_major or layer.y.grid_major,
+        "axis_width": layer.x.line_width,
+        "line_width": plots[0].line.width if plots else _BASE["line_width"],
+        "symbol_size": plots[0].symbol.size if plots else _BASE["symbol_size"],
+        "major_len": layer.x.major_len, "minor_len": layer.x.minor_len,
+        "palette": graph.palette, "fill_palette": graph.fill_palette,
+        "dash_cycle": graph.dash_cycle, "hatch_cycle": graph.hatch_cycle,
+        "legend_frame": layer.legend.frame,
+    }
+
+
+def themes_dir() -> Path:
+    from rsstatchem.paths import user_data_dir
+    path = user_data_dir() / "graph_themes"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_user_theme(name: str, graph: Graph) -> Path:
+    data = {"format": "rsstatchem-graph-theme", "version": 1, "name": name,
+            "theme": theme_from_graph(graph)}
+    path = themes_dir() / f"{_safe_name(name)}.json"
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return path
+
+
+def list_user_themes() -> dict[str, dict]:
+    out = {}
+    for path in sorted(themes_dir().glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("format") == "rsstatchem-graph-theme":
+                out[data.get("name", path.stem)] = dict(data["theme"])
+        except (OSError, ValueError, KeyError):
+            continue
+    return out
+
+
+def apply_user_theme(graph: Graph, name: str) -> None:
+    theme = list_user_themes()[name]
+    theme = dict(theme, page=tuple(theme.get("page", _BASE["page"])))
+    apply_theme(graph, theme, resize_page=False)
+    graph.theme = name
+
+
+def delete_user_theme(name: str) -> None:
+    (themes_dir() / f"{_safe_name(name)}.json").unlink(missing_ok=True)
