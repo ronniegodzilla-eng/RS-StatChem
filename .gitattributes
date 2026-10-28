@@ -1,0 +1,6 @@
+# Test fixtures and bundled data are compared byte for byte (ImageJ golden files, NIST
+# datasets, reference outputs): never convert their line endings on checkout (Windows'
+# core.autocrlf would turn LF into CRLF and break the comparisons).
+tests/data/** -text
+tests/data_*/** -text
+rsstatchem/resources/** -text

@@ -526,8 +526,11 @@ def test_symbol_tool_on_atoms_and_in_space(win):
     assert not doc.symbols_of(o.id)
 
 
-def test_curved_arrow_anchors_from_lone_pair_to_bond(win):
+@pytest.mark.parametrize("zoom", [None, 0.4])   # zoomed out, an atom's pick radius covers
+def test_curved_arrow_anchors_from_lone_pair_to_bond(win, zoom):   # a whole bond
     cv, doc = win.canvas, win.doc
+    if zoom is not None:
+        cv.set_zoom(zoom)
     win.load_text("C=CO")
     o = next(a for a in doc.atoms.values() if a.symbol == "O")
     lp = obj.place_symbol(doc, o.id, "lonepair")

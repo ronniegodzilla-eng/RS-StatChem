@@ -40,7 +40,7 @@ from rsstatchem.core.chem_draw import clipart as clip
 from rsstatchem.core.chem_draw import geometry as geo
 from rsstatchem.core.chem_draw import objects as obj
 from rsstatchem.core.chem_draw import templates as tpls
-from rsstatchem.core.chem_draw.model import _STORES, ANCHORED_ARROWS, Document
+from rsstatchem.core.chem_draw.model import _STORES, ANCHORED_ARROWS, Document, point_segment
 from rsstatchem.ui.chem_editor.render import SELECT_COLOR, BuildInfo, Builder
 
 __all__ = ["ChemCanvas", "SnapshotCommand", "ATOM_LABEL_KEYS", "BOND_KEYS", "GENERIC_KEYS",
@@ -1066,8 +1066,7 @@ class ChemCanvas(QGraphicsView):
             ar = doc.add_arrow(self._press.x(), self._press.y(), ex, ey, ak, bend=bend,
                                sweep=sweep or 180.0)
             if ak in ANCHORED_ARROWS:
-                self._anchor_arrow(ar, self._press_hit, self.hit(p, ("symbol", "atom",
-                                                                     "bond")))
+                self._anchor_arrow(ar, self.anchor_hit(self._press), self.anchor_hit(p))
             self.commit("Add Arrow")
         elif m == "bracket":
             r = QRectF(self._press, p).normalized()
@@ -1586,6 +1585,35 @@ class ChemCanvas(QGraphicsView):
             d = max(r.width(), r.height())
             r = QRectF(x0 if p.x() >= x0 else x0 - d, y0 if p.y() >= y0 else y0 - d, d, d)
         return r
+
+    def anchor_hit(self, p: QPointF):
+        """The lone pair / atom / bond a mechanism arrow end is dropped on: the nearest of
+        them within its pick radius. ``hit`` prefers atoms, whose screen-based radius can
+        cover a whole short bond when zoomed out; anchoring must not depend on the zoom."""
+        x, y = p.x(), p.y()
+        z = self.zoom()
+        bl = self.bl
+        r_sym = max(obj.symbol_radius(self.doc.style) * 0.9, 4 / z)
+        for sym in self.doc.symbols.values():   # small objects on their atoms win
+            if math.hypot(sym.x - x, sym.y - y) <= r_sym:
+                return self.hit(p, ("symbol",))
+        best, best_d = None, float("inf")
+        r_atom = max(bl * 0.3, 7 / z)
+        for a in self.doc.atoms.values():
+            d = math.hypot(a.x - x, a.y - y)
+            if d <= r_atom and d < best_d:
+                best, best_d = ("atom", a.id), d
+        r_bond = max(bl * 0.18, 5 / z)
+        for bd in self.doc.bonds.values():
+            pa, pb = self.doc.atoms[bd.a], self.doc.atoms[bd.b]
+            d, t = point_segment(x, y, pa.x, pa.y, pb.x, pb.y)
+            if 0.1 <= t <= 0.9 and d <= r_bond and d < best_d:
+                best, best_d = ("bond", bd.id), d
+        if best is None:
+            for aid, box in self.info.label_boxes.items():
+                if box.contains(p):
+                    return ("atom", aid)
+        return best
 
     def _anchor_arrow(self, ar, start, end) -> None:
         """Attach a mechanism arrow to the lone pair / atom / bond it starts and ends on."""

@@ -661,5 +661,12 @@ def test_canvas_draws_overlay_threshold_and_image_roi(bar):
                        int(win.canvas.image_to_screen(2.5, 2.5)[1]))
     assert c.isValid()
     if hasattr(img_roi, "pixels"):
-        px = img.pixelColor(*(int(v) for v in win.canvas.image_to_screen(3.5, 1.5)))
+        # the image ROI on its own, magnified, so no outline or text of the other overlay
+        # elements can cover the probed pixel whatever the platform's default window size
+        doc.overlay = S.Overlay([img_roi])
+        doc.roi = None
+        win.canvas.set_magnification(16.0)
+        bar.session.image_updated(doc)
+        img = win.canvas.grab().toImage()
+        px = img.pixelColor(*(int(v) for v in win.canvas.image_to_screen(3.0, 3.0)))
         assert (px.red(), px.green(), px.blue()) == (0, 255, 0)
