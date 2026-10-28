@@ -1006,7 +1006,9 @@ _EXT: list[FitFunction] = [
        "Bi-Gaussian (split Gaussian): H = height, w1/w2 = left/right σ.",
        ("Chromatography",), abs_keys="w1 w2"),
     _E("GaussMod", "Peak Functions",
-       "y = y0 + A/(2*t0)*exp(-0.5*((x - xc)/w)^2)*erfcx((w/t0 - (x - xc)/w)/sqrt(2))",
+       "y = y0 + A/(2*t0)*if(w/t0 - (x - xc)/w < 0, exp(0.5*(w/t0)^2 - (x - xc)/t0)"
+       "*erfc((w/t0 - (x - xc)/w)/sqrt(2)), exp(-0.5*((x - xc)/w)^2)"
+       "*erfcx((w/t0 - (x - xc)/w)/sqrt(2)))",
        "y0 A xc w t0", "y0 A",
        lambda x, y: {"xc": _peak_centres(x, y, 15), "w": _widths(x, 10),
                      "t0": _widths(x, 10)},

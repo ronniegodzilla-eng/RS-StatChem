@@ -108,7 +108,7 @@ def _fwhm_at(xs, v, i) -> float:
 def find_peaks(x, y, method: str = "local_max", direction: str = "positive",
                height_pct: float = 5.0, max_peaks: int | None = None,
                smooth_window: int = 0, window_size: int = 5,
-               prominence_pct: float = 1.0) -> list[dict]:
+               prominence_pct: float = 2.0) -> list[dict]:
     """Peaks as dicts ``{index, x, y, height, fwhm, hidden}`` sorted by x. ``height_pct``
     keeps peaks whose height is at least this % of the Y range."""
     xs, ys = _sorted(x, y)
@@ -140,16 +140,17 @@ def find_peaks(x, y, method: str = "local_max", direction: str = "positive",
             if v[i] >= thr:
                 idx.append(i)
     elif method == "second_derivative":
-        win2 = _odd(max(win, n // 40), n)
+        win2 = _odd(smooth_window or _width_points(sm, vrng, prominence_pct, n), n)
         d2 = ss.savgol_filter(v, win2, 3, deriv=2) if n > win2 else \
             np.gradient(np.gradient(v))
         neg = -np.minimum(d2, 0.0)
         cand = ss.find_peaks(neg, height=0.02 * float(neg.max() or 1),
                              prominence=max(prominence_pct, 2.0) / 100 * float(neg.max() or 1),
-                             distance=max(1, win2 // 2))[0]
-        maxima = list(ss.find_peaks(sm, prominence=prominence_pct / 100 * vrng)[0])
+                             distance=max(1, win2))[0]
+        vs = ss.savgol_filter(v, win2, 2) if n > win2 else v
+        maxima = list(ss.find_peaks(vs, prominence=prominence_pct / 100 * vrng)[0])
         for i in cand:
-            if v[i] >= thr:
+            if vs[i] >= thr:
                 idx.append(int(i))
                 if not any(abs(i - m) <= win2 // 2 for m in maxima):
                     hidden.add(int(i))
@@ -162,12 +163,28 @@ def find_peaks(x, y, method: str = "local_max", direction: str = "positive",
                 pf = fit_peaks(xs, ys, first, "gauss", baseline="none")
                 r = sign * (ys - pf.result.fitted)
                 rs = ss.savgol_filter(r, win, 2) if n > win else r
-                extra = ss.find_peaks(rs, height=height_pct / 100 * vrng,
-                                      prominence=prominence_pct / 100 * vrng)[0]
-                for i in extra:
-                    if all(abs(i - j) > win // 2 for j in idx):
-                        idx.append(int(i))
-                        hidden.add(int(i))
+                dd = np.diff(v)
+                noise = 1.4826 * float(np.median(np.abs(dd - np.median(dd)))) / math.sqrt(2)
+                extra = ss.find_peaks(rs, height=max(4 * noise, 0.25 * height_pct / 100 * vrng),
+                                      prominence=max(3 * noise, 1e-12 * vrng))[0]
+                new = [int(i) for i in extra if all(abs(i - j) > win // 2 for j in idx)]
+                if new:
+                    # refit with the candidates and keep the hidden peaks that survive
+                    # (a real hidden peak keeps a distinct centre and a visible area)
+                    cand = sorted(idx + new)
+                    seeds = [{"x": float(xs[i]), "y": float(ys[i]),
+                              "fwhm": _fwhm_from_d2(xs, sm, i)} for i in cand]
+                    pf2 = fit_peaks(xs, ys, seeds, "gauss", baseline="none")
+                    total = sum(abs(r["area"]) for r in pf2.peaks) or 1.0
+                    keep = []
+                    for i, r in zip(cand, pf2.peaks):
+                        if i in new and (abs(r["area"]) < 0.03 * total or any(
+                                abs(r["center"] - q["center"]) < 0.3 * max(q["fwhm"], 1e-12)
+                                for q in pf2.peaks if q is not r)):
+                            continue
+                        keep.append(i)
+                    idx = keep
+                    hidden |= {i for i in new if i in keep}
             except (ValueError, RuntimeError, np.linalg.LinAlgError):
                 pass
     else:
@@ -185,6 +202,17 @@ def find_peaks(x, y, method: str = "local_max", direction: str = "positive",
         peaks = sorted(peaks, key=lambda p: -abs(p["height"]))[: int(max_peaks)]
         peaks.sort(key=lambda p: p["x"])
     return peaks
+
+
+def _width_points(sm, vrng, prominence_pct, n) -> int:
+    """Smoothing window for derivative methods: ~0.7 × the median FWHM (in points) of the
+    clear peaks, so noise is suppressed but shoulders survive."""
+    heavy = ss.savgol_filter(sm, _odd(max(7, n // 50), n), 2) if n > 9 else sm
+    pk = ss.find_peaks(heavy, prominence=max(prominence_pct, 10.0) / 100 * vrng)[0]
+    if len(pk):
+        w = float(np.median(ss.peak_widths(heavy, pk, rel_height=0.5)[0]))
+        return max(5, int(0.5 * w))
+    return max(5, n // 40)
 
 
 def _fwhm_from_d2(xs, sm, i) -> float:
@@ -430,6 +458,9 @@ def fit_peaks(x, y, peaks, shape: str = "gauss", baseline: str = "none",
             plist.append({"x": c, "y": float(np.interp(c, xs, ys)), "fwhm": span / 20})
     if not plist:
         raise ValueError("No peaks to fit: find peaks first or enter peak centres.")
+    if len(plist) * 3 > len(xs) // 2:
+        raise ValueError(f"{len(plist)} peaks are too many for {len(xs)} points; raise the "
+                         "height filter or limit the number of peaks.")
     plist.sort(key=lambda p: p["x"])
     model = peak_model(len(plist), shape, baseline, shared_width)
     spec = SHAPES[shape]
@@ -468,7 +499,7 @@ def fit_peaks(x, y, peaks, shape: str = "gauss", baseline: str = "none",
                 bounds[key] = (0.0, 1.0) if shape == "pvoigt" else (0.51, 1e3)
     res = fit.fit_curve(xs, ys, model, params0=p0, bounds=bounds or None,
                         fixed=fixed or {}, weights=weights, constraints=constraints,
-                        algorithm=algorithm)
+                        algorithm=algorithm, max_nfev=200 * (len(model.params) + 1))
     pf = PeakFitResult(res, shape, [])
     rng = (float(xs.min()), float(xs.max()))
     pf.peaks = [_peak_props(pf, i, rng) for i in range(len(plist))]

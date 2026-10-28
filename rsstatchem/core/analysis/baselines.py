@@ -127,7 +127,30 @@ def find_anchors(x, y, n: int = 8, method: str = "minima", smooth: int = 0,
     if include_ends:
         idx = [0] + list(idx) + [m - 1]
     idx = sorted(set(int(i) for i in idx))
+    idx = _lower_envelope(xs, sm, idx)
     return xs[idx], sm[idx] if smooth else ys[idx]
+
+
+def _lower_envelope(xs, v, idx: list[int]) -> list[int]:
+    """Drop anchors lying clearly above the line through their neighbours (valleys between
+    overlapping peaks are not baseline points)."""
+    d = np.diff(v)
+    noise = 1.4826 * float(np.median(np.abs(d - np.median(d)))) / math.sqrt(2) if len(d) else 0
+    tol = 4 * noise + 1e-12 * (float(np.ptp(v)) or 1.0)
+    idx = list(idx)
+    changed = True
+    while changed and len(idx) > 3:
+        changed = False
+        worst, k_worst = tol, None
+        for k in range(1, len(idx) - 1):
+            a, b, c = idx[k - 1], idx[k], idx[k + 1]
+            line = v[a] + (v[c] - v[a]) * (xs[b] - xs[a]) / (xs[c] - xs[a])
+            if v[b] - line > worst:
+                worst, k_worst = v[b] - line, k
+        if k_worst is not None:
+            del idx[k_worst]
+            changed = True
+    return idx
 
 
 def anchors_baseline(x, y, ax, ay, interp: str = "linear", order: int = 3) -> np.ndarray:
