@@ -80,6 +80,7 @@ OWNER_RULES: tuple[tuple[str, str], ...] = (
     ("Process>Repeat Command", "plugins"),
     ("Analyze", "analyze"),
     ("Plugins", "plugins"),
+    ("Plugins>Fiji", "process"),
     ("Window", "shell"),
     ("Help", "shell"),
 )
@@ -581,6 +582,25 @@ MENU_LAYOUT: tuple[Menu, ...] = (
             I('Macro Tool', '', 'NewPlugin("macro-tool")'),
             SEP,
             I('Text Window...', '', 'NewPlugin("text+dialog")'),
+        )),
+        # RS-StatChem additions (WP-B): clean-room rewrites of common Fiji plugins (not in
+        # ImageJ 1.54p); labels follow Fiji's command names.
+        M('Fiji', (
+            I('Auto Threshold', '', 'RS-StatChem'),
+            I('Auto Local Threshold', '', 'RS-StatChem'),
+            I('Enhance Local Contrast (CLAHE)', '', 'RS-StatChem'),
+            M('MorphoLibJ', (
+                I('Morphological Filters', '', 'RS-StatChem'),
+                I('Morphological Reconstruction', '', 'RS-StatChem'),
+                I('Regional Min & Max', '', 'RS-StatChem'),
+                I('Extended Min & Max', '', 'RS-StatChem'),
+                I('Fill Holes (Binary/Gray)', '', 'RS-StatChem'),
+                I('Kill Borders', '', 'RS-StatChem'),
+                I('Chamfer Distance Map', '', 'RS-StatChem'),
+                I('Marker-controlled Watershed', '', 'RS-StatChem'),
+                I('Distance Transform Watershed', '', 'RS-StatChem'),
+                I('Connected Components Labeling', '', 'RS-StatChem'),
+            )),
         )),
     )),
     M('Window', (
