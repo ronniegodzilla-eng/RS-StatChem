@@ -20,6 +20,8 @@ import sys
 _WINDOW_REGISTRIES = (
     ("rsstatchem.ui.graph.window", "WINDOWS"),
     ("rsstatchem.ui.chem_editor", "_WINDOWS"),
+    ("rsstatchem.ui.imagej.windows", "WINDOWS"),   # image, Results, Log, ROI Manager windows
+    ("rsstatchem.ui.imagej.windows", "BARS"),      # the ImageJ bar (one per app)
 )
 
 

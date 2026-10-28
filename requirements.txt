@@ -9,3 +9,8 @@ pyreadstat>=1.2.7
 python-docx>=1.1
 rdkit>=2024.3
 certifi>=2024.2
+# Image Analysis module: TIFF/ImageJ hyperstacks, ImageJ .roi files, DICOM (pure Python;
+# BSD-3, BSD-3, MIT). Pillow (GIF/PNG/JPEG/BMP) comes with matplotlib.
+tifffile==2026.10.15
+roifile==2026.9.22
+pydicom==3.0.2
