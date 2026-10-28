@@ -44,6 +44,8 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.bayes",
     "rsstatchem.ui.dialogs.correspondence",
     "rsstatchem.ui.dialogs.mds",
+    "rsstatchem.ui.dialogs.optscale",
+    "rsstatchem.ui.dialogs.complex_samples",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
@@ -161,6 +163,11 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Multiple Response": ["Define Variable Sets...", "Frequencies...",
                                   "Crosstabs..."],
+    "Analyze/Complex Samples": [
+        "Prepare for Analysis...", "Select a Sample...", None, "Frequencies...",
+        "Descriptives...", "Crosstabs...", "Ratios...", "General Linear Model...",
+        "Logistic Regression...", "Ordinal Regression...", "Cox Regression...",
+    ],
     "Graphs": ["Chart Builder...", "Graphboard Template Chooser...", "Weibull Plot...",
                "Compare Subgroups...", "Regression Variable Plots...", "Legacy Dialogs", None,
                "Graph Studio (Plot Setup)..."],
