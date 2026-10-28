@@ -7,6 +7,10 @@ Rows are shown in run order (or standard order). Response cells are editable; bl
 copied from Excel paste in one step; every change is undoable. Unticking Select ignores a run
 (it stays in the layout, greyed, but drops out of every analysis). Factors are shown in actual
 or coded units (Display Options > Process Factors).
+
+Historical (imported) designs have editable factor cells. Structural edits (insert / delete
+runs, add a response, round factor values, augment the design, ...) are undoable through
+:class:`StructureCommand`, which restores a snapshot of the document.
 """
 from __future__ import annotations
 
@@ -52,6 +56,38 @@ class SetValuesCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.doc.set_values([(r, c, old) for r, c, old, _ in self.changes])
+
+
+class StructureCommand(QUndoCommand):
+    """Undo for a structural edit: document snapshots before and after."""
+
+    def __init__(self, doc, before: dict, after: dict, text: str):
+        super().__init__(text)
+        self.doc, self.before, self.after = doc, before, after
+        self._first = True
+
+    def redo(self) -> None:
+        if self._first:  # already applied when pushed
+            self._first = False
+            return
+        self.doc.restore(self.after)
+
+    def undo(self) -> None:
+        self.doc.restore(self.before)
+
+
+def structural(undo_stack, doc, text: str, fn):
+    """Run ``fn()`` (a document edit) as one undoable step; returns its result. Errors
+    leave the document unchanged and propagate."""
+    before = doc.snapshot()
+    try:
+        result = fn()
+    except Exception:
+        doc.restore(before)
+        raise
+    if undo_stack is not None:
+        undo_stack.push(StructureCommand(doc, before, doc.snapshot(), text))
+    return result
 
 
 class IgnoreCommand(QUndoCommand):
@@ -150,7 +186,7 @@ class LayoutModel(QAbstractTableModel):
                 j = doc.factor_cols.index(col)
                 f = doc.factors[j]
                 units = f.get("units", "") if not self.coded else "coded"
-                head = "Component" if doc.mixture else "Factor"
+                head = "Component" if doc.mixture or f.get("type") == "mixture" else "Factor"
                 if f.get("changes") == "hard":
                     units = (units + " " if units else "") + "(HTC)"
                 return f"{head} {j + 1}\n{designs.letter(j)}:{f['name']}\n{units}"
@@ -202,8 +238,9 @@ class LayoutModel(QAbstractTableModel):
                 if f.get("type") == "categoric":
                     labels = dict(zip(f.get("levels", []), f.get("labels", [])))
                     return str(labels.get(v, format_value(v)))
-                if self.coded and self._coded is not None:
-                    return f"{self._coded[row, j]:.4g}"
+                if self.coded and self._coded is not None and f.get("type") != "categoric":
+                    c = self._coded[row, j]
+                    return f"{c:.4g}" if math.isfinite(c) else ""
                 return format_value(v)
             v = doc.value(row, col)
             return format_value(v)
@@ -221,6 +258,8 @@ class LayoutModel(QAbstractTableModel):
             if kind == "factor":
                 if doc.factors[doc.factor_cols.index(col)].get("changes") == "hard":
                     return QBrush(QColor("#F7EBDD"))
+                if doc.editable_factors and not math.isfinite(doc.value(row, col)):
+                    return QBrush(QColor("#FFFBEA"))
                 return QBrush(QColor(style.FACTOR_BG))
             if kind == "response" and not ignored and not math.isfinite(doc.value(row, col)):
                 return QBrush(QColor("#FFFBEA"))
@@ -244,7 +283,7 @@ class LayoutModel(QAbstractTableModel):
         kind, _ = self.columns[index.column()]
         if kind == "select":
             return base | Qt.ItemFlag.ItemIsUserCheckable
-        if kind == "response":
+        if kind == "response" or (kind == "factor" and self.doc.editable_factors):
             return base | Qt.ItemFlag.ItemIsEditable
         return base
 
@@ -257,10 +296,11 @@ class LayoutModel(QAbstractTableModel):
             ignored = Qt.CheckState(value) != Qt.CheckState.Checked
             self.undo.push(IgnoreCommand(self.doc, [row], ignored))
             return True
-        if kind != "response" or role != Qt.ItemDataRole.EditRole:
+        editable = kind == "response" or (kind == "factor" and self.doc.editable_factors)
+        if not editable or role != Qt.ItemDataRole.EditRole:
             return False
         try:
-            new = parse_number(value)
+            new = self.parse_cell(col, value)
         except ValueError:
             return False
         old = self.doc.value(row, col)
@@ -269,6 +309,28 @@ class LayoutModel(QAbstractTableModel):
         self.undo.push(SetValuesCommand(self.doc, [(row, col, old, new)],
                                         f"Edit {self.doc.column_title(col)}"))
         return True
+
+    def parse_cell(self, col: str, value) -> float:
+        """A typed value for a column: categoric factors accept a level name."""
+        if col in self.doc.factor_cols:
+            f = self.doc.factors[self.doc.factor_cols.index(col)]
+            if f.get("type") == "categoric":
+                text = str(value).strip()
+                for lv, lab in zip(f.get("levels", []), f.get("labels", [])):
+                    if text == str(lab):
+                        return float(lv)
+                v = parse_number(text)
+                if not any(abs(v - lv) < 1e-9 for lv in f.get("levels", [])) and \
+                        math.isfinite(v):
+                    raise ValueError(f"{text} is not a level of {f['name']}.")
+                return v
+        return parse_number(value)
+
+    def editable_column(self, c: int) -> str | None:
+        kind, col = self.columns[c]
+        if kind == "response" or (kind == "factor" and self.doc.editable_factors):
+            return col
+        return None
 
     # ------------------------------------------------------------------ bulk edits
     def paste_text(self, text: str, top: int, left: int) -> int:
@@ -287,11 +349,11 @@ class LayoutModel(QAbstractTableModel):
                 vc = left + c
                 if vc >= len(self.columns):
                     break
-                col = self.response_column(vc)
+                col = self.editable_column(vc)
                 if col is None:
                     continue
                 try:
-                    new = parse_number(cell)
+                    new = self.parse_cell(col, cell)
                 except ValueError:
                     bad += 1
                     continue
@@ -306,7 +368,7 @@ class LayoutModel(QAbstractTableModel):
     def clear_cells(self, indexes) -> int:
         changes = []
         for ix in indexes:
-            col = self.response_column(ix.column())
+            col = self.editable_column(ix.column())
             if col is None:
                 continue
             row = self.rows[ix.row()]
@@ -471,7 +533,35 @@ class LayoutView(QTableView):
                                                                                True)))
             menu.addAction("Include Run(s)", lambda: m.undo.push(IgnoreCommand(m.doc, rows,
                                                                                 False)))
+        menu.addSeparator()
+        menu.addAction("Insert Run", self.insert_run)
+        if rows:
+            menu.addAction(f"Delete {len(rows)} Run(s)", lambda: self.delete_runs(rows))
+            menu.addAction("Duplicate Run(s)", lambda: self.duplicate_runs(rows))
         menu.exec(self.viewport().mapToGlobal(pos))
+
+    # ------------------------------------------------------------------ structure
+    def insert_run(self) -> int:
+        m = self.layout_model
+        n = structural(m.undo, m.doc, "Insert Run", lambda: m.doc.insert_runs(n=1))
+        self.status.emit("Run added at the end of the layout." if n else "")
+        return n
+
+    def delete_runs(self, rows: list[int]) -> int:
+        m = self.layout_model
+        try:
+            n = structural(m.undo, m.doc, f"Delete {len(rows)} Run(s)",
+                           lambda: m.doc.delete_runs(rows))
+        except ValueError as exc:
+            self.status.emit(str(exc))
+            return 0
+        self.status.emit(f"Deleted {n} run(s); Std and Run renumbered.")
+        return n
+
+    def duplicate_runs(self, rows: list[int]) -> int:
+        m = self.layout_model
+        return structural(m.undo, m.doc, "Duplicate Run(s)",
+                          lambda: m.doc.add_replicates(rows, new_block=False))
 
 
 def response_stats(doc, col: str) -> dict:
