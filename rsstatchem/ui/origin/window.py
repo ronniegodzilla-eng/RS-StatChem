@@ -585,8 +585,25 @@ class OriginMainWindow(QMainWindow):
         hp.addSeparator()
         hp.addAction(self._act("Check for &Updates...", self._check_updates))
         hp.addAction(self._act("&About RS-StatChem...", self._about))
+        self._install_menu_extensions()
         self._menu_mode = None
         self._set_menu_mode("book")
+
+    # Feature packages add their menu entries through ``install(main)``; a package that is
+    # missing (or fails to load) leaves the built-in menus as they are.
+    MENU_EXTENSIONS = ("fitting_menus", "data_menus", "stats_menus", "graph_menus")
+
+    def _install_menu_extensions(self) -> None:
+        import importlib
+
+        for name in self.MENU_EXTENSIONS:
+            try:
+                module = importlib.import_module(f"rsstatchem.ui.origin.{name}")
+            except ModuleNotFoundError as exc:
+                if exc.name != f"rsstatchem.ui.origin.{name}":
+                    raise
+                continue
+            module.install(self)
 
     def _check_updates(self) -> None:
         if self.ctx is not None:

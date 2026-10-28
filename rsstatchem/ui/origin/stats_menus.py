@@ -87,7 +87,9 @@ def _submenu(parent: QMenu, title: str) -> QMenu:
 
 
 def install(main) -> None:
-    """Add the WP-3 Statistics entries to ``main.menus["statistics"]``."""
+    """Add the WP-3 Statistics entries to ``main.menus["statistics"]`` (once per window)."""
+    if getattr(main, "wp3_actions", None):
+        return
     st.load_extensions()
     stm = main.menus["statistics"]
     main.wp3_actions = {}
