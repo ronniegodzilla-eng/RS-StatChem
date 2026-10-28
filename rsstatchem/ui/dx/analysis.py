@@ -1,5 +1,7 @@
 """Analysis of one response, with Design-Expert's tab strip across the top:
-Transform, Fit Summary, Model, ANOVA, Diagnostics and Model Graphs.
+Transform, Fit Summary (Effects for two-level factorials), Model, ANOVA, Diagnostics and
+Model Graphs. A response can have several analyses (the combo box and + / - buttons on the
+tab strip); :class:`AnalysisSummaryView` lists every analysis of every response.
 
 Every tab works on the document's stored analysis choices for the response (transformation,
 model terms); changing them on one tab updates the others. All numbers come from
@@ -15,11 +17,13 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox,
                                QDoubleSpinBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView,
-                               QLabel, QListWidget, QListWidgetItem, QPushButton, QRadioButton,
-                               QScrollArea, QSplitter, QStackedWidget, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+                               QRadioButton, QScrollArea, QSplitter, QStackedWidget,
+                               QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
+                               QWidget)
 
-from rsstatchem.core.doe import model, report
+from rsstatchem.core.doe import designs, model, report
+from rsstatchem.core.doe.glm import is_glm
 from rsstatchem.core.doe.model import Transform, term_key, term_name
 from rsstatchem.core.output import Image, Table, Text
 from rsstatchem.ui.dx import icons, style
@@ -51,7 +55,12 @@ class AnalysisView(QWidget):
         # plots (Stat-Ease's split-plot tutorial) instead of a Fit Summary
         self.effects_mode = bool(sp.split_plot and doc.meta.get("design") == "factorial"
                                  and not any(sp.categoric))
-        if self.effects_mode:
+        # regular two-level factorials: Design-Expert shows the Effects tab (half-normal,
+        # normal and Pareto plots of the effects) in place of the Fit Summary
+        self.factorial_effects = bool(not self.effects_mode and not sp.split_plot
+                                      and doc.meta.get("design") in designs.FACTORIAL_DESIGNS
+                                      and doc.two_level())
+        if self.effects_mode or self.factorial_effects:
             self.strip.buttons[1].setText("Effects")
             self.strip.buttons[1].setIcon(icons.icon("half_normal")
                                           if "half_normal" in icons.NAMES
@@ -59,9 +68,30 @@ class AnalysisView(QWidget):
         self.title = QLabel()
         self.title.setStyleSheet(f"color:{style.BLUE}; font-weight:600; padding: 0 8px;")
         self.strip.extra.addWidget(self.title)
+        self.analysis_box = QComboBox()
+        self.analysis_box.setToolTip("Analyses of this response (each with its own "
+                                     "transform, distribution and model)")
+        self.analysis_box.setMinimumWidth(110)
+        self.analysis_box.currentIndexChanged.connect(self._analysis_selected)
+        self.add_analysis_btn = QToolButton()
+        self.add_analysis_btn.setText("+")
+        self.add_analysis_btn.setToolTip("Add an analysis of this response (a copy of the "
+                                         "current one)")
+        self.add_analysis_btn.clicked.connect(self.add_analysis)
+        self.remove_analysis_btn = QToolButton()
+        self.remove_analysis_btn.setText("−")
+        self.remove_analysis_btn.setToolTip("Delete the current analysis")
+        self.remove_analysis_btn.clicked.connect(self.remove_analysis)
+        for w in (self.analysis_box, self.add_analysis_btn, self.remove_analysis_btn):
+            self.strip.extra.addWidget(w)
         self.stack = QStackedWidget()
         self.transform_page = TransformPage(self)
-        self.fit_page = EffectsPage(self) if self.effects_mode else FitSummaryPage(self)
+        if self.effects_mode:
+            self.fit_page = EffectsPage(self)
+        elif self.factorial_effects:
+            self.fit_page = EffectsPage(self, split=False)
+        else:
+            self.fit_page = FitSummaryPage(self)
         self.model_page = ModelPage(self)
         self.anova_page = AnovaPage(self)
         self.diag_page = DiagnosticsPage(self)
@@ -135,8 +165,37 @@ class AnalysisView(QWidget):
         self.show_points = on
         self.graph_page.render()
 
+    # ------------------------------------------------------------------ several analyses
+    def _fill_analyses(self) -> None:
+        spec = self.spec()
+        names = model.analysis_names(spec)
+        self.analysis_box.blockSignals(True)
+        self.analysis_box.clear()
+        self.analysis_box.addItems(names)
+        self.analysis_box.setCurrentIndex(spec.active if spec.analyses else 0)
+        self.analysis_box.blockSignals(False)
+        self.remove_analysis_btn.setEnabled(len(names) > 1)
+
+    def _analysis_selected(self, i: int) -> None:
+        if i < 0:
+            return
+        spec = self.spec()
+        if i != (spec.active if spec.analyses else 0):
+            self.set_spec(model.select_analysis(spec, i))
+
+    def add_analysis(self) -> None:
+        self.set_spec(model.add_analysis(self.spec()))
+
+    def remove_analysis(self) -> None:
+        spec = self.spec()
+        try:
+            self.set_spec(model.remove_analysis(spec, spec.active if spec.analyses else 0))
+        except ValueError:
+            pass
+
     def refresh(self) -> None:
         self.title.setText(self.response_title)
+        self._fill_analyses()
         n = self.doc.response_count(self.col)
         if not self.ready():
             self.outer.setCurrentIndex(1)
@@ -176,7 +235,8 @@ def _error_items(exc: Exception) -> list:
 # ---------------------------------------------------------------------------- Transform
 TRANSFORM_CHOICES = [("none", "None"), ("sqrt", "Square Root"), ("ln", "Natural Log"),
                      ("log10", "Base 10 Log"), ("inv_sqrt", "Inverse Sqrt"),
-                     ("inverse", "Inverse"), ("power", "Power")]
+                     ("inverse", "Inverse"), ("power", "Power"), ("logit", "Logit"),
+                     ("asin_sqrt", "ArcSin Sqrt")]
 
 
 class TransformPage(QWidget):
@@ -211,11 +271,48 @@ class TransformPage(QWidget):
         row.addWidget(QLabel("Constant k:"))
         row.addWidget(self.k)
         bl.addLayout(row)
+        self.lower = QDoubleSpinBox()
+        self.upper = QDoubleSpinBox()
+        for w, v in ((self.lower, 0.0), (self.upper, 1.0)):
+            w.setRange(-1e9, 1e9)
+            w.setDecimals(4)
+            w.setValue(v)
+            w.valueChanged.connect(lambda _: self._changed())
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Lower:"))
+        row.addWidget(self.lower)
+        row.addWidget(QLabel("Upper:"))
+        row.addWidget(self.upper)
+        bl.addLayout(row)
         self.use_bc = QPushButton("Use Box-Cox Recommendation")
         self.use_bc.clicked.connect(self._use_boxcox)
         bl.addWidget(self.use_bc)
-        bl.addStretch(1)
+        dist = QGroupBox("Distribution")
+        dl = QVBoxLayout(dist)
+        self.family_group = QButtonGroup(self)
+        self.family_radios = {}
+        for key, text in model.FAMILIES:
+            rb = QRadioButton(text)
+            self.family_group.addButton(rb)
+            self.family_radios[key] = rb
+            dl.addWidget(rb)
+            rb.toggled.connect(lambda on, k=key: on and self._family_changed())
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Trials per run:"))
+        self.trials = QLineEdit()
+        self.trials.setPlaceholderText("1 (pass/fail)")
+        self.trials.setToolTip("Binomial responses: a number, or the name of a column holding "
+                               "the trials of each run (the response is then the number of "
+                               "successes or the proportion)")
+        self.trials.editingFinished.connect(self._family_changed)
+        row.addWidget(self.trials)
+        dl.addLayout(row)
+        left = QVBoxLayout()
+        left.addWidget(box)
+        left.addWidget(dist)
+        left.addStretch(1)
         box.setFixedWidth(260)
+        dist.setFixedWidth(260)
         self.report = ReportView()
         self.graph = GraphView()
         right = QSplitter(Qt.Orientation.Vertical)
@@ -224,7 +321,7 @@ class TransformPage(QWidget):
         right.setSizes([300, 360])
         lay = QHBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
-        lay.addWidget(box)
+        lay.addLayout(left)
         lay.addWidget(right, 1)
         self._bc = None
 
@@ -237,7 +334,22 @@ class TransformPage(QWidget):
         self.lam.setValue(tr.lam if tr.kind in ("power", "boxcox") else (tr.power or 1.0))
         self.lam.setEnabled(key == "power")
         self.k.setValue(tr.k)
+        self.lower.setValue(tr.lower)
+        self.upper.setValue(tr.upper)
+        bounded = key in model.BOUNDED
+        self.lower.setEnabled(bounded)
+        self.upper.setEnabled(bounded)
+        self.family_radios.get(spec.family, self.family_radios["normal"]).setChecked(True)
+        self.trials.setText("" if spec.trials is None else str(spec.trials))
+        self.trials.setEnabled(spec.family == "binomial")
+        glm_on = spec.family != "normal"
+        for rb in self.radios.values():
+            rb.setEnabled(not glm_on)
+        self.use_bc.setEnabled(not glm_on)
         self._loading = False
+        if glm_on:
+            self._refresh_glm(spec)
+            return
         s = response_stats(self.view.doc, self.view.col)
         ratio = s["max"] / s["min"] if s["min"] and s["min"] > 0 else math.nan
         rows = [["Observations", str(s["n"])], ["Minimum", num(s["min"])],
@@ -284,13 +396,59 @@ class TransformPage(QWidget):
                                 "recommends one."))
         self.report.set_items(items, "Transform")
 
+    def _refresh_glm(self, spec) -> None:
+        s = response_stats(self.view.doc, self.view.col)
+        title = dict(model.FAMILIES)[spec.family]
+        rows = [["Observations", str(s["n"])], ["Minimum", num(s["min"])],
+                ["Maximum", num(s["max"])], ["Distribution", title]]
+        if spec.family == "binomial":
+            rows.append(["Trials per run", str(spec.trials or 1)])
+        items: list = [Table(f"Response {self.view.response_title}", ["", "Value"], rows)]
+        items.append(annotation(
+            "Logistic regression models the probability of success (logit link) of a pass/fail "
+            "or proportion response; Poisson regression models the expected count (log link). "
+            "Terms are tested by likelihood ratio on the ANOVA tab; there is no response "
+            "transformation, so the Box-Cox plot does not apply."
+            if spec.family == "binomial" else
+            "Poisson regression models the expected count (log link) of a count response; "
+            "terms are tested by likelihood ratio on the ANOVA tab."))
+        self.graph.set_message("Box-Cox does not apply to logistic / Poisson models.")
+        self.report.set_items(items, "Transform")
+
+    def _family_changed(self) -> None:
+        if self._loading:
+            return
+        key = next((k for k, rb in self.family_radios.items() if rb.isChecked()), "normal")
+        spec = self.view.spec()
+        text = self.trials.text().strip()
+        trials = None
+        if key == "binomial" and text:
+            try:
+                trials = float(text)
+            except ValueError:
+                trials = text
+        if spec.family == key and spec.trials == trials:
+            return
+        spec.family = key
+        spec.trials = trials if key == "binomial" else None
+        if key != "normal":
+            spec.transform = Transform()
+        spec.model, spec.terms, spec.reduction = "suggested", None, "none"
+        self.view.set_spec(spec)
+
     def _changed(self) -> None:
         if self._loading:
             return
         key = next(k for k, rb in self.radios.items() if rb.isChecked())
         self.lam.setEnabled(key == "power")
+        self.lower.setEnabled(key in model.BOUNDED)
+        self.upper.setEnabled(key in model.BOUNDED)
         spec = self.view.spec()
-        spec.transform = Transform(key, float(self.k.value()), float(self.lam.value()))
+        new = Transform(key, float(self.k.value()), float(self.lam.value()),
+                        float(self.lower.value()), float(self.upper.value()))
+        if new.to_meta() == spec.transform.to_meta():
+            return  # e.g. bounds typed before choosing logit / arcsine square root
+        spec.transform = new
         err = spec.transform.check(self.view.doc.ds.df[self.view.col].dropna().to_numpy(float))
         if err:
             self.report.set_items(self.report.items + [Text("", err, style="warning")],
@@ -312,6 +470,11 @@ class TransformPage(QWidget):
 # ---------------------------------------------------------------------------- Fit Summary
 def fit_summary_items(a: model.Analysis) -> list:
     fs = a.summary
+    if fs.kind == "glm":
+        return [report.glm_fit_summary_table(fs), annotation(
+            f"The {fs.suggested} model is suggested: the highest order whose added terms "
+            "reduce the deviance significantly (likelihood-ratio p < 0.05). Lower AICc and "
+            "BIC indicate a better balance of fit and model size.")]
     seq = {}
     for src, ss, df, f, p, remark in fs.sequential:
         if " vs " in src and not src.startswith(("Mean", "Block")):
@@ -409,6 +572,8 @@ class FitSummaryPage(QWidget):
 
 # ---------------------------------------------------------------------------- Effects
 EFFECT_SETS = (("sub", "Subplot Effects"), ("whole", "Whole-plot Effects"))
+EFFECT_PLOTS = (("half_normal", "Half-Normal Plot"), ("normal", "Normal Plot"),
+                ("pareto", "Pareto Chart"))
 
 
 class EffectsPage(QWidget):
@@ -418,12 +583,13 @@ class EffectsPage(QWidget):
     to select it for the model (red) or return it to error (blue); the selected model is
     tested on the ANOVA (REML) tab."""
 
-    def __init__(self, view: AnalysisView):
+    def __init__(self, view: AnalysisView, split: bool = True):
         super().__init__()
         self.view = view
+        self.split = split
         self.report = None
-        self.kind = "sub"
-        self.effects: dict = {"sub": [], "whole": []}
+        self.kind = "sub" if split else "all"
+        self.effects: dict = {"sub": [], "whole": [], "all": []}
         self.terms: list = []
         self.rows: list = []
         self.label = QLabel()
@@ -432,14 +598,20 @@ class EffectsPage(QWidget):
         group = QButtonGroup(self)
         bar = QHBoxLayout()
         bar.addWidget(self.label, 1)
-        for key, text in EFFECT_SETS:
-            rb = QRadioButton(text)
-            group.addButton(rb)
-            self.buttons[key] = rb
-            bar.addWidget(rb)
-        self.buttons["sub"].setChecked(True)
-        for key, rb in self.buttons.items():
-            rb.toggled.connect(lambda on, k=key: on and self.set_kind(k))
+        if split:
+            for key, text in EFFECT_SETS:
+                rb = QRadioButton(text)
+                group.addButton(rb)
+                self.buttons[key] = rb
+                bar.addWidget(rb)
+            self.buttons["sub"].setChecked(True)
+            for key, rb in self.buttons.items():
+                rb.toggled.connect(lambda on, k=key: on and self.set_kind(k))
+        self.plot_type = QComboBox()
+        for key, text in EFFECT_PLOTS:
+            self.plot_type.addItem(text, key)
+        self.plot_type.currentIndexChanged.connect(lambda _: self.render())
+        bar.addWidget(self.plot_type)
         clear = QPushButton("Clear Selection")
         clear.setToolTip("Return every effect to error (intercept-only model)")
         clear.clicked.connect(self.clear)
@@ -454,43 +626,59 @@ class EffectsPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.table.cellClicked.connect(self._clicked)
         self.graph = GraphView()
-        split = QSplitter()
-        split.addWidget(self.table)
-        split.addWidget(self.graph)
-        split.setSizes([380, 620])
+        splitter = QSplitter()
+        splitter.addWidget(self.table)
+        splitter.addWidget(self.graph)
+        splitter.setSizes([380, 620])
         self.note = hint("Click an effect — on the half-normal plot or M / e in the list — to "
                          "put it in the model (red, M) or leave it for error (blue, e). "
-                         "Whole-plot effects are estimated against the between-group "
-                         "variation and subplot effects against the within-group variation, "
-                         "so each set is judged on its own plot; check the selected model on "
-                         "the ANOVA (REML) tab.")
+                         + ("Whole-plot effects are estimated against the between-group "
+                            "variation and subplot effects against the within-group variation, "
+                            "so each set is judged on its own plot; check the selected model on "
+                            "the ANOVA (REML) tab." if split else
+                            "Effects far from the error line are real; the Shapiro-Wilk test "
+                            "checks that the effects left for error look like noise. Check "
+                            "the selected model (and curvature, with centre points) on the "
+                            "ANOVA tab."))
+        self.shapiro = QLabel()
+        self.shapiro.setStyleSheet(f"color:{style.MUTED};")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.addLayout(bar)
-        lay.addWidget(split, 1)
+        lay.addWidget(splitter, 1)
+        lay.addWidget(self.shapiro)
         lay.addWidget(self.note)
 
     def set_kind(self, kind: str) -> None:
         self.kind = kind
-        if not self.buttons[kind].isChecked():
+        if kind in self.buttons and not self.buttons[kind].isChecked():
             self.buttons[kind].setChecked(True)
         self.render()
+
+    def set_plot(self, key: str) -> None:
+        self.plot_type.setCurrentIndex(self.plot_type.findData(key))
 
     def refresh(self) -> None:
         try:
             a = self.view.analysis()
-            self.effects = model.split_plot_effects(a.space, a.obs,
-                                                    transform=a.fit.transform)
+            tr = a.fit.transform if not is_glm(a.fit) else Transform()
+            if self.split:
+                self.effects = model.split_plot_effects(a.space, a.obs, transform=tr)
+            else:
+                self.effects = {"all": model.factorial_effects(a.space, a.obs, transform=tr)}
         except (ValueError, np.linalg.LinAlgError) as exc:
-            self.effects = {"sub": [], "whole": []}
+            self.effects = {"sub": [], "whole": [], "all": []}
             self.table.setRowCount(0)
             self.graph.set_message(f"Effects not available: {exc}")
             return
         self.terms = list(a.fit.terms)
         label = a.fit.transform.label(a.fit.response_name)
-        nw, ns = len(self.effects["whole"]), len(self.effects["sub"])
-        self.label.setText(f"<b>Response {self.view.index + 1}: {label}</b> — {ns} subplot "
-                           f"and {nw} whole-plot effects; model: "
+        if self.split:
+            nw, ns = len(self.effects["whole"]), len(self.effects["sub"])
+            what = f"{ns} subplot and {nw} whole-plot effects"
+        else:
+            what = f"{len(self.effects['all'])} effects"
+        self.label.setText(f"<b>Response {self.view.index + 1}: {label}</b> — {what}; model: "
                            f"{report.model_label(a.space, self.terms)}")
         self.render()
 
@@ -498,14 +686,29 @@ class EffectsPage(QWidget):
         eff = self.effects.get(self.kind, [])
         tset = set(self.terms)
         selected = {e["name"] for e in eff if e["term"] in tset}
-        title = dict(EFFECT_SETS)[self.kind]
+        title = dict(EFFECT_SETS).get(self.kind, "")
         from rsstatchem.core.doe import plots
 
         name = self.view.response_title
-        fig = plots.half_normal_figure(eff, f"Half-Normal Plot, {title}: {name}", selected)
-        self.graph.set_figure(fig, f"half_normal_{self.kind}")
-        if self.graph.canvas is not None:
-            self.graph.canvas.mpl_connect("button_press_event", self._pick)
+        ptype = self.plot_type.currentData() or "half_normal"
+        head = f", {title}" if title else ""
+        if ptype == "pareto":
+            self.graph.set_png(plots.pareto_chart(eff, f"Pareto Chart{head}: {name}"),
+                               f"pareto_{self.kind}")
+        else:
+            if ptype == "normal":
+                fig = report.effects_normal_figure(eff, f"Normal Plot{head}: {name}", selected)
+            else:
+                fig = plots.half_normal_figure(eff, f"Half-Normal Plot{head}: {name}",
+                                               selected)
+            self.graph.set_figure(fig, f"{ptype}_{self.kind}")
+            if self.graph.canvas is not None:
+                self.graph.canvas.mpl_connect("button_press_event", self._pick)
+        sw = model.effects_shapiro(eff, selected)
+        self.shapiro.setText(
+            f"Shapiro-Wilk test of the {sw['n']} effects left for error: W = {sw['w']:.4f}, "
+            f"p = {sw['p']:.4f}" + ("  — not normal: a real effect may still be among them."
+                                    if sw["p"] < 0.05 else "") if sw else "")
         self.rows = sorted(eff, key=lambda e: -abs(e["effect"]))
         self.table.setRowCount(len(self.rows))
         for r, e in enumerate(self.rows):
@@ -600,12 +803,38 @@ class ModelPage(QWidget):
         auto.clicked.connect(self.auto_select)
         self.hierarchy = QCheckBox("Keep model hierarchical")
         self.hierarchy.setChecked(True)
+        self.slack = QComboBox()
+        self.slack.setToolTip("Scheffé mixture model, or a Slack-variable model that leaves "
+                              "one component out and fits the others with an intercept")
+        self.slack.currentIndexChanged.connect(self._slack_changed)
+        self.slack_label = QLabel("Mixture model:")
+        self.curv = QComboBox()
+        for key, text in model.CURVATURE_CHOICES:
+            self.curv.addItem(text, key)
+        self.curv.setToolTip("Two-level factorial with centre points: test curvature as a "
+                             "separate source, or pool it into the residual")
+        self.curv.currentIndexChanged.connect(self._curvature_changed)
+        self.curv_label = QLabel("Centre points:")
+        self.term_edit = QLineEdit()
+        self.term_edit.setPlaceholderText("e.g. A2B or A^3")
+        self.term_edit.setMaximumWidth(120)
+        self.term_edit.returnPressed.connect(self.add_term)
+        add_term = QPushButton("Add Term")
+        add_term.setToolTip("Add a term of any order up to 6 (powers by digits: A2B = A²B)")
+        add_term.clicked.connect(self.add_term)
         top = QHBoxLayout()
         top.addWidget(QLabel("Process Order:"))
         top.addWidget(self.order)
         top.addSpacing(16)
         top.addWidget(self.hierarchy)
+        top.addSpacing(12)
+        top.addWidget(self.slack_label)
+        top.addWidget(self.slack)
+        top.addWidget(self.curv_label)
+        top.addWidget(self.curv)
         top.addStretch(1)
+        top.addWidget(self.term_edit)
+        top.addWidget(add_term)
         sel = QHBoxLayout()
         top2 = sel
         top2.addWidget(QLabel("Auto Select — Criterion:"))
@@ -672,8 +901,13 @@ class ModelPage(QWidget):
 
     def refresh(self) -> None:
         v = self.view
-        sp = v.doc.space()
-        sel = v.spec().selection or {}
+        spec = v.spec()
+        try:
+            sp = model.analysis_space(v.doc.analysis_dataset(), spec, v.doc.space())
+        except ValueError:
+            sp = v.doc.space()
+        self._space = sp
+        sel = spec.selection or {}
         if sel:
             self.set_selection(sel.get("method", "backward"), sel.get("criterion", "p"),
                                float(sel.get("alpha_in", 0.1)),
@@ -685,13 +919,33 @@ class ModelPage(QWidget):
             self.status.setText(f"<span style='color:#B00020'>{exc}</span>")
         self._loading = True
         self.order.clear()
-        for name, key in model.model_orders(sp):
+        for name, key in model.all_model_orders(sp):
             self.order.addItem(name, key)
         self.order.addItem("Manual / Reduced", "manual")
+        mixture = v.doc.space().mixture
+        self.slack.setVisible(mixture)
+        self.slack_label.setVisible(mixture)
+        self.slack.clear()
+        if mixture:
+            self.slack.addItem("Scheffé", -1)
+            for j, f in enumerate(v.doc.space().factors):
+                self.slack.addItem(f"Slack: {f.letter} left out", j)
+            self.slack.setCurrentIndex(self.slack.findData(
+                spec.slack if spec.slack is not None else -1))
+        show_curv = a is not None and (getattr(a.fit, "curvature", False)
+                                       or spec.curvature == "residual"
+                                       or model.curvature_applicable(a.space, a.obs,
+                                                                     a.fit.terms))
+        self.curv.setVisible(bool(show_curv))
+        self.curv_label.setVisible(bool(show_curv))
+        self.curv.setCurrentIndex(self.curv.findData(spec.curvature))
         self._loading = False
-        self.candidates = model.candidate_terms(sp)
+        degree = max([3] + [model.term_degree(t) for t in (a.fit.terms if a else [])])
+        self.candidates = model.candidate_terms(sp, degree)
         if a is not None:
             self.terms = list(a.fit.terms)
+            extra = [t for t in self.terms if t not in set(self.candidates)]
+            self.candidates = model.sort_terms(self.candidates + extra)
             obs = a.obs
             _, dropped = model.drop_aliased(sp, obs, sorted(self.candidates,
                                                             key=model.term_degree))
@@ -725,7 +979,8 @@ class ModelPage(QWidget):
             self.table.setItem(r, 1, QTableWidgetItem(name))
             typ = QTableWidgetItem("Aliased" if aliased else
                                    {1: "Main effect", 2: "Interaction / quadratic",
-                                    3: "Third order"}.get(model.term_degree(t), "Higher order"))
+                                    3: "Third order", 4: "Fourth order", 5: "Fifth order",
+                                    6: "Sixth order"}.get(model.term_degree(t), "Higher order"))
             if aliased:
                 typ.setForeground(QBrush(QColor("#8A8F96")))
             self.table.setItem(r, 2, typ)
@@ -745,8 +1000,8 @@ class ModelPage(QWidget):
             self.status.setText(" ".join(msg))
 
     def _hierarchical(self) -> bool:
-        sp = self.view.doc.space()
-        if sp.mixture:
+        sp = getattr(self, "_space", None) or self.view.doc.space()
+        if sp.scheffe:
             return True
         tset = set(self.terms)
         for t in self.terms:
@@ -769,8 +1024,9 @@ class ModelPage(QWidget):
             return
         t = self.candidates[row]
         tset = list(self.terms)
+        sp = getattr(self, "_space", None) or self.view.doc.space()
         if t in tset:
-            if self.view.doc.space().mixture and len(t) == 1:
+            if model.is_blend_linear(sp, t):
                 self.status.setText("Linear blending terms of a mixture always stay in the "
                                     "model.")
                 return
@@ -781,11 +1037,54 @@ class ModelPage(QWidget):
             return
         else:
             tset.append(t)
-            if self.hierarchy.isChecked() and not self.view.doc.space().mixture:
+            if self.hierarchy.isChecked() and not sp.scheffe:
                 for u in self.candidates:
                     if model.contains(u, t) and u not in tset and u not in self.aliased:
                         tset.append(u)
         self._apply(tset)
+
+    def add_term(self) -> None:
+        """Add Term: a typed term of any order (with its parents when hierarchical)."""
+        sp = getattr(self, "_space", None) or self.view.doc.space()
+        try:
+            t = model.parse_term(self.term_edit.text(), sp)
+        except ValueError as exc:
+            self.status.setText(f"<span style='color:#B00020'>{exc}</span>")
+            return
+        if sp.slack is not None and sp.slack in t:
+            self.status.setText("The Slack component is not in the model.")
+            return
+        tset = list(self.terms)
+        if t not in tset:
+            tset.append(t)
+        if self.hierarchy.isChecked() and not sp.scheffe:
+            for d in range(1, len(t)):
+                for sub in set(itertools.combinations(t, d)):
+                    if sub not in tset:
+                        tset.append(sub)
+        self.term_edit.clear()
+        self._apply(model.sort_terms(tset))
+
+    def _slack_changed(self, _=None) -> None:
+        if self._loading:
+            return
+        j = self.slack.currentData()
+        spec = self.view.spec()
+        new = None if j is None or j < 0 else int(j)
+        if spec.slack == new:
+            return
+        spec.slack = new
+        spec.model, spec.terms, spec.reduction = "suggested", None, "none"
+        self.view.set_spec(spec)
+
+    def _curvature_changed(self, _=None) -> None:
+        if self._loading:
+            return
+        spec = self.view.spec()
+        key = self.curv.currentData() or "model"
+        if spec.curvature != key:
+            spec.curvature = key
+            self.view.set_spec(spec)
 
     def _order_changed(self, _=None) -> None:
         if self._loading:
@@ -793,7 +1092,8 @@ class ModelPage(QWidget):
         key = self.order.currentData()
         if key in (None, "manual"):
             return
-        self._apply(model.model_terms(self.view.doc.space(), key))
+        sp = getattr(self, "_space", None) or self.view.doc.space()
+        self._apply(model.model_terms(sp, key))
 
     def auto_select(self) -> list:
         """Design-Expert's Auto Select on the current model's terms. Returns the steps."""
@@ -804,10 +1104,20 @@ class ModelPage(QWidget):
         v = self.view
         try:
             a = v.analysis()
+            factory = None
+            if is_glm(a.fit):
+                from rsstatchem.core.doe import glm
+
+                f0 = a.fit
+
+                def factory(ts):
+                    return glm.GLMFit(a.space, a.obs, ts, f0.family,
+                                      None if np.all(f0.m == 1) else f0.m, v.col)
             fit, steps = model.auto_select(a.space, a.obs, list(a.fit.terms), a.fit.transform,
                                            method, crit, self.alpha_in.value(),
                                            self.alpha.value(), self.hierarchy.isChecked(),
-                                           v.col)
+                                           v.col, curvature=a.spec.curvature != "residual",
+                                           fit_factory=factory)
         except (ValueError, np.linalg.LinAlgError) as exc:
             self.status.setText(f"<span style='color:#B00020'>{exc}</span>")
             return []
@@ -861,8 +1171,12 @@ def anova_items(a: model.Analysis) -> list:
     name = report.model_label(a.space, fit.terms)
     items: list = []
     label = fit.transform.label(fit.response_name)
-    items.append(Text("", f"Response: {label}    ·    Transform: "
-                          f"{fit.transform.describe()}    ·    Model: {name}"))
+    if is_glm(fit):
+        items.append(Text("", f"Response: {fit.response_name}    ·    Distribution: "
+                              f"{fit.family_title}    ·    Model: {name}"))
+    else:
+        items.append(Text("", f"Response: {label}    ·    Transform: "
+                              f"{fit.transform.describe()}    ·    Model: {name}"))
     if a.dropped:
         items.append(Text("Aliased Terms", "Removed because they are aliased in this design: "
                           + ", ".join(term_name(t) for t in a.dropped) + ".", style="warning"))
@@ -875,6 +1189,10 @@ def anova_items(a: model.Analysis) -> list:
     items.append(st)
     if interp2:
         items.append(annotation("\n".join(interp2)))
+    if is_glm(fit):
+        items.append(report.goodness_of_fit_table(fit))
+        for w in getattr(fit, "warnings", []):
+            items.append(Text("", w, style="warning"))
     if report.is_reml(fit):
         items.append(report.variance_components_table(fit))
         items.append(annotation(
@@ -885,8 +1203,19 @@ def anova_items(a: model.Analysis) -> list:
     items.append(report.coefficient_table(fit))
     items.append(annotation("VIFs near 1 mean the coefficients are estimated independently "
                             "(orthogonal factors); VIFs above 10 indicate multicollinearity."))
+    tt = report.treatment_tables(fit, model.PREFERENCES.ci_level)
+    if tt:
+        items.extend(tt)
+        items.append(annotation("Treatment means compare the levels of a categoric factor; "
+                                "pairs with a p-value below 0.05 differ significantly (LSD "
+                                "unadjusted, Tukey adjusted for all pairs)."))
     items.extend(report.equation_tables(fit))
-    if label != fit.response_name:
+    if is_glm(fit):
+        items.append(Text("", f"Model on the {'logit' if fit.family == 'binomial' else 'log'} "
+                              "link scale; predictions are "
+                              + ("probabilities." if fit.family == "binomial" else
+                                 "expected counts.")))
+    elif label != fit.response_name:
         items.append(Text("", f"Analysis on the transformed scale {label}; predictions are "
                               "back-transformed to original units."))
     return items
@@ -920,7 +1249,7 @@ DIAGNOSTICS = [("normal", "Normal Plot"), ("resid_pred", "Residuals vs. Predicte
                ("boxcox", "Box-Cox"), ("resid_factor", "Residuals vs. Factor"),
                ("cooks", "Cook's Distance"), ("leverage", "Leverage vs. Run"),
                ("dffits", "DFFITS vs. Run"), ("dfbetas", "DFBETAS vs. Run"),
-               ("report", "Report")]
+               ("covratio", "Covariance Ratio"), ("report", "Report")]
 
 
 class DiagnosticsPage(QWidget):
@@ -951,9 +1280,30 @@ class DiagnosticsPage(QWidget):
         self.term = QComboBox()
         self.term.currentIndexChanged.connect(lambda _: self.render())
         pl.addWidget(self.term)
-        lab = QLabel("<small>Residuals: externally studentized.<br>Red lines: limits "
-                     "(Bonferroni outlier limits, Cook's distance F(0.5), 2p/n leverage, "
-                     "2√(p/n) DFFITS, 3/√n DFBETAS).</small>")
+        pl.addWidget(QLabel("Residuals:"))
+        self.residual = QComboBox()
+        for key, text in report.RESIDUAL_TYPES:
+            self.residual.addItem(text, key)
+        self.residual.currentIndexChanged.connect(lambda _: self.render())
+        pl.addWidget(self.residual)
+        pl.addWidget(QLabel("Color points by:"))
+        self.color_by = QComboBox()
+        self.color_by.addItem("None", "none")
+        doc = view.doc
+        if doc.n_blocks > 1:
+            self.color_by.addItem("Block", "block")
+        if doc.split_plot:
+            self.color_by.addItem("Group", "group")
+        for j, f in enumerate(doc.factors):
+            self.color_by.addItem(doc.factor_title(j), f"factor:{j}")
+        self.color_by.currentIndexChanged.connect(lambda _: self.render())
+        pl.addWidget(self.color_by)
+        self.dw = QLabel()
+        self.dw.setWordWrap(True)
+        pl.addWidget(self.dw)
+        lab = QLabel("<small>Red lines: limits (Bonferroni outlier limits, Cook's distance "
+                     "F(0.5), 2p/n leverage, 2√(p/n) DFFITS, 3/√n DFBETAS, 1 ± 3p/n "
+                     "covariance ratio).</small>")
         lab.setWordWrap(True)
         pl.addWidget(lab)
         self.graph = GraphView()
@@ -999,6 +1349,9 @@ class DiagnosticsPage(QWidget):
             self.term.blockSignals(False)
         self.term.setEnabled(key == "dfbetas")
         self.factor.setEnabled(key == "resid_factor")
+        dw = a.fit.durbin_watson() if hasattr(a.fit, "durbin_watson") and not is_glm(a.fit) \
+            else float("nan")
+        self.dw.setText(f"Durbin-Watson: <b>{dw:.3f}</b>" if math.isfinite(dw) else "")
         if key == "report":
             sec = report.diagnostics_section(a, plots_wanted=(), table=True)
             self.right.setCurrentIndex(1)
@@ -1013,7 +1366,9 @@ class DiagnosticsPage(QWidget):
         try:
             sec = report.diagnostics_section(a, plots_wanted=(key,), table=False,
                                              factor_index=self.factor.currentData() or 0,
-                                             term_index=max(self.term.currentIndex(), 0))
+                                             term_index=max(self.term.currentIndex(), 0),
+                                             residual=self.residual.currentData() or "external",
+                                             color_by=self.color_by.currentData())
         except (ValueError, np.linalg.LinAlgError, ZeroDivisionError) as exc:
             self.right.setCurrentIndex(0)
             self.graph.set_message(str(exc))
@@ -1033,13 +1388,28 @@ PROCESS_GRAPHS = [("perturbation", "perturbation", "Perturbation"),
                   ("one_factor", "onefactor", "One Factor"),
                   ("interaction", "interaction", "Interaction"),
                   ("contour", "contour", "Contour"), ("surface", "surface", "3D Surface"),
-                  ("cube", "cube", "Cube")]
+                  ("cube", "cube", "Cube"), ("all_factors", "graphcols", "All Factors"),
+                  ("se", "variance", "Standard Error")]
 GRAPH_AXES = {"contour": 2, "surface": 2, "interaction": 2, "one_factor": 1, "cube": 3,
-              "ternary": 3, "perturbation": 0, "trace": 0}
+              "ternary": 3, "perturbation": 0, "trace": 0, "all_factors": 0, "se": 2,
+              "se_ternary": 3}
 MIXTURE_GRAPHS = [("ternary", "ternary", "Contour (Ternary)"),
                   ("surface3", "surface", "3D Surface"), ("trace", "trace", "Trace (Cox)"),
-                  ("one_factor", "onefactor", "One Factor")]
+                  ("one_factor", "onefactor", "One Factor"),
+                  ("se_ternary", "variance", "Standard Error")]
+# combined mixture-process designs: process graphs at a fixed blend, mixture graphs at fixed
+# process settings (Mix x Process)
+COMBINED_GRAPHS = [("ternary", "ternary", "Mixture Contour (Ternary)"),
+                   ("surface3", "surface", "Mixture 3D Surface"),
+                   ("se_ternary", "variance", "Mixture Std Error"),
+                   ("contour", "contour", "Process Contour"),
+                   ("surface", "surface", "Process 3D Surface"),
+                   ("one_factor", "onefactor", "Process One Factor"),
+                   ("interaction", "interaction", "Process Interaction"),
+                   ("all_factors", "graphcols", "All Process Factors"),
+                   ("se", "variance", "Process Std Error")]
 GRAPH_AXES["surface3"] = 3
+MIX_AXIS_GRAPHS = ("ternary", "surface3", "se_ternary")
 
 
 class ModelGraphsPage(QWidget):
@@ -1057,20 +1427,26 @@ class ModelGraphsPage(QWidget):
         t.setStyleSheet(f"color:{style.BLUE}; font-weight:600;")
         pl.addWidget(t)
         self.buttons = {}
-        graphs = MIXTURE_GRAPHS if sp.mixture else PROCESS_GRAPHS
-        numeric = sum(1 for f in sp.factors if not f.categoric)
+        graphs = COMBINED_GRAPHS if sp.combined else MIXTURE_GRAPHS if sp.mixture else \
+            PROCESS_GRAPHS
+        numeric = sum(1 for j, f in enumerate(sp.factors) if not f.categoric
+                      and not (sp.combined and sp.is_mix(j)))
+        nproc = len(sp.proc_idx) if sp.combined else sp.k
+        nmix = len(sp.mix_idx)
         self.group = QButtonGroup(self)
         for key, icon_name, text in graphs:
             b = tool_button(icon_name, text)
             b.setAutoExclusive(True)
             b.setMinimumWidth(220)
             ok = True
-            if key in ("contour", "surface", "interaction") and (numeric < 2 if key != "interaction"
-                                                                 else sp.k < 2):
+            if key in ("contour", "surface", "interaction", "se") and (
+                    numeric < 2 if key != "interaction" else nproc < 2):
                 ok = False
             if key == "cube" and numeric < 3:
                 ok = False
-            if key in ("ternary", "surface3") and sp.k < 3:
+            if key in MIX_AXIS_GRAPHS and nmix < 3:
+                ok = False
+            if key in ("one_factor", "all_factors") and sp.combined and nproc < 1:
                 ok = False
             b.setEnabled(ok)
             b.clicked.connect(lambda _=False, k=key: self.set_graph(k))
@@ -1081,6 +1457,28 @@ class ModelGraphsPage(QWidget):
         self.points.setChecked(True)
         self.points.toggled.connect(lambda _: self.render())
         pl.addWidget(self.points)
+        self.pi_bands = QCheckBox("Prediction bands (one factor)")
+        self.pi_bands.toggled.connect(lambda _: self.render())
+        pl.addWidget(self.pi_bands)
+        self.lsd = QCheckBox("LSD bars (categoric levels)")
+        self.lsd.toggled.connect(lambda _: self.render())
+        pl.addWidget(self.lsd)
+        crow = QHBoxLayout()
+        crow.addWidget(QLabel("Colors:"))
+        self.cmap = QComboBox()
+        from rsstatchem.core.doe import plots as _plots
+
+        for key, text in _plots.COLORMAPS:
+            self.cmap.addItem(text, key)
+        self.cmap.currentIndexChanged.connect(lambda _: self.render())
+        crow.addWidget(self.cmap, 1)
+        pl.addLayout(crow)
+        self.levels = QLineEdit()
+        self.levels.setPlaceholderText("Contours: automatic")
+        self.levels.setToolTip("Custom contour values, separated by commas or spaces "
+                               "(blank: 10 equally spaced levels)")
+        self.levels.editingFinished.connect(self.render)
+        pl.addWidget(self.levels)
         self.tool = FactorsTool(sp, n_axes=min(3, sp.k))
         self.tool.changed.connect(self.render)
         scroll = QScrollArea()
@@ -1097,19 +1495,33 @@ class ModelGraphsPage(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(panel)
         lay.addWidget(self.graph, 1)
-        default = "ternary" if sp.mixture and sp.k >= 3 else (
+        default = "ternary" if (sp.mixture or sp.combined) and nmix >= 3 else (
             "contour" if numeric >= 2 else "one_factor")
         if sp.mixture and sp.k < 3:
             default = "one_factor"
         self.graph_key = default
         self.buttons[default].setChecked(True)
-        self.tool.set_active_axes(GRAPH_AXES[default])
+        self.tool.set_active_axes(GRAPH_AXES[default], self._prefer(default))
+
+    def _prefer(self, key: str) -> list[int] | None:
+        sp = self.space
+        if not sp.combined:
+            return None
+        return sp.mix_idx if key in MIX_AXIS_GRAPHS else sp.proc_idx
 
     def set_graph(self, key: str) -> None:
         self.graph_key = key
         self.buttons[key].setChecked(True)
-        self.tool.set_active_axes(GRAPH_AXES[key])
+        self.tool.set_active_axes(GRAPH_AXES[key], self._prefer(key))
         self.render()
+
+    def contour_levels(self) -> list[float] | None:
+        text = self.levels.text().replace(";", ",").replace(",", " ").split()
+        try:
+            vals = [float(t) for t in text]
+        except ValueError:
+            return None
+        return vals or None
 
     def refresh(self) -> None:
         self.render()
@@ -1139,15 +1551,51 @@ class ModelGraphsPage(QWidget):
         ref = self.tool.point()
         use = axes[:max(need, 1)] if need else axes or [0]
         show = self.points.isChecked() and v.show_points
+        cmap = self.cmap.currentData()
+        levels = self.contour_levels()
         try:
             if key in report.FIGURE_GRAPHS:  # live canvas: rotate 3D views, flag contours
-                gf = report.graph_figure(a, key, use, ref, points=show)
+                gf = report.graph_figure(a, key, use, ref, points=show, levels=levels,
+                                         cmap=cmap)
                 self.graph.set_figure(gf.figure, f"{v.col}_{key}", gf.rotatable, gf.probe)
                 return
-            sec = report.graph_section(a, key, use, ref, points=show)
+            sec = report.graph_section(a, key, use, ref, points=show,
+                                       pi_bands=self.pi_bands.isChecked(),
+                                       lsd=self.lsd.isChecked())
         except (ValueError, np.linalg.LinAlgError, IndexError) as exc:
             self.graph.set_message(str(exc))
             return
         img = next((i for i in sec.items if isinstance(i, Image)), None)
         if img is not None:
             self.graph.set_png(img.png, f"{v.col}_{key}")
+
+
+# ---------------------------------------------------------------------------- Analysis Summary
+class AnalysisSummaryView(QWidget):
+    """Design-Expert's Analysis Summary node: one row per analysis of every response with
+    its transform or distribution, model, model / lack-of-fit / curvature p-values and fit
+    statistics. (WP-A wires it into the tree under Analysis; ``refresh`` re-reads the
+    document.)"""
+
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        self.doc = doc
+        self.report = ReportView()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.addWidget(hint("Every analysis of every response; * marks the analysis used by "
+                           "optimization and post analysis. Add analyses with the + button on "
+                           "a response's tab strip."))
+        lay.addWidget(self.report, 1)
+        self.refresh()
+
+    def refresh(self) -> None:
+        try:
+            t = report.analysis_summary_table(self.doc.analysis_dataset())
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.report.set_items(_error_items(exc), "Analysis Summary")
+            return
+        self.report.set_items([t], "Analysis Summary")
+
+    def current_report(self) -> ReportView:
+        return self.report
