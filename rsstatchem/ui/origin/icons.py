@@ -187,6 +187,50 @@ _SVG = {
     "g_ternary": (f'<path d="M12 3L21 19H3z" {_S}/><circle cx="12" cy="12" r="1.6" fill="{R}"/>'
                   f'<circle cx="9" cy="15" r="1.6" fill="{B}"/><circle cx="15" cy="15.5" r="1.6"'
                   f' fill="{G}"/>'),
+    # WP-4 graph types and graph tools (own designs)
+    "g_violin": _AX + (f'<path d="M12 4c-3 4-4 6-2 9-2 3-1 5 2 7 3-2 4-4 2-7 2-3 1-5-2-9z" '
+                       f'fill="{B}" fill-opacity=".75" stroke="{K}" stroke-width=".8"/>'
+                       f'<path d="M12 9v7" stroke="#fff" stroke-width="1.6"/>'),
+    "g_qq": _AX + (f'<path d="M5 19L20 5" stroke="{R}" stroke-width="1.5"/>' + ''.join(
+        f'<rect x="{x - 1.3}" y="{y - 1.3}" width="2.6" height="2.6" fill="{K}"/>'
+        for x, y in ((6, 17), (9, 15.5), (12, 12), (15, 9.5), (18, 5.5)))),
+    "g_kde": _AX + (f'<path d="M4 20c3 0 4-12 7-12s3 6 5 6 2-3 4-3" fill="{B}" '
+                    f'fill-opacity=".35" stroke="{B}" stroke-width="1.6"/>'),
+    "g_pareto": _AX + ''.join(f'<rect x="{x}" y="{y}" width="3" height="{20.5 - y}" '
+                              f'fill="{B}"/>' for x, y in ((5, 6), (9, 10), (13, 14), (17, 17)))
+    + f'<path d="M6.5 14l4-5 4-2.5 4-1.5" fill="none" stroke="{R}" stroke-width="1.5"/>',
+    "g_radar": (f'<path d="M12 3l8.5 6.2-3.2 10H6.7L3.5 9.2z" {_S}/>'
+                f'<path d="M12 7l5 4-2 6H9l-3-6z" fill="{B}" fill-opacity=".5" stroke="{B}"/>'),
+    "g_vector": _AX + ''.join(f'<path d="M{x} {y}l4 -3" stroke="{K}" stroke-width="1.3"/>'
+                              f'<path d="M{x + 4} {y - 3}l-2.2 .2 1 1.6z" fill="{K}"/>'
+                              for x, y in ((6, 17), (11, 15), (6, 11), (13, 9))),
+    "g_control": _AX + (f'<path d="M4 7h17M4 17h17" stroke="{R}" stroke-dasharray="2 1.5"/>'
+                        f'<path d="M4 12h17" stroke="{G}"/><path d="M5 12l3-3 3 4 3-2 3 3 '
+                        f'3-4" fill="none" stroke="{K}" stroke-width="1.4"/>'),
+    "g_panel4": ''.join(f'<rect x="{x}" y="{y}" width="8" height="8" fill="#fff" '
+                        f'stroke="{K}" stroke-width="1.2"/><path d="M{x + 1.5} {y + 6}l2-3 '
+                        f'2 1.5 2-3" fill="none" stroke="{B}" stroke-width="1.1"/>'
+                        for x, y in ((3, 3), (13, 3), (3, 13), (13, 13))),
+    "g_layers": (f'<path d="M12 4l9 4.5-9 4.5-9-4.5z" fill="#9ec2f0" stroke="{K}"/>'
+                 f'<path d="M3 12.5l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5" fill="none" stroke="{K}"/>'),
+    "g_break": _AX + (f'<path d="M5 15l4-6" stroke="{B}" stroke-width="1.6"/><path d="M15 '
+                      f'9l5-4" stroke="{B}" stroke-width="1.6"/><path d="M10 22l2-4M13 22l2-4"'
+                      f' stroke="{K}" stroke-width="1.3"/>'),
+    "g_ref": _AX + (f'<path d="M4 11h17" stroke="{R}" stroke-width="1.4" stroke-dasharray="3 '
+                    f'2"/><rect x="4" y="14" width="17" height="4" fill="#ffcc66" '
+                    f'fill-opacity=".6"/>'),
+    "g_gadget": _AX + (f'<rect x="9" y="4" width="7" height="16.5" fill="{B}" '
+                       f'fill-opacity=".2" stroke="{B}"/><path d="M5 17l4-6 4 3 4-8 3 3" '
+                       f'fill="none" stroke="{K}" stroke-width="1.4"/>'),
+    "g_digitizer": (f'<rect x="3" y="3" width="18" height="18" fill="#f3f3f3" stroke="{K}"/>'
+                    f'<path d="M6 17l4-6 3 3 5-7" fill="none" stroke="#888" stroke-width="1.3"'
+                    f'/><circle cx="13" cy="14" r="2.6" fill="none" stroke="{R}" '
+                    f'stroke-width="1.6"/><path d="M13 9v2M13 17v2M8 14h2M16 14h2" '
+                    f'stroke="{R}" stroke-width="1.4"/>'),
+    "g_layout": (f'<rect x="4" y="2.5" width="16" height="19" fill="#fff" stroke="{K}" '
+                 f'stroke-width="1.2"/><rect x="6" y="5" width="12" height="6" fill="#9ec2f0"/>'
+                 f'<rect x="6" y="13" width="5.5" height="6" fill="#f7b89c"/><rect x="12.5" '
+                 f'y="13" width="5.5" height="6" fill="#b7e0a8"/>'),
     # tools
     "t_reader": (f'<path d="M3 12h18M12 3v18" stroke="{K}" stroke-width="1.1"/>'
                  f'<circle cx="12" cy="12" r="4" fill="none" stroke="{R}" stroke-width="1.8"/>'

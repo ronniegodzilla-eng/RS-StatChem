@@ -26,7 +26,15 @@ VERSION = 1
 # Plot types understood by the renderer.
 PLOT_TYPES = ("line", "scatter", "line_symbol", "column", "bar", "area", "pie", "doughnut",
               "histogram", "box", "bubble", "color_scatter", "contour", "heatmap",
-              "surface3d", "scatter3d")
+              "surface3d", "scatter3d",
+              # statistical plots computed from the raw data at render time (stat_plots)
+              "violin", "qq", "probability", "kde", "kde2d", "ecdf", "pareto", "meanbar",
+              "bland_altman", "control", "floating_column", "lollipop", "vector",
+              # 3D and specialised (plots3d)
+              "bar3d", "line3d", "waterfall3d", "radar", "windrose")
+AXIS_SCALES = ("linear", "log10", "log2", "ln", "probability", "probit", "logit", "reciprocal",
+               "offset_reciprocal", "weibull", "symlog")
+TICK_FORMATS = ("auto", "decimal", "scientific", "engineering", "power10", "percent")
 LAYER_KINDS = ("cartesian", "polar", "3d", "ternary", "pie")
 
 
@@ -88,7 +96,8 @@ class Axis:
     label_font: Font = field(default_factory=lambda: Font(size=10.0))
     min: float | None = None
     max: float | None = None
-    scale: str = "linear"     # linear | log10 | log2 | ln
+    scale: str = "linear"     # one of AXIS_SCALES (Origin's Scale tab types)
+    scale_offset: float = 273.15   # offset of the offset-reciprocal scale 1/(X + offset)
     reverse: bool = False
     major_step: float | None = None
     minor_count: int = 1
@@ -107,6 +116,35 @@ class Axis:
     grid_color: str = "#c8c8c8"
     grid_style: str = ":"
     mirror_ticks: bool = False
+    # axis breaks: [{"from": a, "to": b, "position": 50 (% of axis length or None = auto)}]
+    breaks: list = field(default_factory=list)
+    break_gap: float = 2.0    # width of the break gap, % of the axis length
+    tick_format: str = "auto"  # one of TICK_FORMATS
+    prefix: str = ""
+    suffix: str = ""
+    custom_ticks: list = field(default_factory=list)   # [[value, "label"], ...]
+
+
+@dataclass
+class RefLine:
+    """Reference line or shaded range (Origin's Reference Lines / Add Shaded Range).
+
+    ``mode``: value (at ``value`` / band ``value``–``value2``), mean, median, mean_sd,
+    mean_se, mean_ci (the statistic of plot ``plot``'s data along ``axis``; ``k`` scales the
+    SD/SE)."""
+    id: str = field(default_factory=lambda: new_id("r"))
+    axis: str = "y"           # x | y | y2
+    kind: str = "line"        # line | band
+    mode: str = "value"
+    value: float = 0.0
+    value2: float = 1.0
+    k: float = 1.0
+    plot: str = ""            # plot id for statistics ("" = first plot in the layer)
+    label: str = ""
+    show_label: bool = True
+    line: LineStyle = field(default_factory=lambda: LineStyle(color="#808080", style="--",
+                                                              width=1.0))
+    fill: FillStyle = field(default_factory=lambda: FillStyle(color="#ffcc66", alpha=0.3))
 
 
 @dataclass
@@ -153,6 +191,7 @@ class Plot:
     yerr: str | None = None
     labels: str | None = None
     y_axis: str = "left"      # left | right
+    x_axis: str = "bottom"    # bottom | top (top uses the layer's independent x2 axis)
     line: LineStyle = field(default_factory=LineStyle)
     symbol: SymbolStyle = field(default_factory=SymbolStyle)
     fill: FillStyle = field(default_factory=FillStyle)
@@ -171,6 +210,11 @@ class Layer:
     y2: Axis = field(default_factory=Axis)
     z: Axis = field(default_factory=Axis)
     show_y2: bool = False
+    x2: Axis = field(default_factory=Axis)          # top axis
+    show_x2: bool = False
+    x2_formula: str = ""      # top axis linked to the bottom one, e.g. "1000/(x+273.15)"
+    y2_formula: str = ""      # right axis linked to the left one (when no plot uses it)
+    refs: list[RefLine] = field(default_factory=list)
     box: bool = True
     background: str = "#ffffff"
     grid: list[int] = field(default_factory=lambda: [0, 0, 1, 1])  # row, col, rowspan, colspan
@@ -275,6 +319,7 @@ class Graph:
         for layer in self.layers:
             for p in layer.plots:
                 used.update(k for k in (p.x, p.y, p.z, p.xerr, p.yerr, p.labels) if k)
+                used.update(v for v in p.options.get("extra_cols", []) if isinstance(v, str))
                 used.update(v for k, v in p.options.items()
                             if k.endswith("_col") and isinstance(v, str))
         self.data = {k: v for k, v in self.data.items() if k in used}

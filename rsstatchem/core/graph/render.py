@@ -17,9 +17,9 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch, Patch, Rectangle
 from scipy import stats
 
-from rsstatchem.core.graph import ternary
+from rsstatchem.core.graph import plots3d, scales, stat_plots, ternary
 from rsstatchem.core.graph.gridding import xyz_grid
-from rsstatchem.core.graph.model import Axis, Font, Graph, Layer, Plot
+from rsstatchem.core.graph.model import Axis, Font, Graph, Layer, Plot, RefLine
 from rsstatchem.core.graph.text import resolve_family, rich
 from rsstatchem.core.graph.themes import DASHES, HATCHES, PALETTES, SYMBOLS
 
@@ -35,6 +35,7 @@ class RenderMap:
     artists: list[tuple[object, tuple]] = field(default_factory=list)
     points: list[tuple] = field(default_factory=list)          # (li, plot_id, ax, x, y)
     errors: list[str] = field(default_factory=list)
+    results: dict = field(default_factory=dict)   # plot id -> computed statistics
 
     def add(self, artist, ref: tuple) -> None:
         if artist is None:
@@ -116,7 +117,9 @@ def render(graph: Graph, fig) -> RenderMap:
     gridded = [layer for layer in graph.layers if not layer.rect]
     if gridded:
         fig.set_layout_engine("constrained")
-        fig.get_layout_engine().set(w_pad=0.05, h_pad=0.05, wspace=0.04, hspace=0.04)
+        fig.get_layout_engine().set(w_pad=0.05, h_pad=0.05,
+                                    wspace=float(graph.meta.get("wspace", 0.04)),
+                                    hspace=float(graph.meta.get("hspace", 0.04)))
     else:
         fig.set_layout_engine(None)
     rows = max([graph.rows] + [l.grid[0] + l.grid[2] for l in gridded]) if gridded else 1
@@ -127,7 +130,34 @@ def render(graph: Graph, fig) -> RenderMap:
             _render_layer(ctx, gs, li, layer)
         except Exception as exc:  # noqa: BLE001 - one bad layer must not kill the graph
             rmap.errors.append(f"Layer {li + 1}: {exc}")
+    _link_layers(graph, rmap)
     return rmap
+
+
+def _link_layers(graph: Graph, rmap: RenderMap) -> None:
+    """Origin's linked layers: ``layer.options["link_x"/"link_y"]`` = index of the master
+    layer whose axis range this layer follows (unless its own range is fixed)."""
+    for li, layer in enumerate(graph.layers):
+        info = rmap.axes.get(li)
+        for which in ("x", "y"):
+            master = layer.options.get(f"link_{which}")
+            if master is None or info is None or layer.kind != "cartesian":
+                continue
+            try:
+                master = int(master)
+            except (TypeError, ValueError):
+                continue
+            minfo = rmap.axes.get(master)
+            if minfo is None or master == li or layer.axis(which).breaks:
+                continue
+            axis = layer.axis(which)
+            if axis.min is not None or axis.max is not None:
+                continue
+            lim = (minfo["ax"].get_xlim if which == "x" else minfo["ax"].get_ylim)()
+            try:
+                (info["ax"].set_xlim if which == "x" else info["ax"].set_ylim)(lim)
+            except ValueError:
+                pass
 
 
 def _render_layer(ctx: _Ctx, gs, li: int, layer: Layer) -> None:
@@ -218,23 +248,29 @@ def _err_arrays(ctx: _Ctx, p: Plot, key, n: int, mask, order=None):
 
 def _draw_cartesian(ctx: _Ctx, li: int, layer: Layer, ax) -> list:
     plots = [p for p in layer.plots if p.visible]
-    need_y2 = layer.show_y2 or any(p.y_axis == "right" for p in plots)
+    need_y2 = (layer.show_y2 and not layer.y2_formula) or \
+        any(p.y_axis == "right" or p.type == "pareto" for p in plots)
     ax2 = ax.twinx() if need_y2 else None
     if ax2 is not None:
         ctx.map.axes[li]["ax2"] = ax2
+    axt = ax.twiny() if any(p.x_axis == "top" for p in plots) else None
+    if axt is not None:
+        ctx.map.axes[li]["axt"] = axt
     handles: list = []
     state = {"cols": [p for p in plots if p.type == "column"],
              "bars": [p for p in plots if p.type == "bar"],
              "areas": [p for p in plots if p.type == "area"],
-             "boxes": [p for p in plots if p.type == "box"],
+             "boxes": [p for p in plots if p.type in ("box", "violin", "meanbar")],
              "hists": [p for p in plots if p.type == "histogram"],
-             "wf": 0, "cbar": None}
+             "wf": 0, "cbar": None, "ax2": ax2, "post": [], "plots": plots}
     _prepare_stacks(ctx, layer, state)
     xticks = None
     for i, p in enumerate(layer.plots):
         if not p.visible:
             continue
         target = ax2 if (p.y_axis == "right" and ax2 is not None) else ax
+        if p.x_axis == "top" and axt is not None:
+            target = axt
         fn = _CART.get(p.type)
         if fn is None:
             ctx.map.errors.append(f"Plot type {p.type!r} needs a different layer type")
@@ -246,8 +282,114 @@ def _draw_cartesian(ctx: _Ctx, li: int, layer: Layer, ax) -> list:
             if handle is not None and p.id not in layer.legend.hidden:
                 handles.append((handle, p))
             xticks = ticks or xticks
-    _style_cartesian(ctx, li, layer, ax, ax2, xticks, plots)
+    _refs(ctx, li, layer, ax, ax2)
+    _style_cartesian(ctx, li, layer, ax, ax2, xticks, plots, axt)
+    for target in (ax, ax2, axt):
+        if target is not None:
+            target.set_autoscale_on(False)
+    for fn in state["post"]:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            ctx.map.errors.append(str(exc))
+    _roi(ctx, li, layer, ax)
     return handles
+
+
+# ---------------------------------------------------------------------- reference lines
+def ref_value(graph: Graph, layer: Layer, ref: RefLine) -> list[float]:
+    """Positions of a reference line/band: [v] for a line, [lo, hi] for a band, and
+    [center, lo, hi] for the mean ± k·SD/SE/CI modes."""
+    if ref.mode == "value":
+        return [float(ref.value)] if ref.kind == "line" else sorted([float(ref.value),
+                                                                      float(ref.value2)])
+    plot = next((p for p in layer.plots if p.id == ref.plot), None) or \
+        (layer.plots[0] if layer.plots else None)
+    if plot is None:
+        raise ValueError("reference line needs a plot for its statistic")
+    key = plot.x if ref.axis == "x" else plot.y
+    v = graph.values(key)
+    if v is None:
+        raise ValueError("no data for the reference statistic")
+    v = v[np.isfinite(v)] if v.dtype != object else np.array([], float)
+    if not len(v):
+        raise ValueError("no data for the reference statistic")
+    if ref.mode == "mean":
+        return [float(v.mean())]
+    if ref.mode == "median":
+        return [float(np.median(v))]
+    n = len(v)
+    sd = float(v.std(ddof=1)) if n > 1 else 0.0
+    half = {"mean_sd": sd, "mean_se": sd / math.sqrt(n),
+            "mean_ci": stats.t.ppf(0.975, max(n - 1, 1)) * sd / math.sqrt(n)}.get(ref.mode)
+    if half is None:
+        raise ValueError(f"unknown reference mode {ref.mode!r}")
+    half *= ref.k if ref.mode != "mean_ci" else 1.0
+    m = float(v.mean())
+    return [m, m - half, m + half]
+
+
+def _refs(ctx: _Ctx, li, layer: Layer, ax, ax2) -> None:
+    for ref in layer.refs:
+        target = ax2 if (ref.axis == "y2" and ax2 is not None) else ax
+        try:
+            vals = ref_value(ctx.g, layer, ref)
+        except Exception as exc:  # noqa: BLE001
+            ctx.map.errors.append(f"Reference line: {exc}")
+            continue
+        vertical = ref.axis == "x"
+        lkw = {"color": ref.line.color if ref.line.color != "auto" else "#808080",
+               "lw": ref.line.width, "ls": ref.line.style if ref.line.style != "auto"
+               else "--", "zorder": 1.8}
+        arts = []
+        if ref.kind == "band" and len(vals) >= 2:
+            lo, hi = vals[-2], vals[-1]
+            span = target.axvspan if vertical else target.axhspan
+            arts.append(span(lo, hi, color=ref.fill.color, alpha=ref.fill.alpha, lw=0,
+                             zorder=0.8))
+            if len(vals) == 3 and ref.line.visible:
+                arts.append((target.axvline if vertical else target.axhline)(vals[0], **lkw))
+        elif ref.line.visible:
+            for v in vals:
+                arts.append((target.axvline if vertical else target.axhline)(v, **lkw))
+        if ref.show_label and (ref.label or ref.mode != "value"):
+            text = ref.label or {"mean": "Mean", "median": "Median", "mean_sd":
+                                 f"Mean ± {ref.k:g} SD", "mean_se": f"Mean ± {ref.k:g} SE",
+                                 "mean_ci": "Mean ± 95% CI"}.get(ref.mode, "")
+            font = ctx.font(Font(size=layer.x.label_font.size * 0.8, color=lkw["color"]))
+            if vertical:
+                t = target.text(vals[0], 0.98, rich(text), rotation=90, ha="right", va="top",
+                                transform=target.get_xaxis_transform(), **font)
+            else:
+                t = target.text(0.99, vals[0], rich(text), ha="right", va="bottom",
+                                transform=target.get_yaxis_transform(), **font)
+            t.set_in_layout(False)
+            arts.append(t)
+        for a in arts:
+            ctx.map.add(a, ("ref", li, ref.id))
+
+
+def _roi(ctx: _Ctx, li, layer: Layer, ax) -> None:
+    """Region of interest of a gadget (``layer.options["roi"]``), drawn as a shaded range."""
+    roi = layer.options.get("roi")
+    if not roi:
+        return
+    try:
+        x0, x1 = sorted((float(roi["x0"]), float(roi["x1"])))
+    except (KeyError, TypeError, ValueError):
+        return
+    span = ax.axvspan(x0, x1, color=roi.get("color", "#3d7fd9"), alpha=0.15, lw=1.0,
+                      zorder=0.9)
+    edges = [ax.axvline(v, color=roi.get("color", "#3d7fd9"), lw=1.0, zorder=3)
+             for v in (x0, x1)]
+    title = roi.get("title")
+    if title:
+        t = ax.text((x0 + x1) / 2, 0.99, rich(title), ha="center", va="top", zorder=6,
+                    transform=ax.get_xaxis_transform(),
+                    **ctx.font(Font(size=layer.x.label_font.size * 0.8, color="#1f4fa0")))
+        t.set_in_layout(False)
+        edges.append(t)
+    ctx.map.add([span] + edges, ("roi", li))
 
 
 def _register(ctx, li, p, ax, artists, x=None, y=None):
@@ -256,8 +398,38 @@ def _register(ctx, li, p, ax, artists, x=None, y=None):
         ctx.map.points.append((li, p.id, ax, np.asarray(x, float), np.asarray(y, float)))
 
 
+LABEL_POS = {"above": ((0, 4), "center", "bottom"), "below": ((0, -4), "center", "top"),
+             "left": ((-4, 0), "right", "center"), "right": ((4, 0), "left", "center"),
+             "center": ((0, 0), "center", "center"),
+             "above right": ((3, 3), "left", "bottom")}
+
+
+def _fmt_value(fmt: str, v) -> str:
+    try:
+        return fmt.format(v)
+    except (ValueError, IndexError, KeyError):
+        return f"{v:.3g}"
+
+
+def _value_labels(ctx, li, ax, p, x, y, i) -> None:
+    """Data labels from the X/Y values (Plot Details > Label: Y, X or (X, Y))."""
+    mode = p.options.get("data_labels", "none")
+    if mode in ("none", "column", None):
+        return
+    fmt = p.options.get("label_format", "{:.3g}")
+    off, ha, va = LABEL_POS.get(p.options.get("label_pos", "above"), LABEL_POS["above"])
+    font = Font(size=p.options.get("label_size", 8.0), color=ctx.line_color(p, i))
+    for xv, yv in zip(x, y):
+        text = {"y": _fmt_value(fmt, yv), "x": _fmt_value(fmt, xv),
+                "xy": f"({_fmt_value(fmt, xv)}, {_fmt_value(fmt, yv)})"}.get(mode, "")
+        ann = ax.annotate(text, (xv, yv), xytext=off, textcoords="offset points", ha=ha,
+                          va=va, **ctx.font(font))
+        ctx.map.add(ann, ("plot", li, p.id))
+
+
 def _labels(ctx, li, ax, p, x, y, mask, i, order=None):
     if not p.labels:
+        _value_labels(ctx, li, ax, p, x, y, i)
         return
     lab = ctx.col(p.labels)
     if lab is None:
@@ -267,11 +439,13 @@ def _labels(ctx, li, ax, p, x, y, mask, i, order=None):
         vals = vals[order]
     vals = vals[mask]
     font = Font(size=p.options.get("label_size", 8.0), color=ctx.line_color(p, i))
+    off, ha, va = LABEL_POS.get(p.options.get("label_pos", "above right"),
+                                LABEL_POS["above right"])
     for xv, yv, t in zip(x, y, vals):
         if isinstance(t, float):
             t = lab.value_labels.get(t, _num(t)) if np.isfinite(t) else ""
-        ann = ax.annotate(rich(str(t)), (xv, yv), xytext=(3, 3), textcoords="offset points",
-                          **ctx.font(font))
+        ann = ax.annotate(rich(str(t)), (xv, yv), xytext=off, textcoords="offset points",
+                          ha=ha, va=va, **ctx.font(font))
         ctx.map.add(ann, ("plot", li, p.id))
 
 
@@ -310,13 +484,49 @@ def _line(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
             artists += ax.plot(xs, ys, color=col, lw=p.line.width, ls=ctx.dash(p, i))
             kw["ls"] = "none"
             xs, ys = x, y
-    if connect == "step":
-        kw["drawstyle"] = "steps-mid"
+    if connect in ("step", "step_h", "step_v"):
+        kw["drawstyle"] = {"step": "steps-mid", "step_h": "steps-post",
+                           "step_v": "steps-pre"}[connect]
+    skip = int(p.options.get("skip", 1) or 1)
+    if skip > 1 and p.symbol.visible:
+        kw["markevery"] = skip
+    if p.options.get("alpha") is not None:
+        kw["alpha"] = float(p.options["alpha"])
     (handle,) = ax.plot(xs, ys, **kw)
     artists.append(handle)
-    if p.xerr or p.yerr:
+    artists += _fill_to(ctx, layer, ax, p, i, x[mask], y[mask], state)
+    band = bool(p.options.get("error_band")) and p.yerr
+    if band:
+        e = _err_arrays(ctx, p, p.yerr, len(x), mask, order)
+        lo_e, hi_e = (e[0], e[1]) if e is not None and e.ndim == 2 else (e, e)
+        if e is not None:
+            o = np.argsort(x[mask], kind="stable")
+            xm, ym = x[mask][o], y[mask][o]
+            ecol = p.error.color if p.error.color != "auto" else col
+            artists.append(ax.fill_between(xm, ym - lo_e[o], ym + hi_e[o], color=ecol,
+                                           alpha=float(p.options.get("band_alpha", 0.25)),
+                                           lw=0, zorder=handle.get_zorder() - 0.2))
+    drop = p.options.get("drop_lines", "none")
+    if drop in ("x", "y", "both"):
+        xd, yd = x[mask], y[mask]
+        dcol = p.options.get("drop_color", col)
+
+        def draw_drops(ax=ax, xd=xd, yd=yd, drop=drop, dcol=dcol):
+            lo_y = min(ax.get_ylim())
+            lo_x = min(ax.get_xlim())
+            arts = []
+            if drop in ("x", "both"):
+                arts.append(ax.vlines(xd, lo_y, yd, colors=dcol, lw=0.8, ls="--",
+                                      zorder=1.5))
+            if drop in ("y", "both"):
+                arts.append(ax.hlines(yd, lo_x, xd, colors=dcol, lw=0.8, ls="--",
+                                      zorder=1.5))
+            ctx.map.add(arts, ("plot", li, p.id))
+        state["post"].append(draw_drops)
+    if (p.xerr or p.yerr) and not (band and not p.xerr):
         n = len(x)
-        eb = ax.errorbar(x[mask], y[mask], yerr=_err_arrays(ctx, p, p.yerr, n, mask, order),
+        eb = ax.errorbar(x[mask], y[mask],
+                         yerr=None if band else _err_arrays(ctx, p, p.yerr, n, mask, order),
                          xerr=_err_arrays(ctx, p, p.xerr, n, mask, order), fmt="none",
                          ecolor=ctx.color(p.error.color, i) if p.error.color != "auto"
                          else col, elinewidth=p.error.width, capsize=p.error.cap,
@@ -334,6 +544,45 @@ def _line(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
         if len(codes) <= 20:
             ticks = (codes, [xc.value_labels.get(c, _num(c)) for c in codes])
     return handle, ticks
+
+
+def _fill_to(ctx: _Ctx, layer: Layer, ax, p: Plot, i, x, y, state) -> list:
+    """Fill under a curve (Plot Details > Fill Area): to zero, to a value or to another
+    plot ("next" or a plot id), interpolating the other curve onto this one's X."""
+    mode = p.options.get("fill_to", "none")
+    if not mode or mode == "none" or len(x) < 2:
+        return []
+    o = np.argsort(x, kind="stable")
+    x, y = x[o], y[o]
+    if mode == "zero":
+        base = np.zeros_like(y)
+    elif mode == "value":
+        base = np.full_like(y, float(p.options.get("fill_value", 0.0)))
+    else:
+        plots = [q for q in layer.plots if q.visible and q.type in LINEISH]
+        other = None
+        if mode == "next":
+            k = plots.index(p) if p in plots else -1
+            other = plots[k + 1] if 0 <= k < len(plots) - 1 else None
+        else:
+            other = next((q for q in layer.plots if q.id == mode), None)
+        if other is None:
+            raise ValueError("fill area: no plot to fill to")
+        ox, oy = _xy(ctx, other)
+        m = np.isfinite(ox) & np.isfinite(oy)
+        oo = np.argsort(ox[m], kind="stable")
+        base = np.interp(x, ox[m][oo], oy[m][oo])
+    color = ctx.fill_color(p, i) if p.fill.color != "auto" else ctx.line_color(p, i)
+    alpha = p.fill.alpha if p.fill.alpha < 1 else 0.35
+    two = p.options.get("fill_two_colors")
+    if two:
+        c2 = p.options.get("fill_color2", "#d62728")
+        return [ax.fill_between(x, y, base, where=y >= base, interpolate=True, color=color,
+                                alpha=alpha, lw=0, zorder=1.2),
+                ax.fill_between(x, y, base, where=y < base, interpolate=True, color=c2,
+                                alpha=alpha, lw=0, zorder=1.2)]
+    return [ax.fill_between(x, y, base, color=color, alpha=alpha, lw=0, zorder=1.2,
+                            hatch=ctx.hatch(p, i))]
 
 
 def _scatter_mapped(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
@@ -551,24 +800,34 @@ def _histogram(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
     weights = np.full(len(v), 100.0 / len(v)) if mode == "percent" else None
     multi = len(state["hists"]) > 1
     alpha = p.fill.alpha if p.fill.alpha < 1 or not multi else 0.6
+    horizontal = p.options.get("orientation") == "horizontal"
     counts, bins, patches = ax.hist(
         v, bins=edges if edges is not None else "auto", weights=weights,
+        orientation="horizontal" if horizontal else "vertical",
         density=mode == "density", color=ctx.fill_color(p, i) if p.fill.visible else "none",
         edgecolor=p.fill.edge_color, linewidth=p.fill.edge_width, hatch=ctx.hatch(p, i),
         alpha=alpha, label=p.name, cumulative=bool(p.options.get("cumulative")))
     artists = list(patches)
     centers = (bins[:-1] + bins[1:]) / 2
-    if p.options.get("normal_curve", True) and len(v) > 1 and np.std(v) > 0 and \
+    curve = p.options.get("dist_curve") or ("normal" if p.options.get("normal_curve", True)
+                                            else "none")
+    if curve != "none" and len(v) > 1 and np.std(v) > 0 and \
             not p.options.get("cumulative"):
-        mean, sd = v.mean(), v.std(ddof=1)
-        xs = np.linspace(bins[0] - (bins[1] - bins[0]), bins[-1] + (bins[1] - bins[0]), 300)
+        lo_x = bins[0] - (bins[1] - bins[0])
+        if curve in ("lognormal", "exponential", "gamma", "weibull"):
+            lo_x = max(lo_x, 1e-9)
+        xs = np.linspace(lo_x, bins[-1] + (bins[1] - bins[0]), 300)
         scale = {"count": len(v) * (bins[1] - bins[0]), "percent": 100 * (bins[1] - bins[0]),
                  "density": 1.0}[mode]
         lc = ctx.color(p.line.color, i) if p.line.color != "auto" else "#000000"
         if multi and p.line.color == "auto":
             lc = ctx.fill_color(p, i)
-        artists += ax.plot(xs, stats.norm.pdf(xs, mean, sd) * scale, color=lc,
+        dens = stat_plots.dist_curve(v, curve, xs) * scale
+        artists += ax.plot(*((dens, xs) if horizontal else (xs, dens)), color=lc,
                            lw=p.line.width, ls=ctx.dash(p, i))
+    if p.options.get("rug"):
+        artists.append(ax.vlines(v, 0, 0.04, transform=ax.get_xaxis_transform(),
+                                 colors=ctx.fill_color(p, i), lw=0.7))
     _register(ctx, li, p, ax, artists, centers, counts)
     return Patch(facecolor=ctx.fill_color(p, i), edgecolor=p.fill.edge_color,
                  hatch=ctx.hatch(p, i), alpha=alpha), None
@@ -581,6 +840,8 @@ def _box(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
         raise ValueError("no valid data")
     boxes = state["boxes"]
     pos = float(p.options.get("position", boxes.index(p) + 1))
+    half = p.options.get("style", "box") == "half_points"   # Origin's Half Box + points
+    box_pos = pos - float(p.options.get("width", 0.5)) / 4 if half else pos
     face = ctx.fill_color(p, i) if p.fill.visible else "none"
     edge = p.fill.edge_color
     lw = p.fill.edge_width
@@ -593,7 +854,8 @@ def _box(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
         whis = (10, 90)
     else:
         whis = float(whis)
-    bp = ax.boxplot([v], positions=[pos], widths=p.options.get("width", 0.5),
+    bp = ax.boxplot([v], positions=[box_pos],
+                    widths=p.options.get("width", 0.5) / (2 if half else 1),
                     patch_artist=True, notch=bool(p.options.get("notch")), whis=whis,
                     showmeans=p.options.get("show_mean", True),
                     showfliers=p.options.get("outliers", True),
@@ -607,10 +869,11 @@ def _box(ctx: _Ctx, li, layer, ax, p: Plot, i, state):
                     flierprops={"marker": "o", "markersize": 3.5, "markerfacecolor": "none",
                                 "markeredgecolor": edge})
     artists = [a for group in bp.values() for a in group]
-    if p.options.get("points"):
+    if p.options.get("points") or half:
         rng = np.random.default_rng(12345)
         w = float(p.options.get("width", 0.5))
-        jitter = pos + rng.uniform(-0.3, 0.3, len(v)) * w
+        jitter = (pos + w / 4 + rng.uniform(-0.15, 0.15, len(v)) * w) if half else \
+            pos + rng.uniform(-0.3, 0.3, len(v)) * w
         artists.append(ax.scatter(jitter, v, s=p.symbol.size ** 2 * 0.6,
                                   color=ctx.line_color(p, i), alpha=0.7, linewidths=0,
                                   zorder=3))
@@ -672,6 +935,7 @@ _CART = {"line": _line, "scatter": _line, "line_symbol": _line, "column": _colum
          "bar": _column, "area": _area, "histogram": _histogram, "box": _box,
          "bubble": _scatter_mapped, "color_scatter": _scatter_mapped, "contour": _contour,
          "heatmap": _contour}
+_CART.update(stat_plots.CART)
 
 
 # ---------------------------------------------------------------------- axis styling
@@ -698,14 +962,8 @@ def _apply_ticks(ctx: _Ctx, mpl_axis, axis: Axis, sides: dict) -> None:
 
 def _scale(mpl_ax, which: str, axis: Axis) -> None:
     setter = mpl_ax.set_xscale if which == "x" else mpl_ax.set_yscale
-    if axis.scale == "log10":
-        setter("log", base=10)
-    elif axis.scale == "log2":
-        setter("log", base=2)
-    elif axis.scale == "ln":
-        setter("log", base=math.e)
-    else:
-        setter("linear")
+    name, kw = scales.mpl_scale(axis.scale, axis.scale_offset)
+    setter(name, **kw)
 
 
 def _limits(mpl_ax, which: str, axis: Axis) -> None:
@@ -713,18 +971,79 @@ def _limits(mpl_ax, which: str, axis: Axis) -> None:
     lo, hi = sorted(get())
     lo = axis.min if axis.min is not None else lo
     hi = axis.max if axis.max is not None else hi
-    if axis.scale != "linear" and lo <= 0:
-        lo = min(hi / 10, 1e-3) if hi > 0 else 1e-3
+    if lo > hi:
+        lo, hi = hi, lo
+    if axis.scale != "linear":
+        if axis.scale == "reciprocal" and lo <= 0 and axis.min is None:
+            pos = [v for line in mpl_ax.get_lines() for v in
+                   np.asarray(line.get_xdata() if which == "x" else line.get_ydata(), float)
+                   if np.isfinite(v) and v > 0]
+            lo = min(pos) * 0.9 if pos else lo
+        lo, hi = scales.domain_ok(axis.scale, lo, hi, axis.scale_offset)
     if lo == hi:
         lo, hi = lo - 0.5, hi + 0.5
     (mpl_ax.set_xlim if which == "x" else mpl_ax.set_ylim)((hi, lo) if axis.reverse
                                                           else (lo, hi))
 
 
-def _locators(mpl_axis, axis: Axis, view: tuple[float, float]) -> None:
-    if axis.scale == "linear":
-        span = abs(view[1] - view[0])
-        if axis.major_step and axis.major_step > 0 and span / axis.major_step <= 200:
+def _apply_breaks(mpl_ax, which: str, axis: Axis):
+    """Axis breaks: re-scale the axis with a :class:`scales.BrokenScale` over the final
+    limits; returns the scale (for the break marks) or None."""
+    if not axis.breaks:
+        return None
+    get = mpl_ax.get_xlim if which == "x" else mpl_ax.get_ylim
+    lo, hi = sorted(get())
+    mpl_axis = mpl_ax.xaxis if which == "x" else mpl_ax.yaxis
+    sc = scales.BrokenScale(mpl_axis, lo=lo, hi=hi, breaks=axis.breaks, base=axis.scale,
+                            offset=axis.scale_offset, gap=axis.break_gap)
+    if not sc.gaps:
+        return None
+    (mpl_ax.set_xscale if which == "x" else mpl_ax.set_yscale)(sc)
+    (mpl_ax.set_xlim if which == "x" else mpl_ax.set_ylim)((hi, lo) if axis.reverse
+                                                          else (lo, hi))
+    return sc
+
+
+def _break_marks(ctx: _Ctx, li, ax, which: str, sc, axis: Axis, background: str) -> None:
+    """Hide the data in each break gap and draw Origin's "//" break symbol on both
+    spines."""
+    for u0, u1 in sc.gaps:
+        if axis.reverse:
+            u0, u1 = 1 - u1, 1 - u0
+        if which == "x":
+            rect = Rectangle((u0, 0), u1 - u0, 1, transform=ax.transAxes,
+                             facecolor=background, edgecolor="none", zorder=2.7,
+                             clip_on=False)
+        else:
+            rect = Rectangle((0, u0), 1, u1 - u0, transform=ax.transAxes,
+                             facecolor=background, edgecolor="none", zorder=2.7,
+                             clip_on=False)
+        rect.set_in_layout(False)
+        ax.add_patch(rect)
+        ctx.map.add(rect, ("axis", li, which))
+        d = 0.012
+        for u in (u0, u1):
+            for side in (0.0, 1.0):
+                if which == "x":
+                    xs, ys = [u - d, u + d], [side - 2 * d, side + 2 * d]
+                else:
+                    xs, ys = [side - 2 * d, side + 2 * d], [u - d, u + d]
+                ln = Line2D(xs, ys, transform=ax.transAxes, color=axis.color,
+                            lw=axis.line_width, zorder=3.1, clip_on=False)
+                ln.set_in_layout(False)
+                ax.add_line(ln)
+
+
+def _locators(mpl_axis, axis: Axis, view: tuple[float, float], broken=None) -> None:
+    span = abs(view[1] - view[0])
+    step_ok = axis.major_step and axis.major_step > 0 and span / axis.major_step <= 200
+    if broken is not None:
+        if step_ok:
+            mpl_axis.set_major_locator(scales.SegmentLocator(broken, axis.major_step))
+        if axis.decimals >= 0:
+            mpl_axis.set_major_formatter(ticker.FormatStrFormatter(f"%.{axis.decimals}f"))
+    elif axis.scale == "linear":
+        if step_ok:
             mpl_axis.set_major_locator(ticker.MultipleLocator(axis.major_step))
         if axis.minor_count > 0:
             mpl_axis.set_minor_locator(ticker.AutoMinorLocator(axis.minor_count + 1))
@@ -732,8 +1051,26 @@ def _locators(mpl_axis, axis: Axis, view: tuple[float, float]) -> None:
             mpl_axis.set_minor_locator(ticker.NullLocator())
         if axis.decimals >= 0:
             mpl_axis.set_major_formatter(ticker.FormatStrFormatter(f"%.{axis.decimals}f"))
-    elif axis.minor_count == 0:
-        mpl_axis.set_minor_locator(ticker.NullLocator())
+    else:
+        if step_ok and axis.scale in ("reciprocal", "offset_reciprocal", "symlog"):
+            mpl_axis.set_major_locator(ticker.MultipleLocator(axis.major_step))
+        if axis.minor_count == 0:
+            mpl_axis.set_minor_locator(ticker.NullLocator())
+        if axis.decimals >= 0 and axis.scale in ("reciprocal", "offset_reciprocal"):
+            mpl_axis.set_major_formatter(ticker.FormatStrFormatter(f"%.{axis.decimals}f"))
+    if axis.custom_ticks:
+        pairs = [(float(v), str(t)) for v, t in axis.custom_ticks
+                 if v is not None and np.isfinite(float(v))]
+        if pairs:
+            mpl_axis.set_major_locator(ticker.FixedLocator([v for v, _ in pairs]))
+            mpl_axis.set_major_formatter(ticker.FixedFormatter([rich(t) for _, t in pairs]))
+            mpl_axis.set_minor_locator(ticker.NullLocator())
+    elif axis.tick_format != "auto" or axis.prefix or axis.suffix:
+        base = mpl_axis.get_major_formatter() if axis.tick_format == "auto" else None
+        fmt = scales.tick_formatter(axis.tick_format, axis.decimals, axis.prefix,
+                                    axis.suffix, base)
+        if fmt is not None:
+            mpl_axis.set_major_formatter(fmt)
     if not axis.show_labels:
         mpl_axis.set_major_formatter(ticker.NullFormatter())
         mpl_axis.set_minor_formatter(ticker.NullFormatter())
@@ -781,11 +1118,13 @@ def _headroom(layer: Layer, ax, ax2, plots) -> None:
         (mpl_ax.set_xlim if which == "x" else mpl_ax.set_ylim)(lo, hi)
 
 
-def _style_cartesian(ctx: _Ctx, li, layer: Layer, ax, ax2, xticks, plots) -> None:
+def _style_cartesian(ctx: _Ctx, li, layer: Layer, ax, ax2, xticks, plots, axt=None) -> None:
     for which, axis in (("x", layer.x), ("y", layer.y)):
         _scale(ax, which, axis)
     if ax2 is not None:
         _scale(ax2, "y", layer.y2)
+    if axt is not None:
+        _scale(axt, "x", layer.x2)
     if xticks is not None and layer.x.scale == "linear" and layer.x.major_step is None:
         horizontal = any(p.type == "bar" for p in plots) and \
             not any(p.type == "column" for p in plots)
@@ -811,14 +1150,23 @@ def _style_cartesian(ctx: _Ctx, li, layer: Layer, ax, ax2, xticks, plots) -> Non
     _limits(ax, "y", layer.y)
     if ax2 is not None:
         _limits(ax2, "y", layer.y2)
+    if axt is not None:
+        axt.autoscale_view()
+        _limits(axt, "x", layer.x2)
+    brk = {"x": _apply_breaks(ax, "x", layer.x) if cat_axis != "x" else None,
+           "y": _apply_breaks(ax, "y", layer.y) if cat_axis != "y" else None,
+           "y2": _apply_breaks(ax2, "y", layer.y2) if ax2 is not None else None}
     if cat_axis != "x":
-        _locators(ax.xaxis, layer.x, ax.get_xlim())
+        _locators(ax.xaxis, layer.x, ax.get_xlim(), brk["x"])
     if cat_axis != "y":
-        _locators(ax.yaxis, layer.y, ax.get_ylim())
+        _locators(ax.yaxis, layer.y, ax.get_ylim(), brk["y"])
     if ax2 is not None:
-        _locators(ax2.yaxis, layer.y2, ax2.get_ylim())
+        _locators(ax2.yaxis, layer.y2, ax2.get_ylim(), brk["y2"])
+    if axt is not None:
+        _locators(axt.xaxis, layer.x2, axt.get_xlim())
+    top_used = axt is not None or layer.show_x2
     xs = {"bottom": layer.x.visible, "labelbottom": layer.x.visible,
-          "top": layer.x.mirror_ticks and layer.box, "labeltop": False}
+          "top": layer.x.mirror_ticks and layer.box and not top_used, "labeltop": False}
     ys = {"left": layer.y.visible, "labelleft": layer.y.visible,
           "right": layer.y.mirror_ticks and layer.box and ax2 is None, "labelright": False}
     _apply_ticks(ctx, ax.xaxis, layer.x, xs)
@@ -852,6 +1200,79 @@ def _style_cartesian(ctx: _Ctx, li, layer: Layer, ax, ax2, xticks, plots) -> Non
         ax2.spines["right"].set_color(y2.color)
         ax2.patch.set_visible(False)
         ctx.map.add(ax2.yaxis, ("axis", li, "y2"))
+    for which, mpl_ax, axis in (("x", ax, layer.x), ("y", ax, layer.y), ("y2", ax2, layer.y2)):
+        if brk.get(which) is not None and mpl_ax is not None:
+            _break_marks(ctx, li, mpl_ax, "x" if which == "x" else "y", brk[which], axis,
+                         layer.background)
+    _top_axis(ctx, li, layer, ax, axt)
+    if layer.y2_formula and ax2 is None:
+        _linked_axis(ctx, li, layer, ax, "y2")
+
+
+def _style_secondary(ctx: _Ctx, li, sec, which: str, axis: Axis) -> None:
+    mpl_axis = sec.xaxis if which == "x2" else sec.yaxis
+    side = {"top": True, "labeltop": True} if which == "x2" else {"right": True,
+                                                                     "labelright": True}
+    _apply_ticks(ctx, mpl_axis, axis, side)
+    if axis.minor_count == 0:
+        mpl_axis.set_minor_locator(ticker.NullLocator())
+    elif axis.scale == "linear":
+        mpl_axis.set_minor_locator(ticker.AutoMinorLocator(axis.minor_count + 1))
+    if axis.major_step and axis.major_step > 0:
+        mpl_axis.set_major_locator(ticker.MultipleLocator(axis.major_step))
+    if axis.decimals >= 0:
+        mpl_axis.set_major_formatter(ticker.FormatStrFormatter(f"%.{axis.decimals}f"))
+    if axis.tick_format != "auto" or axis.prefix or axis.suffix:
+        fmt = scales.tick_formatter(axis.tick_format, axis.decimals, axis.prefix,
+                                    axis.suffix, mpl_axis.get_major_formatter()
+                                    if axis.tick_format == "auto" else None)
+        if fmt is not None:
+            mpl_axis.set_major_formatter(fmt)
+    if not axis.show_labels:
+        mpl_axis.set_major_formatter(ticker.NullFormatter())
+    _axis_title(ctx, sec.set_xlabel if which == "x2" else sec.set_ylabel, axis, li, which)
+    for sp in sec.spines.values():
+        sp.set_linewidth(axis.line_width)
+        sp.set_color(axis.color)
+    ctx.map.add(mpl_axis, ("axis", li, which))
+
+
+def _linked_axis(ctx: _Ctx, li, layer: Layer, ax, which: str):
+    """Top (x2) or right (y2) axis linked to the bottom/left one by a formula, e.g.
+    Arrhenius 1000/(x+273.15) or wavenumber 1E7/x (Origin's Double-X custom formula)."""
+    formula = layer.x2_formula if which == "x2" else layer.y2_formula
+    lim = ax.get_xlim() if which == "x2" else ax.get_ylim()
+    try:
+        if formula:
+            fwd, inv = scales.link_functions(formula, *lim)
+        else:
+            fwd = inv = (lambda v: np.asarray(v, float))
+        sec = (ax.secondary_xaxis("top", functions=(fwd, inv)) if which == "x2" else
+               ax.secondary_yaxis("right", functions=(fwd, inv)))
+    except Exception as exc:  # noqa: BLE001
+        ctx.map.errors.append(f"Linked axis: {exc}")
+        return None
+    if formula:
+        mpl_axis = sec.xaxis if which == "x2" else sec.yaxis
+        mpl_axis.set_major_locator(scales.LinkedLocator(
+            fwd, ax.get_xlim if which == "x2" else ax.get_ylim))
+        mpl_axis.set_major_formatter(ticker.FuncFormatter(lambda v, _p=None: f"{v:g}"))
+    _style_secondary(ctx, li, sec, which, layer.axis(which))
+    if formula:   # uneven ticks: minor ticks would crowd
+        (sec.xaxis if which == "x2" else sec.yaxis).set_minor_locator(ticker.NullLocator())
+    ctx.map.axes[li]["sec_" + which] = sec
+    return sec
+
+
+def _top_axis(ctx: _Ctx, li, layer: Layer, ax, axt) -> None:
+    if axt is not None:   # independent top axis carrying its own plots
+        axt.set_xlabel("")
+        _style_secondary(ctx, li, axt, "x2", layer.x2)
+        axt.yaxis.set_visible(False)
+        axt.patch.set_visible(False)
+        return
+    if layer.show_x2:
+        _linked_axis(ctx, li, layer, ax, "x2")
 
 
 # ====================================================================== other layers
@@ -862,6 +1283,8 @@ def _draw_polar(ctx: _Ctx, li, layer: Layer, ax) -> list:
             continue
 
         def draw(p=p, i=i):
+            if p.type in plots3d.POLAR:
+                return plots3d.POLAR[p.type](ctx, li, layer, ax, p, i)
             th, r = _xy(ctx, p)
             if layer.options.get("theta_unit", "deg") == "deg":
                 th = np.deg2rad(th)
@@ -921,6 +1344,8 @@ def _draw_3d(ctx: _Ctx, li, layer: Layer, ax) -> list:
 
         def draw(p=p, i=i):
             nonlocal cbar_done
+            if p.type in plots3d.D3:
+                return plots3d.D3[p.type](ctx, li, layer, ax, p, i)
             x, y, z = ctx.arr(p.x), ctx.arr(p.y), ctx.arr(p.z)
             if x is None or y is None or z is None:
                 raise ValueError("3D plots need X, Y and Z columns")
@@ -978,7 +1403,8 @@ def _draw_3d(ctx: _Ctx, li, layer: Layer, ax) -> list:
                 cbar_done = True
             return art
         art = _safe(ctx, li, p, draw)
-        if art is not None and p.type == "scatter3d" and p.id not in layer.legend.hidden:
+        if art is not None and p.type in ("scatter3d", "line3d", "waterfall3d", "bar3d") and \
+                p.id not in layer.legend.hidden:
             handles.append((art, p))
     ax.view_init(elev=layer.elev, azim=layer.azim)
     for which, axis in (("x", layer.x), ("y", layer.y), ("z", layer.z)):
