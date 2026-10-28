@@ -118,6 +118,26 @@ def _gk_tau(n: np.ndarray, kind: str) -> float:
     return (total * inner - (c ** 2).sum()) / den
 
 
+def _gk_tau_ase1(n: np.ndarray) -> float:
+    """ASE1 of Goodman and Kruskal's tau with the column variable dependent, IBM CROSSTABS
+    Algorithms: sqrt(4/delta^4 sum f_ij {(v - delta)(c_j - X_i) - W delta (Y_i - f_ij/r_i)}^2),
+    X_i = sum_j f_ij c_j / r_i, Y_i = sum_j f_ij^2 / r_i^2, delta = W^2 - sum c^2,
+    v = W sum f^2/r - sum c^2. The PDF prints the first bracket as (X_i - c_j); the sign used
+    here is the one that reproduces SPSS output (IBM Exact Tests manual, Fig. 15.5: .006 and
+    .010 for the party x ally table, where the multinomial delta method gives .007 / .010)."""
+    n = np.asarray(n, float)
+    W = n.sum()
+    r, c = n.sum(1), n.sum(0)
+    delta = W ** 2 - (c ** 2).sum()
+    if delta <= 0 or np.any(r <= 0):
+        return float("nan")
+    v = W * (n ** 2 / r[:, None]).sum() - (c ** 2).sum()
+    X = (n * c[None, :]).sum(1) / r
+    Y = (n ** 2).sum(1) / r ** 2
+    h = (v - delta) * (c[None, :] - X[:, None]) - W * delta * (Y[:, None] - n / r[:, None])
+    return float(math.sqrt(4 / delta ** 4 * (n * h ** 2).sum()))
+
+
 def _uncertainty(n: np.ndarray, kind: str) -> float:
     hr, hc, hrc = _entropies(n)
     info = hr + hc - hrc
@@ -205,7 +225,18 @@ def nominal_measures(n: np.ndarray) -> dict[str, Measure]:
                 if total > m else float("nan")
             ase1 = math.sqrt(max(var1, 0.0)) if np.isfinite(var1) else float("nan")
         else:
-            ase1 = delta_ase(lambda p: _lambda_value(p, "S"), n)
+            # IBM CROSSTABS symmetric lambda ASE1 with the indicator functions (first index
+            # of tied maxima, as for ASE0):
+            # sqrt(sum f [d^r_ij + d^c_ij - d^r_i - d^c_j + lambda (d^r_i + d^c_j)]^2
+            #      - 4 W lambda^2) / (2W - r_m - c_m)
+            if den > 0 and np.isfinite(value):
+                lam_ind = np.zeros_like(n)
+                lam_ind[rm_idx, :] += 1
+                lam_ind[:, cm_idx] += 1
+                var1 = (n * (psi + value * lam_ind) ** 2).sum() - 4 * total * value ** 2
+                ase1 = math.sqrt(max(var1, 0.0)) / den
+            else:
+                ase1 = float("nan")
         var0 = (n * psi ** 2).sum() - (n * psi).sum() ** 2 / total
         ase0 = math.sqrt(max(var0, 0.0)) / den if den > 0 else float("nan")
         meas = Measure(value, ase1)
@@ -221,7 +252,7 @@ def nominal_measures(n: np.ndarray) -> dict[str, Measure]:
         value = _gk_tau(n, kind)
         levels = rr if kind == "R" else cc
         stat = (total - 1) * (levels - 1) * value
-        out[f"tau_{kind}"] = Measure(value, delta_ase(lambda p, k=kind: _gk_tau(p, k), n),
+        out[f"tau_{kind}"] = Measure(value, _gk_tau_ase1(n.T if kind == "R" else n),
                                      p=stats.chi2.sf(stat, (rr - 1) * (cc - 1)), note="chisq")
 
     # uncertainty coefficient: T from the null-variance of the mutual information
@@ -286,8 +317,9 @@ def ordinal_measures(n: np.ndarray) -> dict[str, Measure]:
     cols_j = np.repeat(c[None, :], rr, 0)
     if dr + dc > 0:
         ds = 2 * (P - Q) / (dr + dc)
-        ase = 4 / (dr + dc) ** 2 * math.sqrt(
-            (n * ((dr + dc) * (C - D) - (P - Q) * (2 * total - rows_i - cols_j)) ** 2).sum())
+        # IBM CROSSTABS: ASE1(symmetric d) = 2 sqrt(Dr Dc) / (Dr + Dc) * ASE1(tau-b)
+        ase_tb = out["btau"].ase if "btau" in out else float("nan")
+        ase = 2 * math.sqrt(dr * dc) / (dr + dc) * ase_tb
         out["d_S"] = make(ds, ase)
     if dc > 0:   # row variable dependent
         out["d_R"] = make((P - Q) / dc, 2 / dc ** 2 * math.sqrt(

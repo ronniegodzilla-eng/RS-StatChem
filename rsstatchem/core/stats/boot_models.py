@@ -77,8 +77,24 @@ def ols_model(y, X, names, w=None, **kw) -> ModelInfo:
             np.nan
         return out
 
+    def refit_batch_se(idx):
+        Xb, yb, wb = X[idx], y[idx], w[idx]
+        XtX = np.einsum("bnp,bn,bnq->bpq", Xb, wb, Xb)
+        bb = refit_batch(idx)
+        res_ = yb - np.einsum("bnp,bp->bn", Xb, np.nan_to_num(bb))
+        dfb = len(y) - p
+        mse = (wb * res_ * res_).sum(axis=1) / dfb if dfb > 0 else np.full(len(idx), np.nan)
+        with np.errstate(all="ignore"):
+            try:
+                inv_diag = np.einsum("bpp->bp", np.linalg.inv(XtX))
+            except np.linalg.LinAlgError:
+                inv_diag = np.full((len(idx), p), np.nan)
+        se_b = np.sqrt(np.clip(inv_diag * mse[:, None], 0, None))
+        se_b[~np.isfinite(bb).all(axis=1)] = np.nan
+        return np.hstack([bb, se_b])
+
     return ModelInfo(list(names), b, se, refit_batch=refit_batch, n=len(y), df=df,
-                     batch=batch_rows(len(y), p), **kw)
+                     batch=batch_rows(len(y), p), refit_batch_se=refit_batch_se, **kw)
 
 
 # ============================================================================ binary logistic
@@ -105,8 +121,21 @@ def logit_model(y, X, names, start, max_iter: int = 20, **kw) -> ModelInfo:
         beta[one_class] = np.nan
         return beta
 
+    def refit_batch_se(idx):
+        beta = refit_batch(idx)
+        Xb = X[idx]
+        mu = special.expit(np.einsum("bnp,bp->bn", Xb, np.nan_to_num(beta)))
+        H = np.einsum("bnp,bn,bnq->bpq", Xb, mu * (1 - mu), Xb)
+        with np.errstate(all="ignore"):
+            try:
+                se_b = np.sqrt(np.clip(np.einsum("bpp->bp", np.linalg.inv(H)), 0, None))
+            except np.linalg.LinAlgError:
+                se_b = np.full(beta.shape, np.nan)
+        se_b[~np.isfinite(beta).all(axis=1)] = np.nan
+        return np.hstack([beta, se_b])
+
     return ModelInfo(list(names), start, kw.pop("se", None), refit_batch=refit_batch,
-                     n=len(y), batch=batch_rows(len(y), p), **kw)
+                     n=len(y), batch=batch_rows(len(y), p), refit_batch_se=refit_batch_se, **kw)
 
 
 # ============================================================================ multinomial

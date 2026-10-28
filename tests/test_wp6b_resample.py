@@ -21,6 +21,35 @@ def _mean(a):
     return a.mean(axis=1)
 
 
+def _ibm_limit(sorted_vals, alpha):
+    """Independent implementation of IBM's bootstrap limit T*_((B+1)alpha) with normal-scale
+    interpolation (IBM SPSS Statistics Algorithms, Bootstrapping)."""
+    B = len(sorted_vals)
+    pos = (B + 1) * alpha
+    k = int(np.floor(pos))
+    if k < 1:
+        return sorted_vals[0]
+    if k >= B:
+        return sorted_vals[-1]
+    if pos == k:
+        return sorted_vals[k - 1]
+    q = stats.norm.ppf
+    return sorted_vals[k - 1] + (q(alpha) - q(k / (B + 1))) / (q((k + 1) / (B + 1)) -
+                                                                q(k / (B + 1))) * \
+        (sorted_vals[k] - sorted_vals[k - 1])
+
+
+def _ibm_bca(boot, est, jack, alpha):
+    B = len(boot)
+    w = stats.norm.ppf(np.count_nonzero(boot < est) / (B + 1))
+    l_ = (len(jack) - 1) * (est - jack)
+    a = (l_ ** 3).sum() / (6 * ((l_ ** 2).sum()) ** 1.5)
+    out = []
+    for z in (stats.norm.ppf(alpha), stats.norm.ppf(1 - alpha)):
+        out.append(_ibm_limit(np.sort(boot), stats.norm.cdf(w + (w + z) / (1 - a * (w + z)))))
+    return out
+
+
 @pytest.mark.parametrize("method", ["percentile", "bca"])
 @pytest.mark.parametrize("seed", [1, 123, 2000000])
 def test_mean_ci_matches_scipy(method, seed):
@@ -28,10 +57,19 @@ def test_mean_ci_matches_scipy(method, seed):
     mine = rs.bootstrap(x, _mean, rs.BootSpec(2000, seed, 0.95, method), vectorized=True)
     ref = stats.bootstrap((x,), np.mean, n_resamples=2000, method=method,
                           rng=np.random.default_rng(seed))
-    assert mine.lower[0] == pytest.approx(ref.confidence_interval.low, abs=1e-12)
-    assert mine.upper[0] == pytest.approx(ref.confidence_interval.high, abs=1e-12)
+    # same samples as SciPy (PCG64, same seed), same SE; the limits follow IBM's rule (WP7)
     assert mine.se[0] == pytest.approx(ref.standard_error, abs=1e-12)
     np.testing.assert_allclose(mine.boot[:, 0], ref.bootstrap_distribution)
+    boot = ref.bootstrap_distribution
+    if method == "percentile":
+        lo, hi = _ibm_limit(np.sort(boot), 0.025), _ibm_limit(np.sort(boot), 0.975)
+    else:
+        jack = np.array([np.delete(x, i).mean() for i in range(len(x))])
+        lo, hi = _ibm_bca(boot, x.mean(), jack, 0.025)
+    assert mine.lower[0] == pytest.approx(lo, abs=1e-12)
+    assert mine.upper[0] == pytest.approx(hi, abs=1e-12)
+    # and they stay close to SciPy's linear-quantile limits
+    assert mine.lower[0] == pytest.approx(ref.confidence_interval.low, abs=0.05)
 
 
 @pytest.mark.parametrize("method", ["percentile", "bca"])
@@ -48,8 +86,17 @@ def test_paired_statistic_matches_scipy(method):
                           method=method, rng=np.random.default_rng(77))
     mine = rs.bootstrap(np.column_stack([x, y]), lambda a: np.corrcoef(a.T)[0, 1],
                         rs.BootSpec(999, 77, ci=method))
-    assert mine.lower[0] == pytest.approx(ref.confidence_interval.low, abs=1e-10)
-    assert mine.upper[0] == pytest.approx(ref.confidence_interval.high, abs=1e-10)
+    boot = ref.bootstrap_distribution
+    np.testing.assert_allclose(mine.boot[:, 0], boot, atol=1e-12)
+    if method == "percentile":
+        # B = 999: (B+1) alpha is an integer, so IBM takes the order statistics themselves
+        lo, hi = np.sort(boot)[24], np.sort(boot)[974]
+    else:
+        jack = np.array([np.corrcoef(np.delete(x, i), np.delete(y, i))[0, 1]
+                         for i in range(len(x))])
+        lo, hi = _ibm_bca(boot, np.corrcoef(x, y)[0, 1], jack, 0.025)
+    assert mine.lower[0] == pytest.approx(lo, abs=1e-10)
+    assert mine.upper[0] == pytest.approx(hi, abs=1e-10)
 
 
 def test_level_and_chunking_do_not_change_results():
@@ -61,7 +108,7 @@ def test_level_and_chunking_do_not_change_results():
     np.testing.assert_array_equal(a.boot, b.boot)
     ref = stats.bootstrap((x,), np.mean, n_resamples=1000, confidence_level=0.90,
                           method="percentile", rng=np.random.default_rng(5))
-    assert a.lower[0] == pytest.approx(ref.confidence_interval.low)
+    assert a.lower[0] == pytest.approx(_ibm_limit(np.sort(ref.bootstrap_distribution), 0.05))
 
 
 def test_stratified_sampling_keeps_strata_sizes():
@@ -79,10 +126,19 @@ def test_bias_se_and_significance_definitions():
     boot = res.boot[:, 0]
     assert res.bias[0] == pytest.approx(boot.mean() - x.mean())
     assert res.se[0] == pytest.approx(boot.std(ddof=1))
-    p = 2 * min((boot <= 0).mean(), (boot >= 0).mean())
-    assert res.p[0] == pytest.approx(min(p, 1.0))
-    # p < .05 exactly when the 95% percentile interval excludes 0
-    assert (res.p[0] < 0.05) == (res.lower[0] > 0 or res.upper[0] < 0)
+    # IBM percentile-t pivotal test; a plain statistic has no per-sample analytic SE, so the
+    # bootstrap SE studentises both z0 and z*_b
+    z0 = x.mean() / res.se[0]
+    zb = (boot - x.mean()) / res.se[0]
+    assert res.p[0] == pytest.approx((np.count_nonzero(zb ** 2 >= z0 ** 2) + 1) / 1501)
+    # with per-sample standard errors (mean: s/sqrt(n)) the studentised form is used
+    idx = np.random.default_rng(3).integers(0, 80, (1500, 80))
+    res2 = rs.bootstrap_indices(
+        80, lambda I: np.column_stack([x[I].mean(1), x[I].std(1, ddof=1) / np.sqrt(80)]),
+        x.mean(), rs.BootSpec(1500, 3), se0=[x.std(ddof=1) / np.sqrt(80)])
+    zb2 = (x[idx].mean(1) - x.mean()) / (x[idx].std(1, ddof=1) / np.sqrt(80))
+    z02 = x.mean() / (x.std(ddof=1) / np.sqrt(80))
+    assert res2.p[0] == pytest.approx((np.count_nonzero(zb2 ** 2 >= z02 ** 2) + 1) / 1501)
 
 
 def test_spec_from_dialog_values_and_tables():

@@ -931,10 +931,17 @@ def univariate(ds: Dataset, dependent: str, factors: list[str], covariates: list
     design = fit.design_text
     wls_note = f"Weighted Least Squares Regression - Weighted by {ds.var(opts.wls).title}" \
         if opts.wls else None
-    if fit.deficient and opts.ss_type in (3, 4):
-        section.note("Warning", "Some cells of the design are empty. Type III/IV results use "
-                     "a generalized inverse of the effect-coded design and may differ from "
-                     "SPSS.", style="warning")
+    if getattr(fit, "empty_cells", False) and opts.ss_type in (3, 4):
+        for t in fit.terms:
+            fit.term_df(t)
+        msg = ("Some cells of the design are empty. Type III/IV hypotheses are built from the "
+               "estimable functions as in SPSS (IBM GLM Algorithms, Sums of Squares).")
+        if opts.ss_type == 4 and fit.type4_not_unique:
+            msg += " The Type IV testable hypothesis is not unique."
+        section.note("Warning", msg, style="warning")
+    elif fit.deficient and opts.ss_type in (3, 4):
+        section.note("Warning", "The design is rank deficient. Type III/IV results use "
+                     "a generalized inverse of the effect-coded design.", style="warning")
 
     if fobjs:
         section.table(between_factors_table(fobjs))
