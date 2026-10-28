@@ -815,8 +815,6 @@ def register(registry) -> None:
     add("Fill", fill, roi="required", supports_stack=True)
     add("Draw", draw, roi="required", supports_stack=True)
     add("Invert", invert, supports_stack=True)
-    add("Internal Clipboard", internal_clipboard, needs_image=False, undoable=False)
-    add("System Clipboard", system_clipboard, needs_image=False, undoable=False)
     opt = {"needs_image": False, "undoable": False}
     add("Appearance...", appearance, _opt_fields(_appearance_fields), **opt)
     add("Arrow Tool...", arrow_tool, _opt_fields(_arrow_fields), **opt)

@@ -172,6 +172,9 @@ class ImageCanvas(QWidget):
         """Draw any ROI type as ImageJ shows it (outline, optional fill, handles)."""
         from rsstatchem.core.imaging.roi import shapes as S
 
+        if type(roi).__name__ == "ImageRoi" and hasattr(roi, "pixels"):
+            self._draw_image_roi(p, roi, handles)
+            return
         qc = QColor(color)
         width = roi.stroke_width * self.magnification if roi.stroke_width and \
             roi.stroke_width > 1 else 1.0
@@ -255,6 +258,36 @@ class ImageCanvas(QWidget):
             hpts = handle_points(roi)
         if handles and hpts:
             self._handles(p, hpts)
+
+    def _draw_image_roi(self, p: QPainter, roi, handles: bool) -> None:
+        """ImageRoi overlay element (Image > Overlay > Add Image): RGB pixels at (x, y) with
+        opacity; zero pixels transparent when ``zero_transparent``."""
+        key = ("img", id(roi), id(roi.pixels))
+        qimg = self._outline_cache.get(key)
+        if qimg is None:
+            px = np.asarray(roi.pixels)
+            if px.ndim == 2:
+                px = np.repeat(px[..., None], 3, axis=2)
+            px = np.ascontiguousarray(px[..., :3].astype(np.uint8))
+            alpha = np.full(px.shape[:2], 255, np.uint8)
+            if getattr(roi, "zero_transparent", False):
+                alpha[np.all(px == 0, axis=2)] = 0
+            rgba = np.ascontiguousarray(np.dstack([px, alpha]))
+            h, w = rgba.shape[:2]
+            qimg = QImage(rgba.data, w, h, 4 * w, QImage.Format.Format_RGBA8888).copy()
+            self._outline_cache[key] = qimg
+        x0, y0 = self.image_to_screen(roi.x, roi.y)
+        w = roi.width or qimg.width()
+        h = roi.height or qimg.height()
+        x1, y1 = self.image_to_screen(roi.x + w, roi.y + h)
+        p.save()
+        p.setOpacity(max(0.0, min(1.0, float(getattr(roi, "opacity", 1.0)))))
+        p.drawImage(QRectF(x0, y0, x1 - x0, y1 - y0), qimg)
+        p.restore()
+        if handles:
+            p.setPen(QPen(QColor(self.selection_color), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
 
     def _composite_loops(self, roi):
         key = id(roi)

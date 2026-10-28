@@ -303,7 +303,7 @@ def test_bar_opens_image_and_runs_commands(ctx):
     assert win.status_text(10, 10).startswith("x=10, y=10, value=")
     # a command registered later becomes enabled and runs through the generic path
     bar.session.registry.add("Invert", lambda s, im: im.pixels.__ixor__(255),
-                             types=(GRAY8,))
+                             types=(GRAY8,), replace=True)   # WP-A registers Invert
     bar.refresh_menus()
     assert acts["Invert"].isEnabled()
     before = int(win.doc.pixels[0, 0, 0, 0, 0])
