@@ -102,6 +102,17 @@ def indigo_modules():
         return []
 
 
+def imaging_hiddenimports():
+    """Image Analysis readers: tifffile/roifile are single packages, but pydicom loads its
+    pixel-data handlers and UID/dictionary modules by name, so list them explicitly (its
+    examples and test data are not bundled)."""
+    from PyInstaller.utils.hooks import collect_submodules
+    mods = ["tifffile", "roifile"]
+    mods += [m for m in collect_submodules("pydicom")
+             if not m.startswith(("pydicom.examples", "pydicom.data"))]
+    return mods
+
+
 a = Analysis(
     [str(ROOT / "run.py")],
     pathex=[str(ROOT)],
@@ -111,7 +122,7 @@ a = Analysis(
                    "pyreadstat.worker", "mpl_toolkits.mplot3d",
                    "matplotlib.backends.backend_qtagg", "matplotlib.backends.backend_pdf",
                    "matplotlib.backends.backend_svg", "matplotlib.backends.backend_ps",
-                   *indigo_modules(), *APP_MODULES],
+                   *indigo_modules(), *APP_MODULES, *imaging_hiddenimports()],
     excludes=["tkinter", "_tkinter", "IPython", "jupyter", "notebook", "pytest",
               "PyQt5", "PyQt6", "PySide2", "sklearn", "seaborn", "pingouin"],
     noarchive=False,

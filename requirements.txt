@@ -12,3 +12,8 @@ certifi>=2024.2
 # optional: automatic reaction atom mapping in Chemical Drawing (Apache-2.0); the app
 # works without it (Structure > Map Reaction Atoms is then greyed out)
 epam.indigo>=1.46
+# Image Analysis module: TIFF/ImageJ hyperstacks, ImageJ .roi files, DICOM (pure Python;
+# BSD-3, BSD-3, MIT). Pillow (GIF/PNG/JPEG/BMP) comes with matplotlib.
+tifffile==2026.10.15
+roifile==2026.9.22
+pydicom==3.0.2

@@ -1,0 +1,87 @@
+{
+ "cases": {
+  "filters": {
+   "date": "2026-10-27",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "676134e795fb01a8846759ea7c549f8d5752c8b270c2a0d38317795e0dec1900"
+  },
+  "masks": {
+   "date": "2026-10-27",
+   "files": [
+    "roi_specs.csv",
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "a4f475414f13aae75d47cf78ec1a65db529a311663cc23074485b9cdbac48308"
+  },
+  "measure": {
+   "date": "2026-10-27",
+   "files": [
+    "calibrated_oval.csv",
+    "calibrated_polygon.csv",
+    "calibrated_rect.csv",
+    "calibrated_whole.csv",
+    "limit_oval.csv",
+    "limit_polygon.csv",
+    "limit_rect.csv",
+    "limit_whole.csv",
+    "uncalibrated_line.csv",
+    "uncalibrated_oval.csv",
+    "uncalibrated_polygon.csv",
+    "uncalibrated_rect.csv",
+    "uncalibrated_whole.csv"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "4b367ff128aff32822d5eccf8c73fd1e19db66eb87c5d6076b202315a512fa47"
+  },
+  "particles": {
+   "date": "2026-10-27",
+   "files": [
+    "blobs_circ.csv",
+    "blobs_circ_summary.csv",
+    "blobs_default.csv",
+    "blobs_default_summary.csv",
+    "blobs_exclude.csv",
+    "blobs_exclude_summary.csv",
+    "blobs_include.csv",
+    "blobs_include_summary.csv",
+    "blobs_size.csv",
+    "blobs_size_summary.csv",
+    "particles8_circ.csv",
+    "particles8_circ_summary.csv",
+    "particles8_default.csv",
+    "particles8_default_summary.csv",
+    "particles8_exclude.csv",
+    "particles8_exclude_summary.csv",
+    "particles8_include.csv",
+    "particles8_include_summary.csv",
+    "particles8_size.csv",
+    "particles8_size_summary.csv"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "fdf245a5512797d4a388ccedfe770dd26ffaf0d696a031482d6d59b0323f51f5"
+  },
+  "thresholds": {
+   "date": "2026-10-27",
+   "files": [
+    "thresholds.csv"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "9877745371ae4bb93764f89bb0c2813fa4b69ee98ff9bbade5c7c5144328be75"
+  }
+ },
+ "ij_jar_sha256": "2e1a09961dfb41cee66ddc821b2577a41a072566ce45a49bae69267099741e20",
+ "imagej": "1.54p",
+ "imagej_repo_commit": "a376e43fad41a7337f7f01433c9673ed376b40e6",
+ "inputs": {
+  "Cell_Colony.jpg": "d399005d4147a7a5e031743312e09e27f69bc398f2e99a9194a2606bca2fa780",
+  "blobs.gif": "871f58484771ec6e23efcd2f1af3ca6ec1dc441d61ed59f743282fd76339aed3",
+  "particles8.tif": "9f61b90cfc183050c9436cce9374731510e74641b029caac724cce494f268ae0",
+  "synth16.tif": "4c2a0a1f2a720e8de4164febdde16b25a0de5801bcfe587671c380b2b5aefc27",
+  "synth32.tif": "f17a8f929ef6cacb1fbdd31f396ec96c707b82ef6272c9b02bab0db5a07c9bee",
+  "synth8.tif": "9b8a6a38b509fac4da30711fbdf77e3ee994dec6be60ec2dffad1c253105d0b7"
+ }
+}
