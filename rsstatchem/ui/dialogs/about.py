@@ -34,7 +34,8 @@ class AboutDialog(QDialog):
             f"SciPy {scipy.__version__} · statsmodels {statsmodels.__version__}<br><br>"
             f"<span style='color:#666'>Settings folder: {user_data_dir()}</span><br><br>"
             f"<b>Copyright {COPYRIGHT}</b><br>"
-            "<span style='color:#666'>For personal, non-commercial use.</span>")
+            "<span style='color:#666'>Licensed under the PolyForm Noncommercial License "
+            "1.0.0: free for personal, research and educational use.</span>")
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info.setWordWrap(True)

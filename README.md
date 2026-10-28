@@ -98,4 +98,16 @@ packaging/     spec PyInstaller dan README versi portable
 Lapisan `core/` sengaja dipisahkan dari UI, supaya kelak bisa dipakai ulang untuk versi web
 atau API tanpa menulis ulang analisisnya.
 
-Copyright © 2026 Roni Saputra, M.Si. Untuk penggunaan pribadi/non-komersial.
+Copyright © 2026 Roni Saputra, M.Si.
+
+## Lisensi
+
+RS-StatChem dilisensikan di bawah **PolyForm Noncommercial License 1.0.0** (`LICENSE.md`):
+boleh dipakai, disalin, dan dimodifikasi untuk keperluan non-komersial, misalnya pribadi,
+riset, dan pendidikan (termasuk sekolah dan universitas). Penggunaan komersial memerlukan izin
+tertulis dari pemegang hak cipta. Komponen pihak ketiga dan data yang ikut dibundel tetap
+memakai lisensinya masing-masing; daftarnya ada di `THIRD_PARTY_NOTICES.md`.
+
+SPSS, Origin, Design-Expert, ChemDraw, dan ImageJ adalah merek/nama milik pemiliknya
+masing-masing. RS-StatChem tidak berafiliasi dengan mereka; nama-nama itu hanya menjelaskan
+alur kerja yang diikuti setiap modul.
