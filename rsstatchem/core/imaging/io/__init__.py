@@ -1,21 +1,30 @@
-"""Image file I/O. **Owned by WP-A after Phase 0** (tiff.py, pillow_io.py, dicom.py, fits.py,
-raw.py, avi.py, text_image.py, sequence.py, lut_io.py, results_io.py, opener.py, writer.py).
+"""Image file I/O of the Image Analysis module (owned by WP-A).
 
-Phase 0 contract: ``open_image(path) -> ImageDoc`` dispatching on the extension through
-:data:`READERS` (extension -> ``reader(path) -> ImageDoc``), and :func:`register_reader` so
-format modules plug in without editing the dispatcher. The Phase 0 readers are minimal: TIFF
-via tifffile (ImageJ hyperstack axes and calibration when present) and the Pillow formats with
-the palette kept as the LUT (blobs.gif has an inverting LUT).
+Contract (Phase 0): ``open_image(path) -> ImageDoc`` dispatching on the extension through
+:data:`READERS` (extension -> ``reader(path) -> ImageDoc``) and :func:`register_reader`, so
+other packages can plug in formats. WP-A adds:
+
+* :func:`open_file` - what File > Open does with any file: images (TIFF incl. ImageJ hyperstacks
+  and LZW, GIF/PNG/JPEG/BMP/PNM, DICOM, FITS, AVI, ImageJ ZIP), ``.roi`` selections, RoiSet
+  ``.zip`` archives, ``.lut`` tables, results/tables (``.csv``/``.xls``/``.tsv``), text files,
+  macros and ``.rsij`` projects; the type is recognised by magic bytes first (ImageJ
+  ``Opener.getFileType``), then by extension;
+* :func:`save_image` / :data:`WRITERS` - File > Save As formats under ImageJ's ``saveAs`` format
+  names ("tiff", "gif", "jpeg", "png", "bmp", "pgm", "fits", "raw", "text image", "zip",
+  "avi", "lut");
+* modules: :mod:`.tiff` (ImageJ TIFF writer port, byte-identical to ImageJ), :mod:`.lzw`,
+  :mod:`.roi_codec`, :mod:`.pillow_io`, :mod:`.dicom`, :mod:`.fits`, :mod:`.raw`,
+  :mod:`.text_image`, :mod:`.lut_io`, :mod:`.sequence`, :mod:`.avi`, :mod:`.zip_io`.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-import numpy as np
-
-from rsstatchem.core.imaging.image import COLOR_256, GRAY8, ImageDoc
-from rsstatchem.core.imaging.lut import LUT
+from rsstatchem.core.imaging.image import ImageDoc
+from rsstatchem.core.imaging.io.pillow_io import read_pillow
+from rsstatchem.core.imaging.io.tiff import read_tiff
 
 READERS: dict[str, Callable[[str], ImageDoc]] = {}
 
@@ -25,11 +34,86 @@ def register_reader(extensions, reader: Callable[[str], ImageDoc]) -> None:
         READERS[ext.lower()] = reader
 
 
+def _read_dicom(path):
+    from rsstatchem.core.imaging.io.dicom import read_dicom
+    return read_dicom(path)
+
+
+def _read_fits(path):
+    from rsstatchem.core.imaging.io.fits import read_fits
+    return read_fits(path)
+
+
+def _read_avi(path):
+    from rsstatchem.core.imaging.io.avi import read_avi
+    return read_avi(path)
+
+
+def _read_zip(path):
+    from rsstatchem.core.imaging.io.zip_io import read_zip_image
+    return read_zip_image(path)
+
+
+def _read_text_image(path):
+    from rsstatchem.core.imaging.io.text_image import read_text_image
+    return read_text_image(path)
+
+
+register_reader((".gif", ".png", ".jpg", ".jpeg", ".bmp", ".pgm", ".pbm", ".ppm", ".pnm"),
+                read_pillow)
+register_reader((".tif", ".tiff"), read_tiff)
+register_reader((".dcm", ".dicom", ".ima"), _read_dicom)
+register_reader((".fits", ".fit", ".fts"), _read_fits)
+register_reader(".avi", _read_avi)
+register_reader(".zip", _read_zip)
+
+
+def sniff(path) -> str | None:
+    """File type from the first bytes (ImageJ ``Opener.getFileType``), or None."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(132)
+    except OSError:
+        return None
+    if head[:4] in (b"II*\0", b"MM\0*") or head[:4] in (b"II+\0", b"MM\0+"):
+        return ".tif"
+    if len(head) >= 132 and head[128:132] == b"DICM":
+        return ".dcm"
+    if head[:6] == b"SIMPLE":
+        return ".fits"
+    if head[:4] == b"GIF8":
+        return ".gif"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if head[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if head[:2] == b"BM" and len(head) > 14:
+        return ".bmp"
+    if head[:4] == b"PK\x03\x04":
+        return ".zip"
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return ".avi"
+    if head[:4] == b"Iout":
+        return ".roi"
+    if head[:2] in (b"P1", b"P2", b"P3", b"P4", b"P5", b"P6") and len(head) > 2 and \
+            head[2:3] in (b"\n", b"\r", b" ", b"\t"):
+        return ".pgm"
+    return None
+
+
 def open_image(path) -> ImageDoc:
+    """Open an image file (contract). Dispatches on the magic bytes, then the extension."""
     path = str(path)
-    reader = READERS.get(Path(path).suffix.lower())
+    ext = Path(path).suffix.lower()
+    kind = sniff(path)
+    reader = READERS.get(kind) if kind is not None else None
     if reader is None:
-        raise ValueError(f"File is not in a supported format:\n{path}")
+        reader = READERS.get(ext)
+    if reader is None:
+        if ext == ".txt":
+            reader = _read_text_image
+        else:
+            raise ValueError(f"File is not in a supported format:\n{path}")
     doc = reader(path)
     doc.path = path
     doc.changed = False
@@ -37,69 +121,172 @@ def open_image(path) -> ImageDoc:
     return doc
 
 
-def read_pillow(path: str) -> ImageDoc:
-    """GIF/PNG/JPEG/BMP/PGM (first frame); palette images keep their palette as the LUT."""
-    from PIL import Image
-
-    title = Path(path).name
-    with Image.open(path) as im:
-        if im.mode == "P":
-            pal = np.asarray(im.getpalette() or [], dtype=np.uint8)
-            lut = LUT.from_array(pal.reshape(-1, 3) if pal.size else np.zeros((256, 3)))
-            doc = ImageDoc.from_array(np.asarray(im), "YX", title)
-            doc.luts = [lut]
-            if not (lut.is_grayscale() or lut.is_inverted()):
-                doc.type = COLOR_256
-            return doc
-        if im.mode in ("L", "1"):
-            return ImageDoc.from_array(np.asarray(im.convert("L")), "YX", title)
-        if im.mode in ("I;16", "I;16B", "I;16L"):
-            return ImageDoc.from_array(np.asarray(im).astype(np.uint16), "YX", title)
-        if im.mode in ("I", "F"):
-            return ImageDoc.from_array(np.asarray(im, dtype=np.float32), "YX", title)
-        return ImageDoc.from_array(np.asarray(im.convert("RGB")), "YXS", title)
+@dataclass
+class Opened:
+    """Result of :func:`open_file`: ``kind`` is "image", "roi", "rois", "lut", "table",
+    "text", "macro" or "project"; ``value`` the object (ImageDoc, Roi, list of Roi, LUT,
+    ResultsTable, str or the project dict)."""
+    kind: str
+    value: Any
+    path: str = ""
 
 
-def read_tiff(path: str) -> ImageDoc:
-    """TIFF via tifffile: ImageJ hyperstacks (axes, spacing/unit, ranges) when present."""
-    import tifffile
-
-    title = Path(path).name
-    with tifffile.TiffFile(path) as tif:
-        series = tif.series[0]
-        data = series.asarray()
-        axes = series.axes.upper().replace("Q", "Z").replace("I", "Z")
-        ij = tif.imagej_metadata or {}
-        page = tif.pages[0]
-        if page.photometric == tifffile.PHOTOMETRIC.RGB or axes.endswith("S"):
-            axes = axes[:-1] + "S" if axes.endswith("S") else axes
-        doc = ImageDoc.from_array(data, axes, title)
-        res = page.tags.get("XResolution")
-        if res is not None and ij.get("unit"):
-            num, den = res.value
-            if num:
-                doc.calibration.pixel_width = den / num
-                yres = page.tags.get("YResolution")
-                doc.calibration.pixel_height = (yres.value[1] / yres.value[0]) if yres else \
-                    doc.calibration.pixel_width
-                doc.calibration.unit = str(ij.get("unit")).replace("\\u00B5", "µ")
-                doc.calibration.pixel_depth = float(ij.get("spacing", 1.0))
-        if "min" in ij and "max" in ij and doc.type != GRAY8:
-            doc.display_ranges = [(float(ij["min"]), float(ij["max"]))] * doc.n_channels
-        if ij.get("Labels"):
-            labels = list(ij["Labels"])[:doc.stack_size]
-            doc.slice_labels = labels + [None] * (doc.stack_size - len(labels))
-        if ij.get("mode") in ("composite", "color", "grayscale") and doc.n_channels > 1:
-            doc.composite_mode = ij["mode"]
-        if ij.get("Info"):
-            doc.info = str(ij["Info"])
-        if page.photometric == tifffile.PHOTOMETRIC.PALETTE and page.colormap is not None:
-            cmap = np.asarray(page.colormap)
-            doc.luts = [LUT.from_array((cmap.T >> 8).astype(np.uint8))]
-        elif page.photometric == tifffile.PHOTOMETRIC.MINISWHITE and doc.type == GRAY8:
-            doc.luts = [LUT.grays().inverted()]
-        return doc
+TABLE_EXTENSIONS = (".csv", ".xls", ".tsv")
+TEXT_EXTENSIONS = (".txt", ".java", ".js", ".py", ".bsh", ".md", ".ijm", ".macro")
 
 
-register_reader((".gif", ".png", ".jpg", ".jpeg", ".bmp", ".pgm", ".pbm", ".ppm"), read_pillow)
-register_reader((".tif", ".tiff"), read_tiff)
+def open_file(path) -> Opened:
+    """What File > Open does with ``path`` (ImageJ ``Opener.open``)."""
+    p = Path(path)
+    ext = p.suffix.lower()
+    kind = sniff(p)
+    if ext == ".rsij":
+        from rsstatchem.core.imaging.project import read_project
+        return Opened("project", read_project(p), str(p))
+    if kind == ".roi" or ext == ".roi":
+        from rsstatchem.core.imaging.io.roi_codec import read_roi
+        return Opened("roi", read_roi(p), str(p))
+    if kind == ".zip" or ext == ".zip":
+        from rsstatchem.core.imaging.io.roi_codec import is_roi_zip, read_roi_zip
+        if is_roi_zip(p):
+            return Opened("rois", read_roi_zip(p), str(p))
+        return Opened("image", open_image(p), str(p))
+    if ext == ".lut" and kind is None:
+        from rsstatchem.core.imaging.io.lut_io import read_lut
+        return Opened("lut", read_lut(p), str(p))
+    if ext in TABLE_EXTENSIONS and kind is None:
+        from rsstatchem.core.imaging.results import ResultsTable
+        table = ResultsTable.read(p)
+        table.title = p.name if p.stem != "Results" else "Results"
+        return Opened("table", table, str(p))
+    if ext in (".ijm", ".macro"):
+        return Opened("macro", p.read_text(errors="replace"), str(p))
+    if ext in TEXT_EXTENSIONS and kind is None:
+        text = p.read_text(errors="replace")
+        if ext == ".txt" and _looks_like_text_image(text):
+            from rsstatchem.core.imaging.io.text_image import read_text_image
+            try:
+                doc = read_text_image(p)
+                doc.path = str(p)
+                return Opened("image", doc, str(p))
+            except ValueError:
+                pass
+        return Opened("text", text, str(p))
+    return Opened("image", open_image(p), str(p))
+
+
+def _looks_like_text_image(text: str) -> bool:
+    import re
+    lines = [ln for ln in text.splitlines()[:5] if ln.strip()]
+    if not lines:
+        return False
+    num = re.compile(r"^[\s,]*([-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?|NaN)([\s,]+"
+                     r"([-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?|NaN))*[\s,]*$")
+    body = lines[1:] if len(lines) > 1 else lines
+    return all(num.match(ln) for ln in body)
+
+
+# ---------------------------------------------------------------------------------- writing
+def _w_tiff(doc, path, opts):
+    from rsstatchem.core.imaging.io.tiff import write_tiff
+    write_tiff(doc, path, little_endian=bool(opts.get("intel")))
+
+
+def _w_zip(doc, path, opts):
+    from rsstatchem.core.imaging.io.zip_io import write_zip
+    write_zip(doc, path, little_endian=bool(opts.get("intel")))
+
+
+def _w_gif(doc, path, opts):
+    from rsstatchem.core.imaging.io.pillow_io import write_gif
+    write_gif(doc, path)
+
+
+def _w_jpeg(doc, path, opts):
+    from rsstatchem.core.imaging.io.pillow_io import write_jpeg
+    write_jpeg(doc, path, int(opts.get("quality", 85)))
+
+
+def _w_png(doc, path, opts):
+    from rsstatchem.core.imaging.io.pillow_io import write_png
+    write_png(doc, path)
+
+
+def _w_bmp(doc, path, opts):
+    from rsstatchem.core.imaging.io.pillow_io import write_bmp
+    write_bmp(doc, path)
+
+
+def _w_pgm(doc, path, opts):
+    from rsstatchem.core.imaging.io.pillow_io import write_pnm
+    write_pnm(doc, path)
+
+
+def _w_fits(doc, path, opts):
+    from rsstatchem.core.imaging.io.fits import write_fits
+    write_fits(doc, path)
+
+
+def _w_raw(doc, path, opts):
+    from rsstatchem.core.imaging.io.raw import write_raw
+    write_raw(doc, path, little_endian=bool(opts.get("intel")))
+
+
+def _w_text(doc, path, opts):
+    from rsstatchem.core.imaging.io.text_image import write_text_image
+    write_text_image(doc, path, int(opts.get("precision", 3)))
+
+
+def _w_avi(doc, path, opts):
+    from rsstatchem.core.imaging.io.avi import write_avi
+    write_avi(doc, path, opts.get("compression", "Uncompressed"),
+              float(opts.get("fps", doc.calibration.fps or 7.0)), int(opts.get("quality", 90)))
+
+
+def _w_lut(doc, path, opts):
+    from rsstatchem.core.imaging.io.lut_io import write_lut
+    write_lut(doc.lut, path)
+
+
+WRITERS: dict[str, tuple[str, Callable]] = {
+    "tiff": (".tif", _w_tiff), "zip": (".zip", _w_zip), "gif": (".gif", _w_gif),
+    "jpeg": (".jpg", _w_jpeg), "png": (".png", _w_png), "bmp": (".bmp", _w_bmp),
+    "pgm": (".pgm", _w_pgm), "fits": (".fits", _w_fits), "raw": (".raw", _w_raw),
+    "text image": (".txt", _w_text), "avi": (".avi", _w_avi), "lut": (".lut", _w_lut),
+}
+_ALIASES = {"tif": "tiff", "jpg": "jpeg", "text": "text image", "raw data": "raw",
+            "fit": "fits", "pnm": "pgm", "txt": "text image"}
+
+
+def format_key(fmt: str | None, path=None) -> str:
+    """Normalise an ImageJ ``saveAs`` format name ("Tiff", "Jpeg", "Text Image"...) or derive
+    it from the extension of ``path``."""
+    if fmt:
+        key = fmt.strip().lower().rstrip(". ")
+        key = _ALIASES.get(key, key)
+        if key in WRITERS:
+            return key
+    if path is not None:
+        ext = Path(path).suffix.lower().lstrip(".")
+        key = _ALIASES.get(ext, ext)
+        if key in WRITERS:
+            return key
+        if ext == "tiff":
+            return "tiff"
+    raise ValueError(f"Unsupported save() or saveAs() file format: \"{fmt}\"")
+
+
+def save_image(doc: ImageDoc, path, fmt: str | None = None, **options) -> Path:
+    """Write ``doc`` as ``fmt`` (ImageJ name or extension). Options: ``intel`` (byte order),
+    ``quality`` (JPEG), ``precision`` (text image), ``compression``/``fps`` (AVI)."""
+    key = format_key(fmt, path)
+    ext, writer = WRITERS[key]
+    path = Path(path)
+    if not path.suffix and key != "raw":
+        path = path.with_suffix(ext)
+    writer(doc, path, options)
+    return path
+
+
+__all__ = ["READERS", "register_reader", "open_image", "open_file", "Opened", "save_image",
+           "WRITERS", "format_key", "sniff", "read_pillow", "read_tiff"]
