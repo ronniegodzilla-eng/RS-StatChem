@@ -43,14 +43,19 @@ def install(window) -> dict:
                                              lambda: show_nmr(window, "1H"))
         acts["nmr_13c"] = structure.addAction("Predict ¹³C-NMR Shifts",
                                               lambda: show_nmr(window, "13C"))
-        stereo_act = QAction("Show Stereochemistry", window)
-        stereo_act.setCheckable(True)
-        style = getattr(getattr(window, "doc", None), "style", None)
-        stereo_act.setChecked(bool(getattr(style, "show_stereo", False)))
-        stereo_act.setToolTip("R/S, r/s and E/Z (CIP) labels on the structure")
-        stereo_act.toggled.connect(lambda on: toggle_stereo(window, on))
-        structure.addAction(stereo_act)
-        acts["stereo"] = stereo_act
+        # the drawing package's Object > Show Stereochemistry draws the labels; this
+        # status-bar version is only the fallback when that package is absent
+        if getattr(window, "act_show_stereo", None) is None:
+            stereo_act = QAction("Show Stereochemistry", window)
+            stereo_act.setCheckable(True)
+            style = getattr(getattr(window, "doc", None), "style", None)
+            stereo_act.setChecked(bool(getattr(style, "show_stereo", False)))
+            stereo_act.setToolTip("R/S, r/s and E/Z (CIP) labels on the structure")
+            stereo_act.toggled.connect(lambda on: toggle_stereo(window, on))
+            structure.addAction(stereo_act)
+            acts["stereo"] = stereo_act
+        else:
+            acts["stereo"] = window.act_show_stereo
     act = getattr(window, "act_struct2name", None)
     if act is not None:
         try:

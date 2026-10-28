@@ -62,8 +62,8 @@ SAVE_FILTERS = {"RS-StatChem drawing (*.rsc)": ".rsc", "ChemDraw document (*.cdx
                 "ChemDraw XML (*.cdxml)": ".cdxml"}
 _DOC_EXT = (".rsc", ".cdx", ".cdxml")
 # modules of other work packages that add their own menu items (see the module docstring)
-INSTALL_MODULES = ("rsstatchem.ui.chemdraw.intel_actions",
-                   "rsstatchem.ui.chemdraw.objects_actions")
+INSTALL_MODULES = ("rsstatchem.ui.chemdraw.objects_actions",   # first: owns Show Stereochemistry
+                   "rsstatchem.ui.chemdraw.intel_actions")
 # reaction interpretation colours (ChemDraw 17.1 p. 173: reactants red, products magenta,
 # conditions cyan / blue)
 INTERPRETATION_COLORS = {"reactants": "#E00000", "products": "#D000A0", "agents": "#00A8C8",
