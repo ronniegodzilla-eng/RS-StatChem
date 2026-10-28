@@ -263,3 +263,131 @@ def number_labels(text_values: list[str]) -> list[float] | None:
             return None
         out.append(float(t))
     return out
+
+
+# ---------------------------------------------------------------------- matrix analysis
+MATRIX_FILTERS = {"mean": "Average (box)", "median": "Median", "gaussian": "Gaussian",
+                  "min": "Minimum", "max": "Maximum", "laplacian": "Laplacian (edges)",
+                  "sobel": "Sobel (gradient magnitude)"}
+MATRIX_OPS = {"+": "Add", "-": "Subtract", "*": "Multiply", "/": "Divide", "^": "Power"}
+
+
+def arithmetic(a: np.ndarray, b, op: str = "+") -> np.ndarray:
+    """Element-wise ``a op b`` (``b`` a matrix of the same shape or a number) — Origin's
+    Matrix Simple Math; division by zero gives NaN."""
+    a = np.asarray(a, float)
+    bb = float(b) if np.isscalar(b) else np.asarray(b, float)
+    if not np.isscalar(b) and bb.shape != a.shape:
+        raise MatrixError(f"The matrices differ in size ({a.shape} vs {bb.shape}).")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = {"+": np.add, "-": np.subtract, "*": np.multiply, "/": np.divide,
+               "^": np.power}[op](a, bb)
+    return np.where(np.isfinite(out), out, np.nan)
+
+
+def inverse(data: np.ndarray) -> np.ndarray:
+    a = np.asarray(data, float)
+    if a.shape[0] != a.shape[1]:
+        raise MatrixError("Only a square matrix has an inverse.")
+    if not np.isfinite(a).all():
+        raise MatrixError("The matrix has missing values.")
+    try:
+        return np.linalg.inv(a)
+    except np.linalg.LinAlgError:
+        raise MatrixError("The matrix is singular.") from None
+
+
+def smooth_filter(data: np.ndarray, kind: str = "mean", size: int = 3,
+                  sigma: float = 1.0) -> np.ndarray:
+    """Matrix smoothing / spatial filters (``scipy.ndimage``; edges reflected, missing values
+    filled with the mean for the computation and kept missing)."""
+    from scipy import ndimage as nd
+    a = np.asarray(data, float)
+    finite = np.isfinite(a)
+    fill = np.where(finite, a, np.nanmean(a) if finite.any() else 0.0)
+    size = max(1, int(size))
+    if kind == "mean":
+        out = nd.uniform_filter(fill, size, mode="reflect")
+    elif kind == "median":
+        out = nd.median_filter(fill, size, mode="reflect")
+    elif kind == "gaussian":
+        out = nd.gaussian_filter(fill, float(sigma), mode="reflect")
+    elif kind == "min":
+        out = nd.minimum_filter(fill, size, mode="reflect")
+    elif kind == "max":
+        out = nd.maximum_filter(fill, size, mode="reflect")
+    elif kind == "laplacian":
+        out = nd.laplace(fill, mode="reflect")
+    elif kind == "sobel":
+        out = np.hypot(nd.sobel(fill, 0, mode="reflect"), nd.sobel(fill, 1, mode="reflect"))
+    else:
+        raise MatrixError(f"Unknown filter '{kind}'")
+    return np.where(finite, out, np.nan)
+
+
+def crop(data: np.ndarray, mapping: Mapping, r1: int, r2: int, c1: int, c2: int) \
+        -> tuple[np.ndarray, Mapping]:
+    """Rows ``r1..r2`` and columns ``c1..c2`` (1-based, inclusive) with their coordinates."""
+    a = np.asarray(data)
+    rows, cols = a.shape
+    r1, r2 = sorted((max(1, int(r1)), min(rows, int(r2))))
+    c1, c2 = sorted((max(1, int(c1)), min(cols, int(c2))))
+    X, Y = cell_coordinates(a.shape, mapping)
+    return a[r1 - 1:r2, c1 - 1:c2].copy(), (float(X[0, c1 - 1]), float(X[0, c2 - 1]),
+                                            float(Y[r1 - 1, 0]), float(Y[r2 - 1, 0]))
+
+
+def rotate_any(data: np.ndarray, angle: float, reshape: bool = True, order: int = 1) \
+        -> np.ndarray:
+    """Rotate by an arbitrary angle (degrees, counter-clockwise as shown); cells outside the
+    original become missing."""
+    from scipy import ndimage as nd
+    a = np.asarray(data, float)
+    finite = np.isfinite(a)
+    fill = np.where(finite, a, 0.0)
+    out = nd.rotate(fill, float(angle), reshape=reshape, order=int(order), mode="constant",
+                    cval=0.0)
+    inside = nd.rotate(finite.astype(float), float(angle), reshape=reshape, order=0,
+                       mode="constant", cval=0.0)
+    return np.where(inside > 0.5, out, np.nan)
+
+
+def resample(data: np.ndarray, mapping: Mapping, rows: int, cols: int,
+             method: str = "linear") -> np.ndarray:
+    """2D interpolation of the matrix onto ``rows × cols`` points over the same X/Y range
+    (``linear`` / ``cubic`` / ``nearest``; Origin's Matrix 2D Interpolate)."""
+    from scipy.interpolate import RegularGridInterpolator
+    a = np.asarray(data, float)
+    r0, c0 = a.shape
+    if r0 < 2 or c0 < 2:
+        raise MatrixError("The matrix needs at least 2 × 2 cells.")
+    ys, xs = np.arange(r0, dtype=float), np.arange(c0, dtype=float)
+    f = RegularGridInterpolator((ys, xs), a, method=method)
+    yy, xx = np.meshgrid(np.linspace(0, r0 - 1, int(rows)), np.linspace(0, c0 - 1, int(cols)),
+                         indexing="ij")
+    return f(np.column_stack([yy.ravel(), xx.ravel()])).reshape(int(rows), int(cols))
+
+
+def integrate_volume(data: np.ndarray, mapping: Mapping, baseline: float = 0.0) -> dict:
+    """2D integration (Origin's Matrix Integrate): trapezoid volume ∬(z − baseline) dx dy over
+    the X/Y mapping, plus the absolute volume and the integration area."""
+    a = np.asarray(data, float) - float(baseline)
+    if not np.isfinite(a).all():
+        raise MatrixError("Fill the missing values before integrating.")
+    x1, x2, y1, y2 = mapping
+    rows, cols = a.shape
+    xs = np.linspace(x1, x2, cols) if cols > 1 else np.array([x1], float)
+    ys = np.linspace(y1, y2, rows) if rows > 1 else np.array([y1], float)
+    vol = float(np.trapezoid(np.trapezoid(a, xs, axis=1), ys))
+    absv = float(np.trapezoid(np.trapezoid(np.abs(a), xs, axis=1), ys))
+    return {"volume": vol, "abs_volume": absv, "area": abs((x2 - x1) * (y2 - y1))}
+
+
+def statistics(data: np.ndarray) -> dict:
+    a = np.asarray(data, float)
+    v = a[np.isfinite(a)]
+    if not len(v):
+        return {"n": 0}
+    return {"n": int(len(v)), "missing": int(a.size - len(v)), "mean": float(v.mean()),
+            "sd": float(v.std(ddof=1)) if len(v) > 1 else math.nan, "min": float(v.min()),
+            "max": float(v.max()), "sum": float(v.sum()), "median": float(np.median(v))}
