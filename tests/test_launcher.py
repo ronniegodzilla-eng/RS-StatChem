@@ -25,6 +25,7 @@ def test_four_modules_and_file_routing():
     assert module_for_path("output.rso").key == "stats"
     assert module_for_path("survey.dta").key == "stats"
     assert module_for_path("cells.TIF").key == "image"
+    assert module_for_path("analysis.rsij").key == "image"
     assert module_for_path("notes.docx") is None
 
 

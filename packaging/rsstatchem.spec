@@ -182,6 +182,10 @@ if sys.platform == "darwin":
                 "CFBundleTypeExtensions": ["rsop"],
                 "CFBundleTypeRole": "Editor",
             }, {
+                "CFBundleTypeName": "RS-StatChem Image Project",
+                "CFBundleTypeExtensions": ["rsij"],
+                "CFBundleTypeRole": "Editor",
+            }, {
                 "CFBundleTypeName": "RS-StatChem Output",
                 "CFBundleTypeExtensions": ["rso"],
                 "CFBundleTypeRole": "Editor",

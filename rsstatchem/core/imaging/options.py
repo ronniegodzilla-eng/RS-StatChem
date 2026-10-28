@@ -39,7 +39,7 @@ class Options:
     results_extension: str = ".csv"
     save_column_headers: bool = True
     save_row_numbers: bool = True
-    intel_byte_order: bool = False
+    intel_byte_order: bool = True   # ImageJ 1.54p writes little-endian TIFF/raw by default
     # Edit > Options > Colors... (hex "#rrggbb")
     foreground: str = "#ffffff"
     background: str = "#000000"

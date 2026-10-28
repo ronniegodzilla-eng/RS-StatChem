@@ -48,8 +48,8 @@ MODULES: tuple[ModuleInfo, ...] = (
     ModuleInfo("image", "Image Analysis", "Open, process and measure images and stacks: "
                "filters, thresholds, particles, ROIs", "ImageJ",
                "rsstatchem.ui.imagej:open_workspace",
-               (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".dcm", ".fits",
-                ".roi"), "image"),
+               (".rsij", ".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".dcm",
+                ".fits", ".roi"), "image"),
 )
 BY_KEY = {m.key: m for m in MODULES}
 
