@@ -13,6 +13,14 @@ with hard-to-change numeric or categoric factors (whole plots, restricted random
 split-plot CCD and D-optimal designs, two-level split plots blocked by confounding whole-plot
 interactions).
 
+Optimal (custom) process, mixture and combined mixture-process designs use the engine of
+:mod:`rsstatchem.core.doe.optimal` (I/D/A criteria; point, coordinate or best exchange;
+blocks, forced runs, edited models) on the regions of :mod:`rsstatchem.core.doe.constraints`
+(multiple linear constraints). Further builders: definitive screening designs from Paley
+conference matrices, one-factor RSM, orthogonally blocked Box-Behnken designs, simplex
+screening, user-defined point types, Latin hypercube and maximin-distance space-filling
+designs, blank historical layouts and :func:`design_from_data` (Import Data Set).
+
 :func:`build_design` turns a wizard specification into a :class:`Dataset` with columns
 Std, Run, Block, Space Type, the factors in actual units and empty response columns; the design
 definition is stored JSON-serialisable in ``ds.meta["doe"]``.
@@ -36,19 +44,27 @@ from rsstatchem.core.dataset import NOMINAL, ORDINAL, Dataset, Variable, sanitiz
 LETTERS = "ABCDEFGHJKLMNOPQRSTUVWXYZ" + "abcdefghjklmnopqrstuvwxyz"
 
 SPACE_TYPES = {0: "Center", 1: "Factorial", 2: "Axial", 3: "Edge", 4: "Vertex", 5: "Plane",
-               6: "Interior", 7: "Centroid", 8: "Run"}
+               6: "Interior", 7: "Centroid", 8: "Run", 9: "Third Edge", 10: "Data"}
 
 DESIGN_TITLES = {
     "factorial": "Regular Two-Level Factorial", "general": "Multilevel Categoric (General "
     "Factorial)", "pb": "Plackett-Burman", "ccd": "Central Composite",
-    "bbd": "Box-Behnken", "threelevel": "3-Level Factorial", "dopt": "Optimal (D-optimal)",
+    "bbd": "Box-Behnken", "threelevel": "3-Level Factorial", "dopt": "Optimal (Custom)",
     "lattice": "Simplex Lattice", "centroid": "Simplex Centroid",
-    "ev": "Extreme Vertices (constrained mixture)", "mixdopt": "Optimal (D-optimal) Mixture",
+    "ev": "Extreme Vertices (constrained mixture)", "mixdopt": "Optimal (Custom) Mixture",
     "taguchi": "Taguchi Orthogonal Array", "mr5": "Min-Run Characterize (Resolution V)",
     "mr4": "Min-Run Screen (Resolution IV)",
+    "dsd": "Definitive Screening", "onefactor": "One Factor (RSM)",
+    "simscreen": "Simplex Screening", "combined": "Combined Mixture-Process (Optimal)",
+    "lhs": "Space Filling: Latin Hypercube", "distance": "Space Filling: Optimal Distance",
+    "userdef": "User-Defined", "historical": "Historical Data",
 }
-FACTORIAL_DESIGNS = ("factorial", "pb", "general", "mr5", "mr4")
-MIXTURE_DESIGNS = ("lattice", "centroid", "ev", "mixdopt")
+FACTORIAL_DESIGNS = ("factorial", "pb", "general", "mr5", "mr4", "dsd")
+MIXTURE_DESIGNS = ("lattice", "centroid", "ev", "mixdopt", "simscreen")
+COMBINED_DESIGNS = ("combined",)
+CRITERIA = {"D": "D-optimal", "I": "I-optimal", "A": "A-optimal"}
+EXCHANGES = {"point": "Point exchange", "coordinate": "Coordinate exchange",
+             "best": "Best (half of the starts each)"}
 CATEGORIC_DESIGNS = ("general", "taguchi")
 
 
@@ -394,10 +410,40 @@ BBD_SUBSETS = {
 BBD_CENTERS = {3: 5, 4: 5, 5: 6, 6: 6, 7: 6}
 
 
-def box_behnken(k: int, center_points: int | None = None) -> dict:
-    """Box-Behnken design for 3-7 factors (pairs; BIBD triples for 6 and 7 factors)."""
+# orthogonal blocking of Box-Behnken designs: every factor appears equally often per block
+BBD_BLOCKS = {
+    4: [[(0, 1), (2, 3)], [(0, 3), (1, 2)], [(0, 2), (1, 3)]],          # 3 blocks of 9
+    5: [[(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)],                          # 2 blocks of 23
+        [(0, 2), (2, 4), (1, 4), (1, 3), (0, 3)]],
+}
+BBD_BLOCK_CENTERS = {4: 1, 5: 3}
+
+
+def box_behnken(k: int, center_points: int | None = None, blocks: int = 1) -> dict:
+    """Box-Behnken design for 3-7 factors (pairs; BIBD triples for 6 and 7 factors).
+    ``blocks``: 3 for four factors or 2 for five (orthogonal blocks; ``center_points`` is
+    then per block)."""
     if k < 3 or k > 7:
         raise ValueError("Box-Behnken designs are available for 3 to 7 factors.")
+    if blocks > 1:
+        plan = BBD_BLOCKS.get(k)
+        if plan is None or len(plan) != blocks:
+            raise ValueError("Blocked Box-Behnken designs: 4 factors in 3 blocks or 5 "
+                             "factors in 2 blocks.")
+        c = BBD_BLOCK_CENTERS[k] if center_points is None else int(center_points)
+        rows, blk = [], []
+        for b, pairs in enumerate(plan, start=1):
+            for sub in pairs:
+                f = full_factorial(2)
+                block = np.zeros((4, k))
+                block[:, list(sub)] = f
+                rows.append(block)
+                blk += [b] * 4
+            rows.append(np.zeros((c, k)))
+            blk += [b] * c
+        coded = np.vstack(rows)
+        types = np.where(np.all(coded == 0, axis=1), 0, 3)
+        return {"coded": coded, "blocks": np.array(blk), "types": types}
     subsets = BBD_SUBSETS.get(k) or list(itertools.combinations(range(k), 2))
     rows = []
     for sub in subsets:
@@ -1259,6 +1305,350 @@ def d_optimal_split_plot(levels: list[np.ndarray], hard: list[int], terms_matrix
     return best
 
 
+# ---------------------------------------------------------------------------- definitive screening
+def _prime_power(q: int) -> tuple[int, int] | None:
+    for p in range(2, q + 1):
+        if q % p == 0:
+            m, r = 0, q
+            while r % p == 0:
+                r //= p
+                m += 1
+            return (p, m) if r == 1 else None
+    return None
+
+
+def _gf_elements(p: int, m: int):
+    """Elements of GF(p^m) as coefficient tuples with subtraction and the set of squares."""
+    elems = list(itertools.product(range(p), repeat=m))
+    if m == 1:
+        sq = {((a * a) % p,) for (a,) in elems if a}
+        return elems, sq
+    # an irreducible monic polynomial of degree m: x^m = -(c_{m-1} x^{m-1} + ... + c_0)
+    for coefs in itertools.product(range(p), repeat=m):
+        if coefs[0] == 0:
+            continue
+        # irreducible for m <= 3 iff it has no root in GF(p)
+        if m <= 3 and all((pow(x, m, p) + sum(c * pow(x, i, p) for i, c in enumerate(coefs)))
+                          % p for x in range(p)):
+            poly = coefs
+            break
+    else:
+        raise ValueError("No irreducible polynomial found.")
+
+    def mul(a, b):
+        prod = [0] * (2 * m - 1)
+        for i, ai in enumerate(a):
+            for j, bj in enumerate(b):
+                prod[i + j] = (prod[i + j] + ai * bj) % p
+        for d in range(2 * m - 2, m - 1, -1):
+            c = prod[d]
+            if c:
+                prod[d] = 0
+                for i, pc in enumerate(poly):
+                    prod[d - m + i] = (prod[d - m + i] - c * pc) % p
+        return tuple(prod[:m])
+
+    sq = {mul(a, a) for a in elems if any(a)}
+    return elems, sq
+
+
+def conference_matrix(n: int) -> np.ndarray:
+    """Conference matrix of order n (C'C = (n-1) I, zero diagonal) by Paley's construction
+    from GF(n-1); n - 1 must be a prime power."""
+    q = n - 1
+    pm = _prime_power(q)
+    if pm is None:
+        raise ValueError(f"No Paley conference matrix of order {n}.")
+    p, m = pm
+    elems, sq = _gf_elements(p, m)
+    Q = np.zeros((q, q))
+    for i, a in enumerate(elems):
+        for j, b in enumerate(elems):
+            if i == j:
+                continue
+            d = tuple((x - y) % p for x, y in zip(b, a))
+            Q[i, j] = 1.0 if d in sq else -1.0
+    C = np.zeros((n, n))
+    C[0, 1:] = 1
+    C[1:, 0] = 1 if q % 4 == 1 else -1
+    C[1:, 1:] = Q
+    if not np.allclose(C.T @ C, (n - 1) * np.eye(n)):
+        raise ValueError(f"Conference matrix of order {n} failed its check.")
+    return C
+
+
+def conference_order(m: int) -> int:
+    """Smallest even order >= m with a Paley conference matrix."""
+    n = m + (m % 2)
+    while _prime_power(n - 1) is None:
+        n += 2
+    return n
+
+
+def definitive_screening(m: int, n_cat: int = 0, extra_centers: int = 0,
+                         C: np.ndarray | None = None) -> dict:
+    """Definitive screening design (Jones & Nachtsheim 2011): runs [C; -C; 0] from a
+    conference matrix, the last ``n_cat`` columns two-level categoric (their zeros become
+    +1 in C and -1 in -C, and two centre runs carry them at -1 and +1; Jones & Nachtsheim
+    2013). Returns coded runs (categoric columns -1/+1) and space types."""
+    if m < 2:
+        raise ValueError("A definitive screening design needs at least 2 factors.")
+    if C is None:
+        C = conference_matrix(conference_order(m))
+    C = np.asarray(C, float)[:, :m] if C.shape[1] >= m else None
+    if C is None:
+        raise ValueError("The conference matrix has fewer columns than factors.")
+    C = C.copy()
+    cat = list(range(m - n_cat, m))
+    top, bottom = C.copy(), -C.copy()
+    for j in cat:
+        top[top[:, j] == 0, j] = 1
+        bottom[bottom[:, j] == 0, j] = -1
+    runs = [top, bottom]
+    if cat:
+        c1, c2 = np.zeros((1, m)), np.zeros((1, m))
+        c1[0, cat], c2[0, cat] = 1, -1
+        runs += [c1, c2]
+        n_c = 2 + int(extra_centers)
+        for i in range(int(extra_centers)):
+            e = np.zeros((1, m))
+            e[0, cat] = 1 if i % 2 == 0 else -1
+            runs.append(e)
+    else:
+        runs.append(np.zeros((1 + int(extra_centers), m)))
+        n_c = 1 + int(extra_centers)
+    coded = np.vstack(runs)
+    num = [j for j in range(m) if j not in cat]
+    zero = np.all(coded[:, num] == 0, axis=1) if num else np.zeros(len(coded), bool)
+    types = np.where(zero, 0, 3)
+    return {"coded": coded, "types": types, "order": len(C), "centers": n_c}
+
+
+# ---------------------------------------------------------------------------- small builders
+def simplex_screening(q: int) -> tuple[np.ndarray, np.ndarray]:
+    """Simplex screening design (Snee & Marquardt 1976) in pseudo components: vertices,
+    interior axial check blends, end-effect blends (one component absent) and the overall
+    centroid."""
+    pts, types = [], []
+    for i in range(q):
+        e = np.zeros(q)
+        e[i] = 1
+        pts.append(e)
+        types.append(4)
+    for x in axial_blends(q):
+        pts.append(x)
+        types.append(6)
+    if q >= 3:
+        for i in range(q):
+            e = np.full(q, 1.0 / (q - 1))
+            e[i] = 0
+            pts.append(e)
+            types.append(5 if q > 3 else 3)
+    pts.append(np.full(q, 1.0 / q))
+    types.append(7)
+    return np.array(pts), np.array(types)
+
+
+def latin_hypercube(n: int, k: int, rng: np.random.Generator) -> np.ndarray:
+    """Latin hypercube in coded units -1..1, optimised for centred discrepancy."""
+    from scipy.stats import qmc
+
+    seed = int(rng.integers(0, 2 ** 31 - 1))
+    try:
+        sampler = qmc.LatinHypercube(d=k, optimization="random-cd", seed=seed)
+    except TypeError:  # very old scipy
+        sampler = qmc.LatinHypercube(d=k, seed=seed)
+    return 2 * sampler.random(n) - 1
+
+
+def maximin_points(cand: np.ndarray, n: int, rng: np.random.Generator,
+                   start: np.ndarray | None = None, passes: int = 20) -> np.ndarray:
+    """``n`` candidate rows with a large minimum distance (greedy farthest point, then
+    exchange; Johnson, Moore & Ylvisaker 1990)."""
+    if n > len(cand):
+        raise ValueError(f"Only {len(cand)} candidate points for {n} runs.")
+    centre = cand.mean(axis=0)
+    first = int(np.argmax(np.linalg.norm(cand - centre, axis=1)))
+    idx = [first] if start is None else []
+    base = np.zeros((0, cand.shape[1])) if start is None else np.atleast_2d(start)
+    while len(idx) < n:
+        ref = np.vstack([base, cand[idx]]) if idx or len(base) else cand[[first]]
+        d = np.min(np.linalg.norm(cand[:, None, :] - ref[None, :, :], axis=2), axis=1)
+        d[idx] = -1
+        idx.append(int(np.argmax(d)))
+    idx = np.array(idx)
+
+    def score(sel):
+        P = np.vstack([base, cand[sel]])
+        D = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=2)
+        D[np.diag_indices(len(P))] = np.inf
+        return D.min(), np.sum(D == D.min())
+
+    cur = score(idx)
+    for _ in range(passes):
+        improved = False
+        for i in rng.permutation(len(idx)):
+            for j in rng.permutation(len(cand))[:200]:
+                if j in idx:
+                    continue
+                trial = idx.copy()
+                trial[i] = j
+                s = score(trial)
+                if s[0] > cur[0] + 1e-12 or (abs(s[0] - cur[0]) < 1e-12 and s[1] < cur[1]):
+                    idx, cur, improved = trial, s, True
+        if not improved:
+            break
+    return idx
+
+
+def axial_runs(k: int, alpha: float, factors: list[int] | None = None) -> np.ndarray:
+    """2 x len(factors) axial (star) points at +-alpha for augmenting a factorial to a CCD."""
+    factors = list(range(k)) if factors is None else list(factors)
+    out = np.zeros((2 * len(factors), k))
+    for i, j in enumerate(factors):
+        out[2 * i, j], out[2 * i + 1, j] = -alpha, alpha
+    return out
+
+
+def classify_points(region, X: np.ndarray) -> np.ndarray:
+    """Space types by the number of active bounds / constraints: vertex, edge, plane,
+    interior, centre (process 0) or centroid (mixture)."""
+    planes = region._hyperplanes()
+    cont = region.cont
+    d = region.dim
+    out = np.empty(len(X), int)
+    cen = region.centroid() if region.mix else None
+    for r, x in enumerate(X):
+        xc = x[cont]
+        act = sum(1 for nrm, v, _ in planes if abs(nrm @ xc - v) < 1e-7)
+        if not region.mix and np.allclose(xc, 0):
+            out[r] = 0
+        elif cen is not None and np.allclose(xc, cen, atol=1e-7):
+            out[r] = 7
+        elif act >= d:
+            out[r] = 4
+        elif act == d - 1 and d >= 1:
+            out[r] = 3
+        elif act >= 1:
+            out[r] = 5
+        else:
+            out[r] = 6
+    return out
+
+
+def _parse_constraints(raw, k: int) -> list[dict]:
+    from rsstatchem.core.doe import constraints as cons
+
+    out = []
+    for c in raw or []:
+        if isinstance(c, str):
+            if c.strip():
+                out.append(cons.parse_constraint(c, k))
+        elif isinstance(c, dict):
+            d = dict(c)
+            if "coefs" not in d and d.get("text"):
+                d = cons.parse_constraint(d["text"], k)
+            out.append({"coefs": [float(v) for v in d["coefs"]], "low": d.get("low"),
+                        "high": d.get("high"),
+                        "text": d.get("text") or cons.format_constraint(
+                            d["coefs"], d.get("low"), d.get("high"))})
+    return out
+
+
+def _distance_rows(cand: np.ndarray, design: np.ndarray, m: int) -> np.ndarray:
+    """Lack-of-fit rows: candidates furthest from the design (max-min distance)."""
+    rows = []
+    cur = np.asarray(design, float)
+    for _ in range(m):
+        d = np.min(np.linalg.norm(cand[:, None, :] - cur[None, :, :], axis=2), axis=1)
+        if d.max() <= 1e-9:
+            break
+        x = cand[int(np.argmax(d))]
+        rows.append(x)
+        cur = np.vstack([cur, x])
+    return np.array(rows) if rows else np.zeros((0, cand.shape[1]))
+
+
+def _leverage_rows(F: np.ndarray, rows: np.ndarray, m: int) -> np.ndarray:
+    h = np.einsum("ij,ij->i", F @ np.linalg.pinv(F.T @ F), F)
+    order = np.argsort(-h, kind="stable")[:m]
+    return rows[order]
+
+
+def run_optimal(fmat, region, opt: dict, rng, candidates=None, forced=None,
+                default_criterion: str = "D") -> dict:
+    """Model points by the optimal engine, then lack-of-fit (distance) and replicate
+    (leverage) points, optionally in blocks. Returns coded rows, blocks, info."""
+    from rsstatchem.core.doe import optimal as optm
+
+    crit = str(opt.get("criterion", default_criterion)).upper()
+    method = opt.get("exchange", "point")
+    nb = max(int(opt.get("blocks", 1) or 1), 1)
+    p_terms = fmat(np.zeros((1, region.k))).shape[1]
+    p = p_terms + (nb - 1)
+    forced = np.zeros((0, region.k)) if forced is None else np.atleast_2d(forced)
+    n_model = max(int(opt.get("model_points", 0) or 0), p - len(forced), 1)
+    if candidates is None and method != "coordinate":
+        candidates, _ = region.candidates(tuple(opt.get("candidate_types") or (
+            "vertex", "edge", "thirds", "plane", "interior", "centroid")))
+        if not region.constrained and not region.mix and len(region.cont) <= 6:
+            grid = np.array(list(itertools.product(*[
+                (np.arange(region.nlevels[j], dtype=float) if region.nlevels[j] else
+                 np.array([-1.0, 0.0, 1.0])) for j in range(region.k)])), float)
+            if opt.get("model") == "cubic":
+                grid = np.array(list(itertools.product(*[
+                    (np.arange(region.nlevels[j], dtype=float) if region.nlevels[j] else
+                     np.array([-1.0, -1 / 3, 1 / 3, 1.0])) for j in range(region.k)])), float)
+            candidates = np.unique(np.vstack([candidates, grid]).round(12), axis=0)
+    sizes = None
+    if nb > 1:
+        base, extra = divmod(n_model, nb)
+        sizes = [base + (1 if b < extra else 0) for b in range(nb)]
+        if min(sizes) < 1:
+            raise ValueError("More blocks than model points.")
+    res = optm.optimal_design(fmat, n_model, region, candidates, crit, method,
+                              starts=int(opt.get("starts", 0) or 0) or None, rng=rng,
+                              forced=forced if len(forced) else None,
+                              forced_blocks=np.ones(len(forced)) if len(forced) and sizes
+                              else None,
+                              block_sizes=sizes, block_start=0,
+                              allow_repeats=(bool(opt.get("repeats", False))
+                                             or candidates is None
+                                             or n_model > len(candidates)),
+                              n_grid=int(opt.get("grid", 11) or 11))
+    rows = res.coded[len(forced):]
+    blocks = res.blocks[len(forced):] if res.blocks is not None else np.ones(len(rows))
+    pool = candidates if candidates is not None else region.candidates(
+        ("vertex", "edge", "thirds", "plane", "interior", "centroid"))[0]
+    lof = _distance_rows(pool, np.vstack([forced, rows]), int(opt.get("lof_points", 5)))
+    F = fmat(rows)
+    reps = _leverage_rows(F, rows, int(opt.get("replicate_points", 5))) \
+        if int(opt.get("replicate_points", 5)) else np.zeros((0, region.k))
+    extra_rows = np.vstack([lof, reps]) if len(lof) or len(reps) else np.zeros((0, region.k))
+    counts = {b: int(np.sum(blocks == b)) for b in sorted(set(blocks.tolist()))}
+    eb = []
+    for _ in range(len(extra_rows)):  # balance the block sizes
+        b = min(counts, key=lambda kk: (counts[kk], kk))
+        eb.append(b)
+        counts[b] += 1
+    all_rows = np.vstack([rows, extra_rows])
+    all_blocks = np.concatenate([blocks, eb]).astype(int) if nb > 1 \
+        else np.ones(len(all_rows), int)
+    Xall = fmat(all_rows)
+    sign, ld = np.linalg.slogdet(Xall.T @ Xall)
+    return {"coded": all_rows, "blocks": all_blocks, "criterion": crit, "exchange": method,
+            "value": res.value, "log_det": float(ld) if sign > 0 else None,
+            "model_points": int(len(rows)), "lof_points": int(len(lof)),
+            "replicate_points": int(len(reps))}
+
+
+def _terms_from_keys(keys) -> list:
+    from rsstatchem.core.doe import model as mdl
+
+    return mdl.sort_terms([mdl.key_term(k) if isinstance(k, str) else tuple(k)
+                           for k in keys])
+
+
 # ---------------------------------------------------------------------------- dataset builder
 @dataclass
 class DesignResult:
@@ -1391,6 +1781,8 @@ def build_design(spec: dict) -> DesignResult:
             if len(codes) < 2:
                 raise ValueError(f"Categoric factor {f.get('name')} needs at least 2 levels.")
             f.update(type="categoric", levels=codes, labels=labels, numeric_levels=numeric)
+        elif process and design == "combined" and f.get("type") == "mixture":
+            f["type"] = "mixture"
         elif process:
             f["type"] = "numeric"
     cat = [j for j, f in enumerate(factors) if f.get("type") == "categoric"]
@@ -1525,19 +1917,34 @@ def build_design(spec: dict) -> DesignResult:
         coded, blocks, types = _replicate(coded, blocks, types, reps)
     elif design in ("bbd", "threelevel"):
         kn = len(num)
-        res = (box_behnken(kn, opt.get("center_points")) if design == "bbd"
-               else three_level(kn, int(opt.get("center_points", 0))))
+        res = (box_behnken(kn, opt.get("center_points"), int(opt.get("blocks", 1) or 1))
+               if design == "bbd" else three_level(kn, int(opt.get("center_points", 0))))
         coded, blocks, types = _cross(res["coded"], num, cat, nlev, k, res["blocks"],
                                       res["types"])
         coded, blocks, types = _replicate(coded, blocks, types, reps)
     elif design == "dopt":
+        from rsstatchem.core.doe import constraints as cons
+        from rsstatchem.core.doe import model as mdl
+
         model = opt.get("model", "quadratic")
         catflags = [j in cat for j in range(k)]
         kn = len(num)
+        cons_list = _parse_constraints(opt.get("constraints"), k)
+        custom = opt.get("terms")
+        terms = _terms_from_keys(custom) if custom else mdl.process_terms(k, model, catflags)
+        engine = (str(opt.get("criterion", "D")).upper() != "D"
+                  or opt.get("exchange", "point") != "point" or bool(cons_list)
+                  or bool(custom) or int(opt.get("blocks", 1) or 1) > 1
+                  or bool(opt.get("forced")) or bool(opt.get("candidates")))
 
         def matrix(c):
-            return _model_matrix_for_design(c, model, False, catflags, nlev)
+            return mdl.raw_matrix(np.atleast_2d(c), terms, intercept=True,
+                                  categoric=catflags if any(catflags) else None, nlevels=nlev)
 
+        lows = [float(f.get("low", -1)) if j not in cat else 0.0
+                for j, f in enumerate(factors)]
+        highs = [float(f.get("high", 1)) if j not in cat else 1.0
+                 for j, f in enumerate(factors)]
         if hard:
             numlev = (np.array([-1, -1 / 3, 1 / 3, 1.0]) if model == "cubic"
                       else np.array([-1.0, 0.0, 1.0]))
@@ -1550,6 +1957,49 @@ def build_design(spec: dict) -> DesignResult:
             groups = np.repeat(np.arange(ng), gs)
             meta.update({"model": model, "groups": ng, "group_size": gs})
             Fm = matrix(coded)
+            blocks = np.ones(len(coded), dtype=int)
+            nc = coded[:, num] if num else np.zeros((len(coded), 1))
+            types = np.where(np.all(nc == 0, axis=1), 0,
+                             np.where(np.all(np.abs(nc) == 1, axis=1), 4, 3))
+        elif engine:
+            region = cons.process_region(lows, highs, cons_list,
+                                         [nlev[j] if j in cat else 0 for j in range(k)])
+            sp_lo, sp_hi = np.array(lows), np.array(highs)
+            centre, half = (sp_lo + sp_hi) / 2, np.where(sp_hi > sp_lo, (sp_hi - sp_lo) / 2, 1)
+
+            def to_coded(rows):
+                rows = np.atleast_2d(np.asarray(rows, float))
+                out = (rows - centre) / half
+                for j in cat:
+                    lv = np.asarray(factors[j]["levels"], float)
+                    out[:, j] = [int(np.argmin(np.abs(lv - v))) for v in rows[:, j]]
+                return out
+
+            forced = to_coded(opt["forced"]) if opt.get("forced") else None
+            cands = to_coded(opt["candidates"]) if opt.get("candidates") else None
+            if cands is not None:
+                cands = cands[region.feasible(cands)]
+                if not len(cands):
+                    raise ValueError("None of the imported candidate points is feasible.")
+            r = run_optimal(matrix, region, opt, rng, cands, forced, "D")
+            coded, blocks = r["coded"], r["blocks"]
+            if forced is not None:
+                coded = np.vstack([forced, coded])
+                blocks = np.concatenate([np.full(len(forced), 1), blocks]).astype(int)
+            types = classify_points(region, coded)
+            if forced is not None:
+                types[:len(forced)] = 8
+            Fm = matrix(coded)
+            meta.update({"model": model if not custom else "custom",
+                         "model_points": r["model_points"], "lof_points": r["lof_points"],
+                         "replicate_points": r["replicate_points"],
+                         "criterion": r["criterion"], "exchange": r["exchange"],
+                         "criterion_value": r["value"], "forced_runs": 0 if forced is None
+                         else int(len(forced))})
+            if custom:
+                meta["terms"] = [mdl.term_key(t) for t in terms]
+            if cons_list:
+                meta["constraints"] = cons_list
         else:
             cand_num = process_candidates(kn, model) if kn else np.zeros((1, 0))
             cand, = _cross(cand_num, num, cat, nlev, k)
@@ -1564,19 +2014,107 @@ def build_design(spec: dict) -> DesignResult:
             Fm = F[all_idx]
             meta.update({"model": model, "model_points": int(len(idx) - int(opt.get(
                 "lof_points", 5))), "lof_points": int(opt.get("lof_points", 5)),
-                "replicate_points": int(len(reps_idx))})
-        blocks = np.ones(len(coded), dtype=int)
-        nc = coded[:, num] if num else np.zeros((len(coded), 1))
-        types = np.where(np.all(nc == 0, axis=1), 0,
-                         np.where(np.all(np.abs(nc) == 1, axis=1), 4, 3))
+                "replicate_points": int(len(reps_idx)), "criterion": "D",
+                "exchange": "point"})
+            blocks = np.ones(len(coded), dtype=int)
+            nc = coded[:, num] if num else np.zeros((len(coded), 1))
+            types = np.where(np.all(nc == 0, axis=1), 0,
+                             np.where(np.all(np.abs(nc) == 1, axis=1), 4, 3))
         sign, ld = np.linalg.slogdet(Fm.T @ Fm)
         meta["log_det"] = float(ld) if sign > 0 else None
         if groups is not None:
             coded, blocks, types, groups = _replicate_groups(coded, blocks, types, groups,
                                                              reps, block_reps)
+    elif design == "combined":
+        coded, blocks, types, mixmeta = _combined_design(factors, opt, rng, cat, nlev)
+        meta["mixture"] = mixmeta
+        meta["kind"] = "combined"
+        meta.update({k2: mixmeta.pop(k2) for k2 in ("criterion", "exchange", "model_points",
+                                                    "lof_points", "replicate_points",
+                                                    "log_det", "criterion_value")
+                     if k2 in mixmeta})
+        meta["model"] = f"{mixmeta['model']} x {mixmeta['process_model']}"
+        if mixmeta.get("terms"):
+            meta["terms"] = mixmeta.pop("terms")
+        if mixmeta.get("constraints"):
+            meta["constraints"] = mixmeta.pop("constraints")
+    elif design == "dsd":
+        bad = [factors[j].get("name", letter(j)) for j in cat if nlev[j] != 2]
+        if bad:
+            raise ValueError("Definitive screening designs take two-level categoric factors "
+                             "only (" + ", ".join(bad) + ").")
+        fake = int(opt.get("fake_factors", 0) or 0)
+        order = num + [k + i for i in range(fake)] + cat
+        res = definitive_screening(k + fake, len(cat), int(opt.get("center_points", 0) or 0))
+        built = res["coded"]
+        coded = np.zeros((len(built), k))
+        for pos, j in enumerate(order):
+            if j < k:
+                coded[:, j] = built[:, pos]
+        coded = _index_two_level(coded, cat)
+        blocks = np.ones(len(coded), dtype=int)
+        types = res["types"]
+        meta.update({"conference_order": int(res["order"]), "fake_factors": fake,
+                     "center_points": int(res["centers"]),
+                     "alias_note": "Definitive screening: main effects are orthogonal to each "
+                                   "other and to every two-factor interaction and quadratic "
+                                   "effect; quadratic effects are estimable; two-factor "
+                                   "interactions are partially aliased with each other."})
+        coded, blocks, types = _replicate(coded, blocks, types, reps)
+    elif design == "onefactor":
+        from rsstatchem.core.doe import constraints as cons
+        from rsstatchem.core.doe import model as mdl
+
+        if k != 1 or cat:
+            raise ValueError("One-factor RSM designs have exactly one numeric factor.")
+        model = opt.get("model", "quadratic")
+        terms = mdl.process_terms(1, model)
+        o = dict(opt)
+        o.setdefault("lof_points", 2)
+        o.setdefault("replicate_points", 3)
+        region = cons.process_region([float(factors[0].get("low", -1))],
+                                     [float(factors[0].get("high", 1))])
+        grid = np.linspace(-1, 1, 21)[:, None]
+
+        def matrix(c):
+            return mdl.raw_matrix(np.atleast_2d(c), terms)
+
+        r = run_optimal(matrix, region, o, rng, grid, None, "I")
+        coded, blocks = r["coded"], np.ones(len(r["coded"]), int)
+        types = classify_points(region, coded)
+        meta.update({"model": model, "criterion": r["criterion"],
+                     "model_points": r["model_points"], "lof_points": r["lof_points"],
+                     "replicate_points": r["replicate_points"]})
+    elif design in ("lhs", "distance", "userdef"):
+        coded, types = _space_filling(design, factors, opt, rng, cat, nlev, meta)
+        blocks = np.ones(len(coded), dtype=int)
+        coded, blocks, types = _replicate(coded, blocks, types, reps)
+    elif design == "historical":
+        n_rows = int(opt.get("runs", 10) or 10)
+        coded = np.full((n_rows, k), np.nan)
+        blocks = np.ones(n_rows, dtype=int)
+        types = np.full(n_rows, 10)
+        meta["editable_factors"] = True
+        if opt.get("kind") == "mixture":
+            total = float(opt.get("total", 1.0))
+            meta["kind"] = "mixture"
+            meta["mixture"] = {"total": total,
+                               "lower": [float(f.get("low", 0) or 0) for f in factors],
+                               "upper": [float(f.get("high", total)) for f in factors],
+                               "model": "quadratic", "degree": 2,
+                               "pseudo": "L_Pseudo"}
+            for f in factors:
+                f["type"] = "mixture"
     elif design in MIXTURE_DESIGNS:
         coded, types, mix = _mixture_design(design, factors, opt, rng)
-        blocks = np.ones(len(coded), dtype=int)
+        blocks = np.asarray(mix.pop("_blocks"), int) if "_blocks" in mix \
+            else np.ones(len(coded), dtype=int)
+        for key in ("criterion", "exchange", "criterion_value", "model_points",
+                    "lof_points", "replicate_points", "terms"):
+            if key in mix:
+                meta[key] = mix.pop(key)
+        if mix.get("constraints"):
+            meta["constraints"] = mix.pop("constraints")
         meta["mixture"] = mix
         notes += mix.pop("notes", [])
     elif design == "general":
@@ -1628,7 +2166,8 @@ def build_design(spec: dict) -> DesignResult:
 
     n = len(coded)
     std = np.arange(1, n + 1)
-    run = randomized_run_order(blocks, groups, rng) if spec.get("randomize", True) else \
+    randomize = spec.get("randomize", True) and design != "historical"
+    run = randomized_run_order(blocks, groups, rng) if randomize else \
         _standard_run_order(blocks, groups)
 
     used = {"std", "run", "block", "space_type", "group"}
@@ -1653,15 +2192,16 @@ def build_design(spec: dict) -> DesignResult:
         units = f.get("units", "")
         title = f"{letter(j)}: {f.get('name') or name}" + (f" ({units})" if units else "")
         if f.get("type") == "categoric":
-            idx = coded[:, j].astype(int)
-            values = np.array(f["levels"], float)[idx]
+            finite = np.isfinite(coded[:, j])
+            idx = np.where(finite, coded[:, j], 0).astype(int)
+            values = np.where(finite, np.array(f["levels"], float)[idx], np.nan)
             var = Variable(name, decimals=_decimals(values), label=title, measure=NOMINAL,
                            value_labels={float(c): lab for c, lab in zip(f["levels"],
                                                                          f["labels"])})
             fm = {"name": f.get("name") or name, "column": name, "units": units,
                   "type": "categoric", "levels": [float(c) for c in f["levels"]],
                   "labels": list(f["labels"])}
-        elif mix is not None:
+        elif mix is not None and (meta.get("kind") == "mixture" or f.get("type") == "mixture"):
             values = coded[:, j]
             var = Variable(name, decimals=max(_decimals(values), 2 if mix["total"] <= 1 else 0),
                            label=title)
@@ -1698,7 +2238,7 @@ def build_design(spec: dict) -> DesignResult:
                               "variance_ratio": float(opt.get("variance_ratio", 1.0))}
     meta.update({"factors": fmeta, "responses": rmeta, "runs": n,
                  "blocks": int(blocks.max()), "replicates": reps,
-                 "randomized": bool(spec.get("randomize", True)), "seed": spec.get("seed"),
+                 "randomized": bool(randomize), "seed": spec.get("seed"),
                  "columns": columns,
                  "options": {k2: v for k2, v in opt.items() if _jsonable(v)}})
     if "center_points" not in meta:
@@ -1782,14 +2322,21 @@ def _mixture_design(design: str, factors: list[dict], opt: dict, rng):
     constrained_upper = bool(np.any(upper < implied - 1e-9))
     notes = []
     model = opt.get("model", "quadratic")
-    if design in ("lattice", "centroid"):
-        if constrained_upper:
-            raise ValueError("Upper limits make the region irregular: use an extreme-vertices "
-                             "or D-optimal mixture design.")
-        pseudo = (simplex_lattice(q, int(opt.get("degree", 2))) if design == "lattice"
-                  else simplex_centroid(q))
-        types = [mixture_type(x) for x in pseudo]
-        if opt.get("augment", False):
+    cons_list = _parse_constraints(opt.get("constraints"), q)
+    blocks_out = None
+    extra_meta: dict = {}
+    if design in ("lattice", "centroid", "simscreen"):
+        if constrained_upper or cons_list:
+            raise ValueError("Upper limits or constraints make the region irregular: use an "
+                             "extreme-vertices or optimal mixture design.")
+        if design == "simscreen":
+            pseudo, t0 = simplex_screening(q)
+            types = list(t0)
+        else:
+            pseudo = (simplex_lattice(q, int(opt.get("degree", 2))) if design == "lattice"
+                      else simplex_centroid(q))
+            types = [mixture_type(x) for x in pseudo]
+        if opt.get("augment", False) and design != "simscreen":
             extra = [axial_blends(q), np.full((1, q), 1.0 / q)]
             for e in extra:
                 for x in e:
@@ -1803,13 +2350,27 @@ def _mixture_design(design: str, factors: list[dict], opt: dict, rng):
         actual = lower + span * pseudo
         types = np.array(types)
     else:
-        cand, ctypes = mixture_candidates(lower, upper, total)
-        if design == "ev":
-            keep = set(opt.get("include", ["vertex", "edge", "centroid"]))
-            mask = np.array([{4: "vertex", 3: "edge", 5: "plane", 6: "interior",
-                              7: "centroid"}[t] in keep for t in ctypes])
-            actual, types = cand[mask], ctypes[mask]
+        from rsstatchem.core.doe import constraints as cons
+        from rsstatchem.core.doe import model as mdl
+
+        region = cons.mixture_region(lower, upper, total, cons_list)
+        engine = (cons_list or str(opt.get("criterion", "D")).upper() != "D"
+                  or opt.get("exchange", "point") != "point" or opt.get("terms")
+                  or int(opt.get("blocks", 1) or 1) > 1 or design == "ev"
+                  and set(opt.get("include", [])) & {"thirds", "interior"})
+        if not engine:
+            cand, ctypes = mixture_candidates(lower, upper, total)
         else:
+            pc, ctypes = region.candidates(("vertex", "edge", "thirds", "plane", "interior",
+                                            "centroid"))
+            cand = lower + span * pc
+        if design == "ev":
+            names = {4: "vertex", 3: "edge", 5: "plane", 6: "interior", 7: "centroid",
+                     9: "thirds"}
+            keep = set(opt.get("include", ["vertex", "edge", "centroid"]))
+            mask = np.array([names[int(t)] in keep for t in ctypes])
+            actual, types = cand[mask], ctypes[mask]
+        elif not engine:
             # enrich with feasible {q,2} and {q,3} lattice blends (thirds of edges, face
             # centroids) so that cubic and special cubic models are estimable
             extra, etypes = [], []
@@ -1831,15 +2392,290 @@ def _mixture_design(design: str, factors: list[dict], opt: dict, rng):
             reps = high_leverage(F, idx, int(opt.get("replicate_points", 5)))
             idx = np.concatenate([idx, reps])
             actual, types = cand[idx], ctypes[idx]
+            extra_meta = {"criterion": "D", "exchange": "point"}
+        else:
+            terms = _terms_from_keys(opt["terms"]) if opt.get("terms") else \
+                mdl.mixture_terms(q, model)
+
+            def matrix(c):
+                return mdl.raw_matrix(np.atleast_2d(c), terms, mixture=True, intercept=False)
+
+            pc_all = (cand - lower) / span
+            for m in (2, 3):  # feasible lattice blends enrich the candidates
+                lat = simplex_lattice(q, m)
+                lat = lat[region.feasible(lat)]
+                pc_all = np.unique(np.vstack([pc_all, lat]).round(12), axis=0)
+            r = run_optimal(matrix, region, opt, rng, pc_all, None, "D")
+            actual = lower + span * r["coded"]
+            types = classify_points(region, r["coded"])
+            if int(opt.get("blocks", 1) or 1) > 1:
+                blocks_out = r["blocks"]
+            extra_meta = {"criterion": r["criterion"], "exchange": r["exchange"],
+                          "criterion_value": r["value"], "model_points": r["model_points"],
+                          "lof_points": r["lof_points"],
+                          "replicate_points": r["replicate_points"]}
+            if opt.get("terms"):
+                extra_meta["terms"] = [mdl.term_key(t) for t in terms]
         reps = int(opt.get("center_points", 0))
         if reps:
             c = cand[ctypes == 7][0] if np.any(ctypes == 7) else cand.mean(axis=0)
             actual = np.vstack([actual, np.tile(c, (reps, 1))])
             types = np.concatenate([types, np.full(reps, 7)])
+            if blocks_out is not None:
+                blocks_out = np.concatenate([blocks_out, np.ones(reps, int)])
     mix = {"total": total, "lower": lower.tolist(), "upper": upper.tolist(),
            "model": model, "degree": int(opt.get("degree", 2)), "notes": notes,
            "pseudo": "L_Pseudo" if lower.sum() > 0 else "Real"}
+    if cons_list:
+        mix["constraints"] = cons_list
+    mix.update(extra_meta)
+    if blocks_out is not None:
+        mix["_blocks"] = np.asarray(blocks_out, int)
     return actual, np.asarray(types, dtype=int), mix
+
+
+def _combined_design(factors, opt, rng, cat, nlev):
+    """Optimal combined mixture-process design: L-pseudo components (first columns, returned
+    in actual amounts) beside coded process factors."""
+    from rsstatchem.core.doe import constraints as cons
+    from rsstatchem.core.doe import model as mdl
+    from rsstatchem.core.doe import terms_combined as tc
+
+    mixj = [j for j, f in enumerate(factors) if f.get("type") == "mixture"]
+    q = len(mixj)
+    k = len(factors)
+    if q < 2 or mixj != list(range(q)):
+        raise ValueError("A combined design lists at least 2 mixture components first, then "
+                         "the process factors.")
+    if q == k:
+        raise ValueError("A combined design needs at least one process factor.")
+    total = float(opt.get("total", 1.0))
+    lower = np.array([float(factors[j].get("low", 0) or 0) for j in mixj])
+    upper = np.array([float(factors[j].get("high", total)) if factors[j].get("high")
+                      not in (None, "") else total for j in mixj])
+    upper = np.minimum(upper, total)
+    if lower.sum() > total + 1e-9:
+        raise ValueError("The lower limits add up to more than the mixture total.")
+    span = total - lower.sum()
+    upper = np.minimum(upper, lower + span)
+    kp = k - q
+    pcat = [j - q for j in cat]
+    plows = [float(factors[j].get("low", -1)) if j not in cat else 0.0 for j in range(q, k)]
+    phighs = [float(factors[j].get("high", 1)) if j not in cat else 1.0 for j in range(q, k)]
+    mix_cons = _parse_constraints(opt.get("constraints"), q)
+    proc_cons = _parse_constraints(opt.get("process_constraints"), kp)
+    region = cons.combined_region(lower, upper, total, plows, phighs, mix_cons, proc_cons,
+                                  [nlev[j] if j in cat else 0 for j in range(q, k)])
+    mix_order = opt.get("mix_model", "quadratic")
+    proc_order = opt.get("process_model", "linear")
+    catflags = [j in cat for j in range(k)]
+    terms = _terms_from_keys(opt["terms"]) if opt.get("terms") else tc.combined_terms(
+        q, kp, mix_order, proc_order, [j in pcat for j in range(kp)])
+
+    def matrix(c):
+        return tc.combined_matrix(c, terms, catflags if any(catflags) else None, nlev)
+
+    # candidates: constrained-mixture points x process grid (x categoric levels)
+    mreg = cons.mixture_region(lower, upper, total, mix_cons)
+    mc, _ = mreg.candidates(("vertex", "edge", "plane", "interior", "centroid"))
+    if proc_order in ("quadratic", "cubic") or any(len(t) > 1 for t in terms
+                                                    if all(i >= q for i in t)):
+        levels = (-1.0, 0.0, 1.0)
+    else:
+        levels = (-1.0, 0.0, 1.0)
+    preg = cons.process_region(plows, phighs, proc_cons,
+                               [nlev[j] if j in cat else 0 for j in range(q, k)])
+    axes = [np.arange(nlev[q + j], dtype=float) if (q + j) in cat else np.array(levels)
+            for j in range(kp)]
+    pc = np.array(list(itertools.product(*axes)), float)
+    pc = pc[preg.feasible(pc)]
+    cand = None
+    if len(mc) * len(pc) <= 20000:
+        cand = np.array([np.concatenate([a, b]) for a in mc for b in pc])
+    o = dict(opt)
+    if cand is None:
+        o["exchange"] = "coordinate"
+    r = run_optimal(matrix, region, o, rng, cand, None, "I")
+    coded = r["coded"].copy()
+    coded[:, :q] = lower + span * coded[:, :q]
+    types = classify_points(region, r["coded"])
+    mixmeta = {"total": total, "lower": lower.tolist(), "upper": upper.tolist(),
+               "model": mix_order, "process_model": proc_order, "n_mix": q,
+               "pseudo": "L_Pseudo" if lower.sum() > 0 else "Real", "degree": 2,
+               "criterion": r["criterion"], "exchange": r["exchange"],
+               "model_points": r["model_points"], "lof_points": r["lof_points"],
+               "replicate_points": r["replicate_points"], "log_det": r["log_det"],
+               "criterion_value": r["value"]}
+    if opt.get("terms"):
+        mixmeta["terms"] = [mdl.term_key(t) for t in terms]
+    if mix_cons or proc_cons:
+        mixmeta["constraints"] = mix_cons
+        if proc_cons:
+            mixmeta["process_constraints"] = proc_cons
+    return coded, r["blocks"], types, mixmeta
+
+
+def _space_filling(design, factors, opt, rng, cat, nlev, meta):
+    """Latin hypercube, optimal (maximin) distance and user-defined process designs."""
+    from rsstatchem.core.doe import constraints as cons
+
+    k = len(factors)
+    num = [j for j in range(k) if j not in cat]
+    lows = [float(f.get("low", -1)) if j not in cat else 0.0 for j, f in enumerate(factors)]
+    highs = [float(f.get("high", 1)) if j not in cat else 1.0 for j, f in enumerate(factors)]
+    cons_list = _parse_constraints(opt.get("constraints"), k)
+    region = cons.process_region(lows, highs, cons_list,
+                                 [nlev[j] if j in cat else 0 for j in range(k)])
+    if cons_list:
+        meta["constraints"] = cons_list
+    if design == "lhs":
+        n = int(opt.get("runs", 0) or 0) or max(10, 5 * k)
+        coded = np.zeros((0, k))
+        tries = 0
+        while len(coded) < n and tries < 40:
+            m = n if not cons_list else 3 * n
+            X = np.zeros((m, k))
+            if num:
+                X[:, num] = latin_hypercube(m, len(num), rng)
+            for j in cat:
+                X[:, j] = rng.permutation(np.resize(np.arange(nlev[j]), m))
+            X = X[region.feasible(X)]
+            coded = np.vstack([coded, X])
+            tries += 1
+        if len(coded) < n:
+            raise ValueError("The constraints leave too little room for a Latin hypercube.")
+        coded = coded[:n]
+        meta["space_filling"] = "Latin hypercube"
+        return coded, np.full(len(coded), 6)
+    if design == "distance":
+        n = int(opt.get("runs", 0) or 0) or max(10, 5 * k)
+        levels = int(opt.get("levels", 5) or 5)
+        axes = [np.arange(nlev[j], dtype=float) if j in cat else np.linspace(-1, 1, levels)
+                for j in range(k)]
+        total = int(np.prod([len(a) for a in axes]))
+        if total <= 40000:
+            grid = np.array(list(itertools.product(*axes)), float)
+        else:
+            grid = region.sample(4000, rng)
+        cand = grid
+        if cons_list:
+            cand = np.vstack([grid, region.candidates(("vertex", "edge", "centroid"))[0]])
+        cand = np.unique(cand[region.feasible(cand)].round(12), axis=0)
+        idx = maximin_points(cand, n, rng)
+        coded = cand[idx]
+        meta["space_filling"] = "Optimal distance (maximin)"
+        return coded, classify_points(region, coded)
+    # user-defined
+    include = tuple(opt.get("include") or ("vertex", "edge", "centroid"))
+    pts, types = region.candidates(include)
+    c = int(opt.get("center_points", 0) or 0)
+    if c:
+        cen = region.candidates(("centroid",))[0]
+        pts = np.vstack([pts] + [cen] * c)
+        types = np.concatenate([types, np.full(len(cen) * c, 7)])
+    if not len(pts):
+        raise ValueError("Choose at least one point type.")
+    types = np.where(types == 7, 0, types)  # the centroid of a process box is the centre
+    meta["point_types"] = list(include)
+    return pts, types
+
+
+def design_from_data(frame, factor_cols: list[str], response_cols: list[str],
+                     kind: str = "process", factor_info: dict | None = None,
+                     total: float | None = None, name: str = "Historical data"
+                     ) -> DesignResult:
+    """Historical data / Import Data Set: a design document from existing runs. Numeric
+    factors are coded from their data range (or ``factor_info[col]`` low / high), text or
+    few-valued factors marked categoric in ``factor_info`` get levels from the data."""
+    factor_info = factor_info or {}
+    frame = frame.reset_index(drop=True)
+    factors, values = [], []
+    for col in factor_cols:
+        info = dict(factor_info.get(col, {}))
+        raw = frame[col]
+        nums = pd.to_numeric(raw, errors="coerce")
+        is_cat = info.get("type") == "categoric" or (nums.isna().all() and raw.notna().any())
+        f = {"name": info.get("name") or str(col), "units": info.get("units", "")}
+        if is_cat:
+            labels = [str(v) for v in pd.unique(raw.dropna())]
+            f.update(type="categoric", levels=labels)
+            codes = raw.map({v: i for i, v in enumerate(pd.unique(raw.dropna()))})
+            values.append(codes.to_numpy(float))
+        else:
+            v = nums.to_numpy(float)
+            fin = v[np.isfinite(v)]
+            if not len(fin):
+                raise ValueError(f"Column {col} has no numbers.")
+            lo = float(info.get("low", fin.min()))
+            hi = float(info.get("high", fin.max()))
+            if kind == "mixture":
+                f.update(type="mixture", low=float(info.get("low", 0.0)), high=hi)
+            else:
+                if hi <= lo:
+                    hi = lo + 1.0
+                f.update(low=lo, high=hi)
+            values.append(v)
+        factors.append(f)
+    opt = {"runs": len(frame), "kind": kind}
+    if kind == "mixture":
+        sums = np.nansum(np.column_stack(values), axis=1)
+        opt["total"] = float(total if total else np.round(np.nanmedian(sums), 8))
+    spec = {"design": "historical", "factors": factors,
+            "responses": [{"name": str(c)} for c in response_cols], "options": opt,
+            "randomize": False, "name": name}
+    res = build_design(spec)
+    ds = res.dataset
+    meta = res.meta
+    for j, fm in enumerate(meta["factors"]):
+        v = values[j]
+        if fm["type"] == "categoric":
+            lv = np.asarray(fm["levels"], float)
+            v = np.where(np.isfinite(v), lv[np.where(np.isfinite(v), v, 0).astype(int)],
+                         np.nan)
+        ds.df[fm["column"]] = v
+        ds.var(fm["column"]).decimals = _decimals(np.asarray(v, float))
+    for r, col in zip(meta["responses"], response_cols):
+        ds.df[r["column"]] = pd.to_numeric(frame[col], errors="coerce").to_numpy(float)
+    meta["imported"] = True
+    res.notes.append(f"Built from {len(frame)} existing runs (historical data): the factor "
+                     "settings were not chosen by design, so check the Evaluation before "
+                     "trusting the model.")
+    return res
+
+
+def _optimal_terms_count(spec: dict) -> int:
+    """Model columns of an optimal design's model (with block columns)."""
+    from rsstatchem.core.doe import model as mdl
+
+    opt = spec.get("options", {})
+    facs = spec["factors"]
+    k = len(facs)
+    design = spec["design"]
+    cat = [f.get("type") == "categoric" for f in facs]
+    nl = [max(len([v for v in f.get("levels") or [] if str(v).strip()]), 2) for f in facs]
+
+    def cols(terms, intercept):
+        return int(intercept) + sum(int(np.prod([nl[i] - 1 if cat[i] else 1
+                                                 for i in set(mdl.term_factors(t))]))
+                                    if t and t[0] != -1 else 1 for t in terms)
+
+    nb = max(int(opt.get("blocks", 1) or 1), 1)
+    if opt.get("terms"):
+        terms = _terms_from_keys(opt["terms"])
+        mix = design in ("mixdopt", "combined")
+        return cols(terms, not mix) + nb - 1
+    if design == "mixdopt":
+        return len(mdl.mixture_terms(k, opt.get("model", "quadratic"))) + nb - 1
+    if design == "combined":
+        from rsstatchem.core.doe import terms_combined as tc
+
+        q = sum(1 for f in facs if f.get("type") == "mixture")
+        terms = tc.combined_terms(q, k - q, opt.get("mix_model", "quadratic"),
+                                  opt.get("process_model", "linear"), cat[q:])
+        return cols(terms, False) + nb - 1
+    if design == "onefactor":
+        return len(mdl.process_terms(1, opt.get("model", "quadratic"))) + 1
+    return cols(mdl.process_terms(k, opt.get("model", "quadratic"), cat), True) + nb - 1
 
 
 def design_run_count(spec: dict) -> int | str:
@@ -1857,20 +2693,17 @@ def design_run_count(spec: dict) -> int | str:
         if spec["design"] == "dopt" and hard:
             return (int(opt.get("groups", 8)) * int(opt.get("group_size", 4))
                     * int(opt.get("replicates", 1) or 1))
-        if spec["design"] in ("dopt", "mixdopt"):  # skip the (slow) exchange for the preview
-            from rsstatchem.core.doe import model as mdl
-
-            order = opt.get("model", "quadratic")
-            if spec["design"] == "mixdopt":
-                p = len(mdl.mixture_terms(k, order))
-            else:
-                cat = [f.get("type") == "categoric" for f in spec["factors"]]
-                nl = [max(len([v for v in f.get("levels") or [] if str(v).strip()]), 2)
-                      for f in spec["factors"]]
-                p = 1 + sum(int(np.prod([nl[i] - 1 if cat[i] else 1 for i in t]))
-                            for t in mdl.process_terms(k, order, cat))
-            return (max(int(opt.get("model_points", p) or p), p) + int(opt.get("lof_points", 5))
-                    + int(opt.get("replicate_points", 5)) + int(opt.get("center_points", 0)))
+        if spec["design"] in ("lhs", "distance"):
+            return int(opt.get("runs", 0) or 0) or max(10, 5 * k)
+        if spec["design"] == "historical":
+            return int(opt.get("runs", 10) or 10)
+        if spec["design"] in ("dopt", "mixdopt", "combined", "onefactor"):
+            # skip the (slow) exchange for the preview
+            p = _optimal_terms_count(spec)
+            lof = int(opt.get("lof_points", 2 if spec["design"] == "onefactor" else 5))
+            rep = int(opt.get("replicate_points", 3 if spec["design"] == "onefactor" else 5))
+            n = max(int(opt.get("model_points", p) or p), p) + lof + rep
+            return n + int(opt.get("center_points", 0) or 0)
         return build_design(spec).meta["runs"]
     except Exception as exc:  # noqa: BLE001 - shown as text in the wizard
         return str(exc)

@@ -27,27 +27,41 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QWidget)
 
 from rsstatchem.core.doe import designs
-from rsstatchem.ui.doe.wizard import DEFAULT_K, DESCRIPTIONS, LIMITS
+from rsstatchem.ui.doe.wizard import DEFAULT_K as _OLD_DEFAULT_K
+from rsstatchem.ui.doe.wizard import DESCRIPTIONS
+from rsstatchem.ui.doe.wizard import LIMITS as _OLD_LIMITS
 from rsstatchem.ui.dx import icons, style
 from rsstatchem.ui.dx.document import DesignDocument
 
+LIMITS = dict(_OLD_LIMITS, dsd=(3, 30), onefactor=(1, 1), simscreen=(3, 10),
+              combined=(3, 10), lhs=(1, 20), distance=(1, 10), userdef=(1, 8),
+              historical=(1, 20))
+DEFAULT_K = dict(_OLD_DEFAULT_K, dsd=6, onefactor=1, simscreen=4, combined=4, lhs=3,
+                 distance=3, userdef=3, historical=2)
 # family key -> (tree text, designs)
 FAMILIES = {
     "factorial": ("Factorial", [("factorial", "Regular Two-Level"),
                                 ("mr5", "Min-Run Characterize"), ("mr4", "Min-Run Screen"),
+                                ("dsd", "Definitive Screening"),
                                 ("general", "Multilevel Categoric"),
                                 ("pb", "Plackett-Burman"), ("taguchi", "Taguchi OA")]),
     "rsm": ("Response Surface", [("ccd", "Central Composite"), ("bbd", "Box-Behnken"),
                                  ("threelevel", "3-Level Factorial"),
-                                 ("dopt", "Optimal (Custom)")]),
+                                 ("dopt", "Optimal (Custom)"), ("onefactor", "One Factor"),
+                                 ("userdef", "User-Defined"),
+                                 ("historical", "Historical Data"),
+                                 ("lhs", "Space Filling: Latin Hypercube"),
+                                 ("distance", "Space Filling: Optimal Distance")]),
     "mixture": ("Mixture", [("lattice", "Simplex Lattice"), ("centroid", "Simplex Centroid"),
+                            ("simscreen", "Simplex Screening"),
                             ("ev", "Screening (Extreme Vertices)"),
                             ("mixdopt", "Optimal (Custom)")]),
     "splitplot": ("Split-Plot", [("factorial", "Regular Two-Level"),
                                  ("general", "Multilevel Categoric"),
                                  ("ccd", "Central Composite"), ("dopt", "Optimal (Custom)")]),
     "custom": ("Optimal (Custom)", [("dopt", "Optimal (Custom) Process"),
-                                    ("mixdopt", "Optimal (Custom) Mixture")]),
+                                    ("mixdopt", "Optimal (Custom) Mixture"),
+                                    ("combined", "Combined Mixture-Process")]),
 }
 TREE = [("Standard Designs", ["factorial", "rsm", "mixture", "splitplot"]),
         ("Custom Designs", ["custom"])]
@@ -57,16 +71,41 @@ HELP = {
            "at ±alpha and centre points. The standard design for a quadratic model.",
     "bbd": "Box-Behnken: every factor at three levels, edge midpoints and centre points, no "
            "extreme corners. 3 to 7 factors.",
-    "dopt": "Optimal (custom): runs chosen by D-optimal point exchange for the model you plan "
-            "to fit, plus lack-of-fit and replicate points.",
-    "mixdopt": "Optimal (custom) mixture: D-optimal blends inside the constrained mixture "
-               "region, plus lack-of-fit and replicate points.",
     "mr5": "Min-Run Characterize: a minimum-run equireplicated resolution V design (MR5), 6 "
            "to 50 factors. All main effects and two-factor interactions can be estimated with "
            "about as many runs as model terms (an even number, each factor balanced). Built "
            "by a fast columnwise-pairwise exchange started from runs of a regular resolution V "
            "fraction (about a second for 50 factors); losing a run reduces it to resolution "
            "IV.",
+    "dopt": "Optimal (custom): runs chosen for the model you plan to fit by I-, D- or "
+            "A-optimal exchange (point, coordinate or best of both), plus lack-of-fit and "
+            "replicate points. Optional blocks, an edited model, multiple linear constraints "
+            "(e.g. A + B <= 15), forced runs and an imported candidate list.",
+    "mixdopt": "Optimal (custom) mixture: I-, D- or A-optimal blends inside the constrained "
+               "mixture region (component limits plus multiple linear constraints), plus "
+               "lack-of-fit and replicate points.",
+    "combined": "Combined mixture-process: mixture components (Type = Mixture, listed first) "
+                "and process factors in one optimal design, for the crossed Scheffé x "
+                "process model (e.g. quadratic mixture x linear process).",
+    "dsd": "Definitive screening (Jones & Nachtsheim): 2m+1 runs from a conference matrix, "
+           "three levels per numeric factor. Main effects are clear of two-factor "
+           "interactions and quadratic effects; two-level categoric factors allowed.",
+    "onefactor": "One-factor response surface: an optimal set of levels for a linear, "
+                 "quadratic or cubic curve in one numeric factor, plus lack-of-fit and "
+                 "replicate points.",
+    "simscreen": "Simplex screening (Snee-Marquardt): vertices, interior axial check blends, "
+                 "end-effect blends and the overall centroid, to screen components for "
+                 "linear blending.",
+    "userdef": "User-defined: pick the point types (vertices, edge centres, thirds of edges, "
+               "plane centroids, axial check points, centre) of the possibly constrained "
+               "factor region.",
+    "historical": "Historical data: a blank layout of the given number of rows; type in (or "
+                  "paste) existing factor settings and responses. Use File > Import Data Set "
+                  "to build one from a CSV / Excel table.",
+    "lhs": "Latin hypercube (space filling): every factor's range cut into as many slices as "
+           "runs, each slice used once; good for computer experiments and nonlinear models.",
+    "distance": "Optimal distance (space filling): runs spread out to maximise the smallest "
+                "distance between them (maximin), honouring constraints.",
     "mr4": "Min-Run Screen: a minimum-run resolution IV design (MR4) in 2 x factors runs, 5 to "
            "50 factors — the foldover of a main-effects design, so main effects are clear of "
            "two-factor interactions. The 2 extra runs (default) protect against a botched "
@@ -83,6 +122,18 @@ ALPHAS = [("rotatable", "Rotatable"), ("spherical", "Spherical"),
 CCD_TYPES = [("circumscribed", "Circumscribed (CCC)"), ("inscribed", "Inscribed (CCI)"),
              ("face", "Face centered (CCF)")]
 MODELS = [("linear", "Linear"), ("2fi", "2FI"), ("quadratic", "Quadratic"), ("cubic", "Cubic")]
+PROC_MODELS = [("mean", "Mean"), ("linear", "Linear"), ("2fi", "2FI"),
+               ("quadratic", "Quadratic"), ("cubic", "Cubic")]
+COMB_MIX_MODELS = [("linear", "Linear"), ("quadratic", "Quadratic"),
+                   ("special_cubic", "Special Cubic")]
+CRITERIA = [("I", "I-optimal (prediction)"), ("D", "D-optimal (coefficients)"),
+            ("A", "A-optimal")]
+EXCHANGES = [("best", "Best"), ("point", "Point exchange"),
+             ("coordinate", "Coordinate exchange")]
+POINT_TYPES = [("vertex", "Vertices"), ("edge", "Edge centers"), ("thirds", "Thirds of edges"),
+               ("plane", "Plane centroids"), ("interior", "Axial check points"),
+               ("centroid", "Overall centroid")]
+ENGINE_DESIGNS = ("dopt", "mixdopt", "combined")
 MIX_MODELS = [("linear", "Linear"), ("quadratic", "Quadratic"),
               ("special_cubic", "Special Cubic"), ("cubic", "Cubic")]
 CATEGORIC = ("general", "taguchi")
@@ -111,6 +162,9 @@ class NewDesignWizard(QDialog):
         self._loading = False
         self._rows: list[dict] = []      # factor entries kept across design changes
         self._opt: dict = {}
+        # edited model terms, constraints, forced runs and imported candidates (optimal)
+        self._custom: dict = {"terms": None, "constraints": [], "forced": [],
+                              "candidates": []}
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(200)
@@ -374,6 +428,20 @@ class NewDesignWizard(QDialog):
         if self.kind() != getattr(self, "_last_kind", None):
             self._rows = []  # numeric, categoric and mixture entries do not carry over
             self._last_kind = self.kind()
+        if d != getattr(self, "_last_design", None):
+            self._custom = {"terms": None, "constraints": [], "forced": [], "candidates": []}
+            self._last_design = d
+        retyped = False
+        for j, row in enumerate(self._rows):
+            if d == "combined" and j < 3 and sum(r.get("type") == "Mixture"
+                                                 for r in self._rows) < 2:
+                row.update(type="Mixture", low="0", high="1")
+                retyped = True
+            elif d != "combined" and row.get("type") == "Mixture":
+                row.update(type="Numeric", low="-1", high="1")
+                retyped = True
+        if retyped:  # the table still shows the old types: do not read it back
+            self.table.setRowCount(0)
         self._loading = True
         self.title.setText(f"{FAMILIES[self.family][0]}: {designs.DESIGN_TITLES[d]}")
         self.desc.setText(HELP.get(d, DESCRIPTIONS.get(d, ""))
@@ -397,10 +465,17 @@ class NewDesignWizard(QDialog):
             self._changed()
 
     def _default_row(self, j: int) -> dict:
-        return {"name": designs.letter(j), "units": "", "low": "-1", "high": "1",
-                "mlow": "0", "mhigh": "", "type": "Numeric", "changes": "Easy",
-                "levels": ("1, 2, 3" if self.kind() == "categoric" else "L1, L2")
-                if self.design != "taguchi" else ""}
+        row = {"name": designs.letter(j), "units": "", "low": "-1", "high": "1",
+               "mlow": "0", "mhigh": "", "type": "Numeric", "changes": "Easy",
+               "levels": ("1, 2, 3" if self.kind() == "categoric" else "L1, L2")
+               if self.design != "taguchi" else ""}
+        if self.design == "combined" and j < 3:
+            row.update(type="Mixture", low="0", high="1")
+        return row
+
+    def _row_mixture(self, r: int) -> bool:
+        return self.design == "combined" and r < len(self._rows) and \
+            self._rows[r].get("type") == "Mixture"
 
     def _resize_factors(self) -> None:
         if self._loading:
@@ -414,6 +489,10 @@ class NewDesignWizard(QDialog):
         if centers and w is not None and w.value() == centers.get(self._opt_k, -1) \
                 and not self.split():
             w.setValue(centers.get(k, w.value()))  # untouched default follows k
+        if self._opt_k != k and getattr(self, "_custom", None):
+            self._custom["terms"] = None
+            self._custom["forced"] = []
+            self._custom["candidates"] = []
         self._opt_k = k
         self._fill_table(k)
         self._changed()
@@ -471,7 +550,8 @@ class NewDesignWizard(QDialog):
                 elif name == "Type" and kind == "process":
                     self.table.setItem(r, c, QTableWidgetItem(""))
                     self.table.setCellWidget(r, c, self._cell_combo(
-                        ["Numeric", "Categoric"], row.get("type", "Numeric"),
+                        (["Mixture"] if self.design == "combined" else [])
+                        + ["Numeric", "Categoric"], row.get("type", "Numeric"),
                         lambda _=0, rr=r: self._type_changed(rr),
                         "Numeric: a continuous range (minimum to maximum). Categoric: named "
                         "levels (nominal), coded with effect coding in the model."))
@@ -569,7 +649,7 @@ class NewDesignWizard(QDialog):
         cols = self.table_columns
         alpha = self._ccd_alpha() if self.design == "ccd" else None
         for r in range(self.table.rowCount()):
-            if self._row_categoric(r):
+            if self._row_categoric(r) or self._row_mixture(r):
                 for name in ("Coded Low", "Coded High", "-alpha", "+alpha"):
                     if name in cols:
                         self.table.item(r, cols.index(name)).setText("")
@@ -676,6 +756,26 @@ class NewDesignWizard(QDialog):
         self._add_row(label, w)
         return w
 
+    def _button(self, text: str, slot, key: str | None = None) -> QPushButton:
+        b = QPushButton(text)
+        b.clicked.connect(slot)
+        self._opt[key or "btn_" + text.strip(".").lower().split()[0]] = b
+        self._add_row("", b)
+        return b
+
+    def _engine_options(self, forced: bool = True) -> None:
+        """Optimality criterion, exchange method, blocks and the Edit Model / Constraints /
+        Forced runs / Candidates buttons of the optimal designs."""
+        self._combo("criterion", "Optimality:", CRITERIA, "I")
+        self._combo("exchange", "Exchange:", EXCHANGES, "best")
+        self._spin("opt_blocks", "Blocks:", 1, 20, 1)
+        self._button("Edit Model...", self.edit_model, "btn_terms")
+        self._button("Constraints...", self.edit_constraints, "btn_constraints")
+        if forced:
+            self._button("Forced Runs...", lambda: self.edit_runs("forced"), "btn_forced")
+            self._button("Candidate Points...", lambda: self.edit_runs("candidates"),
+                         "btn_candidates")
+
     def _opt_value(self, key, default=None):
         w = self._opt.get(key)
         if w is None:
@@ -684,6 +784,8 @@ class NewDesignWizard(QDialog):
             return w.currentData()
         if isinstance(w, QCheckBox):
             return w.isChecked()
+        if isinstance(w, QPushButton):
+            return None
         return w.value()
 
     def _build_options(self) -> None:
@@ -735,11 +837,15 @@ class NewDesignWizard(QDialog):
             self._spin("center_points", "Center points:", 0, 50,
                        designs.BBD_CENTERS.get(k, 5) if d == "bbd" else 0)
             self._spin("replicates", "Replicates:", 1, 20, 1)
+            if d == "bbd":
+                self._combo("blocks", "Blocks (4 factors: 3, 5 factors: 2):",
+                            [(1, "1"), (2, "2"), (3, "3")])
         elif d == "dopt":
             self._combo("model", "Model:", MODELS, "quadratic")
             self._spin("model_points", "Model points (0 = number of terms):", 0, 500, 0)
             self._spin("lof_points", "Lack-of-fit points:", 0, 50, 5)
             self._spin("replicate_points", "Replicate points:", 0, 50, 5)
+            self._engine_options()
             self._spin("groups", "Groups (whole plots):", 2, 200, 8)
             self._spin("group_size", "Runs per group:", 2, 50, 4)
             self._dspin("variance_ratio", "Variance ratio (group / residual):", 0.01, 100,
@@ -755,14 +861,52 @@ class NewDesignWizard(QDialog):
             if d == "ev":
                 self._check("vertex", "Vertices", True)
                 self._check("edge", "Edge centers", True)
+                self._check("thirds", "Thirds of edges", False)
                 self._check("plane", "Plane centroids", False)
+                self._check("interior", "Axial check blends", False)
                 self._check("centroid", "Overall centroid", True)
+                self._button("Constraints...", self.edit_constraints)
             if d == "mixdopt":
                 self._combo("model", "Model:", MIX_MODELS, "quadratic")
                 self._spin("model_points", "Model points (0 = number of terms):", 0, 500, 0)
                 self._spin("lof_points", "Lack-of-fit points:", 0, 50, 5)
                 self._spin("replicate_points", "Replicate points:", 0, 50, 5)
+                self._engine_options(forced=False)
             self._spin("center_points", "Replicates of the centroid:", 0, 20, 0)
+        elif d == "combined":
+            self._dspin("total", "Mixture total:", 0.0001, 1e6, 1.0, 4)
+            self._combo("mix_model", "Mixture model:", COMB_MIX_MODELS, "quadratic")
+            self._combo("process_model", "Process model:", PROC_MODELS, "linear")
+            self._spin("model_points", "Model points (0 = number of terms):", 0, 500, 0)
+            self._spin("lof_points", "Lack-of-fit points:", 0, 50, 5)
+            self._spin("replicate_points", "Replicate points:", 0, 50, 5)
+            self._engine_options(forced=False)
+        elif d == "dsd":
+            self._spin("center_points", "Extra center points:", 0, 20, 0)
+            self._spin("fake_factors", "Extra (fake) factors for more runs:", 0, 6, 0,
+                       "Jones & Nachtsheim: two fake factors add runs that improve the "
+                       "estimation of second-order effects.")
+            self._spin("replicates", "Replicates:", 1, 10, 1)
+        elif d == "onefactor":
+            self._combo("model", "Model:", MODELS[:1] + MODELS[2:], "quadratic")
+            self._combo("criterion", "Optimality:", CRITERIA, "I")
+            self._spin("lof_points", "Lack-of-fit points:", 0, 20, 2)
+            self._spin("replicate_points", "Replicate points:", 0, 20, 3)
+        elif d in ("lhs", "distance"):
+            self._spin("runs", "Runs:", 2, 1000, max(10, 5 * k))
+            if d == "distance":
+                self._spin("levels", "Grid levels per factor:", 3, 21, 5)
+            self._button("Constraints...", self.edit_constraints)
+        elif d == "userdef":
+            for key, text in POINT_TYPES:
+                self._check(key, text, key in ("vertex", "edge", "centroid"))
+            self._spin("center_points", "Replicates of the center:", 0, 20, 0)
+            self._spin("replicates", "Replicates:", 1, 10, 1)
+            self._button("Constraints...", self.edit_constraints)
+        elif d == "historical":
+            self._spin("runs", "Rows:", 1, 10000, 10,
+                       "Rows of the blank layout; type or paste the factor settings and "
+                       "responses of existing runs.")
         self._update_fractions()
         self._update_split_options()
 
@@ -773,7 +917,9 @@ class NewDesignWizard(QDialog):
             if key in self._opt:
                 self._opt[key].setEnabled(split)
         if self.design == "dopt":
-            for key in ("model_points", "lof_points", "replicate_points"):
+            for key in ("model_points", "lof_points", "replicate_points", "criterion",
+                        "exchange", "opt_blocks", "btn_terms", "btn_constraints",
+                        "btn_forced", "btn_candidates"):
                 if key in self._opt:
                     self._opt[key].setEnabled(not split)
 
@@ -837,7 +983,9 @@ class NewDesignWizard(QDialog):
         split = self.split()
         for key in ("blocks", "center_points", "replicates", "array", "alpha_type", "ccd_type",
                     "center_axial", "model", "lof_points", "replicate_points", "degree",
-                    "augment", "total", "extra_runs", "block_per_replicate"):
+                    "augment", "total", "extra_runs", "block_per_replicate", "criterion",
+                    "exchange", "mix_model", "process_model", "fake_factors", "runs",
+                    "levels"):
             v = self._opt_value(key)
             if v is not None:
                 opt[key] = v
@@ -862,8 +1010,30 @@ class NewDesignWizard(QDialog):
         elif d == "ccd" and p:
             opt["generators"] = designs.default_generators(k, p)
         if d == "ev":
-            opt["include"] = [n for n in ("vertex", "edge", "plane", "centroid")
-                              if self._opt_value(n)]
+            opt["include"] = [n for n in ("vertex", "edge", "thirds", "plane", "interior",
+                                          "centroid") if self._opt_value(n)]
+        if d == "userdef":
+            opt["include"] = [n for n, _ in POINT_TYPES if self._opt_value(n)]
+        if d == "bbd" and (opt.get("blocks") or 1) > 1 and \
+                opt.get("center_points") == designs.BBD_CENTERS.get(k):
+            # untouched default: the blocked designs' own centre points per block
+            opt["center_points"] = designs.BBD_BLOCK_CENTERS.get(k, opt["center_points"])
+        if d in ENGINE_DESIGNS and not split:
+            nb = self._opt_value("opt_blocks", 1) or 1
+            if nb > 1:
+                opt["blocks"] = nb
+            if self._custom.get("terms"):
+                opt["terms"] = list(self._custom["terms"])
+            if self._custom.get("forced") and d == "dopt":
+                opt["forced"] = [list(r) for r in self._custom["forced"]]
+            if self._custom.get("candidates") and d == "dopt":
+                opt["candidates"] = [list(r) for r in self._custom["candidates"]]
+        elif d in ENGINE_DESIGNS:
+            for key in ("criterion", "exchange"):
+                opt.pop(key, None)
+        if self._custom.get("constraints") and d in ENGINE_DESIGNS + ("ev", "lhs", "distance",
+                                                                      "userdef"):
+            opt["constraints"] = [dict(c) for c in self._custom["constraints"]]
         return opt
 
     def spec(self) -> dict:
@@ -879,7 +1049,10 @@ class NewDesignWizard(QDialog):
             f = {"name": row["name"].strip() or designs.letter(r), "units": row["units"].strip()}
             if self.split_capable and row.get("changes") == "Hard":
                 f["changes"] = "hard"
-            if kind == "process" and row.get("type") == "Categoric":
+            if self._row_mixture(r):
+                f.update(type="mixture", low=_num(row["low"], 0.0),
+                         high=_num(row["high"], self._total()))
+            elif kind == "process" and row.get("type") == "Categoric":
                 f.update(type="categoric",
                          levels=[p.strip() for p in row["levels"].split(",") if p.strip()])
             elif kind == "process":
@@ -895,6 +1068,9 @@ class NewDesignWizard(QDialog):
             else:
                 f["levels"] = [p.strip() for p in row["levels"].split(",") if p.strip()]
             factors.append(f)
+        if d == "combined":  # mixture components first, then the process factors
+            factors = [f for f in factors if f.get("type") == "mixture"] + \
+                [f for f in factors if f.get("type") != "mixture"]
         responses = []
         for i in range(self.responses.rowCount()):
             n = self.responses.item(i, 1).text().strip() or f"R{i + 1}"
@@ -965,6 +1141,94 @@ class NewDesignWizard(QDialog):
         else:
             w.setValue(value)
 
+    # ------------------------------------------------------------------ optimal extras
+    def candidate_terms(self) -> list:
+        """Terms offered by Edit Model for the current optimal design."""
+        import itertools
+
+        from rsstatchem.core.doe import model as mdl
+        from rsstatchem.core.doe import terms_combined as tc
+
+        spec = self.spec()
+        facs = spec["factors"]
+        k = len(facs)
+        cat = [f.get("type") == "categoric" for f in facs]
+        if self.design == "mixdopt":
+            return mdl.mixture_terms(k, "cubic")
+        if self.design == "combined":
+            q = sum(1 for f in facs if f.get("type") == "mixture")
+            terms = tc.combined_terms(q, k - q, "special_cubic", "quadratic", cat[q:])
+            extra = tc.combined_terms(q, k - q, "linear", "cubic", cat[q:])
+            return terms + [t for t in extra if t not in terms]
+        terms = set(mdl.process_terms(k, "cubic", cat))
+        for r in range(4, min(k, 6) + 1):
+            terms |= set(itertools.combinations(range(k), r))
+        return mdl.sort_terms(terms)
+
+    def model_terms(self) -> list:
+        """The terms of the chosen model order (or the edited model)."""
+        from rsstatchem.core.doe import model as mdl
+        from rsstatchem.core.doe import terms_combined as tc
+
+        if self._custom.get("terms"):
+            return [mdl.key_term(t) for t in self._custom["terms"]]
+        spec = self.spec()
+        facs = spec["factors"]
+        k = len(facs)
+        cat = [f.get("type") == "categoric" for f in facs]
+        opt = spec["options"]
+        if self.design == "mixdopt":
+            return mdl.mixture_terms(k, opt.get("model", "quadratic"))
+        if self.design == "combined":
+            q = sum(1 for f in facs if f.get("type") == "mixture")
+            return tc.combined_terms(q, k - q, opt.get("mix_model", "quadratic"),
+                                     opt.get("process_model", "linear"), cat[q:])
+        return mdl.process_terms(k, opt.get("model", "quadratic"), cat)
+
+    def edit_model(self) -> "TermsDialog":
+        from rsstatchem.core.doe import model as mdl
+
+        q = sum(1 for r in self._rows[:self.k_spin.value()] if r.get("type") == "Mixture") \
+            if self.design == "combined" else None
+        dlg = TermsDialog(self.candidate_terms(), self.model_terms(), self, n_mix=q)
+
+        def done(result):
+            if result:
+                self._custom["terms"] = [mdl.term_key(t) for t in dlg.selected()]
+                self._changed()
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
+
+    def edit_constraints(self) -> "ConstraintsDialog":
+        rows = self._rows[:self.k_spin.value()]
+        if self.design == "combined":
+            names = [r["name"] for r in rows if r.get("type") == "Mixture"]
+        else:
+            names = [r["name"] for r in rows]
+        dlg = ConstraintsDialog(names, [c["text"] for c in self._custom["constraints"]], self)
+
+        def done(result):
+            if result:
+                self._custom["constraints"] = dlg.constraints
+                self._changed()
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
+
+    def edit_runs(self, which: str) -> "RunsDialog":
+        spec = self.spec()
+        title = {"forced": "Forced Runs", "candidates": "Candidate Points"}[which]
+        dlg = RunsDialog(title, spec["factors"], self._custom.get(which) or [], self)
+
+        def done(result):
+            if result:
+                self._custom[which] = dlg.rows
+                self._changed()
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
+
     # ------------------------------------------------------------------ finish
     def finish(self) -> None:
         spec = self.spec()
@@ -979,3 +1243,199 @@ class NewDesignWizard(QDialog):
         self.document = doc
         self.created.emit(doc)
         self.accept()
+
+
+# ---------------------------------------------------------------------------- dialogs
+class TermsDialog(QDialog):
+    """Edit Model: tick the terms of the model the optimal design is built for."""
+
+    def __init__(self, candidates: list, selected: list, parent=None,
+                 n_mix: int | None = None):
+        super().__init__(parent)
+        from rsstatchem.core.doe import model as mdl
+        from rsstatchem.core.doe import terms_combined as tc
+
+        self.setWindowTitle("Edit Model")
+        self.setStyleSheet(style.STYLESHEET)
+        self.terms = list(candidates)
+        chosen = set(selected)
+        self.list = QListWidget()
+        for t in self.terms:
+            label = tc.term_label(t, n_mix) if n_mix else mdl.term_name(t)
+            it = QListWidgetItem(label)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if t in chosen else Qt.CheckState.Unchecked)
+            self.list.addItem(it)
+        self.count = QLabel()
+        self.list.itemChanged.connect(lambda _: self._count())
+        ok, cancel = QPushButton("OK"), QPushButton("Cancel")
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        row = QHBoxLayout()
+        row.addWidget(self.count, 1)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Terms of the model the design must estimate (the intercept is "
+                             "always included for process models):"))
+        lay.addWidget(self.list, 1)
+        lay.addLayout(row)
+        self.resize(360, 480)
+        self._count()
+
+    def selected(self) -> list:
+        return [t for i, t in enumerate(self.terms)
+                if self.list.item(i).checkState() == Qt.CheckState.Checked]
+
+    def set_selected(self, terms) -> None:
+        want = set(terms)
+        for i, t in enumerate(self.terms):
+            self.list.item(i).setCheckState(Qt.CheckState.Checked if t in want
+                                            else Qt.CheckState.Unchecked)
+
+    def _count(self) -> None:
+        self.count.setText(f"{len(self.selected())} terms selected")
+
+
+class ConstraintsDialog(QDialog):
+    """Multiple linear constraints, one per line, in actual units with factor letters."""
+
+    def __init__(self, names: list[str], texts: list[str], parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QPlainTextEdit
+
+        self.setWindowTitle("Constraints")
+        self.setStyleSheet(style.STYLESHEET)
+        self.k = len(names)
+        self.constraints: list[dict] = []
+        legend = ", ".join(f"{designs.letter(j)} = {n}" for j, n in enumerate(names))
+        self.edit = QPlainTextEdit("\n".join(texts))
+        self.edit.setPlaceholderText("e.g.\nA + B <= 15\n0.2 <= A + 2B <= 1")
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.edit.textChanged.connect(self.check)
+        ok, cancel = QPushButton("OK"), QPushButton("Cancel")
+        ok.clicked.connect(self.apply)
+        cancel.clicked.connect(self.reject)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"One linear constraint per line, in actual units ({legend}). "
+                             "Use <=, >= or a double inequality."))
+        lay.addWidget(self.edit, 1)
+        lay.addWidget(self.status)
+        lay.addLayout(row)
+        self.resize(460, 320)
+        self.check()
+
+    def set_text(self, text: str) -> None:
+        self.edit.setPlainText(text)
+
+    def check(self) -> bool:
+        from rsstatchem.core.doe import constraints as cons
+
+        out = []
+        for i, line in enumerate(self.edit.toPlainText().splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                out.append(cons.parse_constraint(line, self.k))
+            except ValueError as exc:
+                self.status.setText(f"<span style='color:#B00020'>Line {i}: {exc}</span>")
+                return False
+        self.constraints = out
+        self.status.setText(f"{len(out)} constraint(s)." if out else "No constraints.")
+        return True
+
+    def apply(self) -> None:
+        if self.check():
+            self.accept()
+
+
+class RunsDialog(QDialog):
+    """Forced runs or candidate points typed or pasted as rows of actual settings
+    (categoric factors by level name)."""
+
+    def __init__(self, title: str, factors: list[dict], rows: list, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QPlainTextEdit
+
+        self.setWindowTitle(title)
+        self.setStyleSheet(style.STYLESHEET)
+        self.factors = factors
+        self.rows: list[list[float]] = [list(r) for r in rows]
+        self.edit = QPlainTextEdit("\n".join("\t".join(self._fmt(j, v)
+                                                         for j, v in enumerate(r))
+                                              for r in rows))
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.edit.textChanged.connect(self.check)
+        ok, cancel = QPushButton("OK"), QPushButton("Cancel")
+        ok.clicked.connect(self.apply)
+        cancel.clicked.connect(self.reject)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(ok)
+        row.addWidget(cancel)
+        names = "  ".join(f"{designs.letter(j)}:{f.get('name')}" for j, f in enumerate(factors))
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"One run per line (tab, comma or space separated), actual "
+                             f"units:  {names}"))
+        lay.addWidget(self.edit, 1)
+        lay.addWidget(self.status)
+        lay.addLayout(row)
+        self.resize(520, 340)
+        self.check()
+
+    def _levels(self, j):
+        f = self.factors[j]
+        codes, labels, _ = designs._levels_from_text(f.get("levels") or [])
+        return codes, labels
+
+    def _fmt(self, j, v) -> str:
+        if self.factors[j].get("type") == "categoric":
+            codes, labels = self._levels(j)
+            for c, lab in zip(codes, labels):
+                if abs(c - v) < 1e-9:
+                    return lab
+        return f"{v:g}"
+
+    def set_text(self, text: str) -> None:
+        self.edit.setPlainText(text)
+
+    def check(self) -> bool:
+        import re
+
+        out = []
+        k = len(self.factors)
+        for i, line in enumerate(self.edit.toPlainText().splitlines(), start=1):
+            if not line.strip():
+                continue
+            cells = [c for c in re.split(r"[\t;, ]+", line.strip()) if c]
+            if len(cells) != k:
+                self.status.setText(f"<span style='color:#B00020'>Line {i}: {len(cells)} "
+                                    f"values for {k} factors.</span>")
+                return False
+            vals = []
+            for j, c in enumerate(cells):
+                if self.factors[j].get("type") == "categoric":
+                    codes, labels = self._levels(j)
+                    if c in labels:
+                        vals.append(float(codes[labels.index(c)]))
+                        continue
+                try:
+                    vals.append(float(c))
+                except ValueError:
+                    self.status.setText(f"<span style='color:#B00020'>Line {i}: cannot read "
+                                        f"'{c}'.</span>")
+                    return False
+            out.append(vals)
+        self.rows = out
+        self.status.setText(f"{len(out)} run(s).")
+        return True
+
+    def apply(self) -> None:
+        if self.check():
+            self.accept()
