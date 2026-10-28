@@ -9,6 +9,11 @@
 - Import: SMILES, MOL/SDF, InChI, reaction SMILES and RXN text are placed into a document
   at the document's fixed bond length.
 - Clean Structure: re-layout with ``compute_2d`` keeping stereo (wedges are re-assigned).
+- Enhanced stereochemistry (ABS / AND / OR groups) read from MOL V3000 / CXSMILES is kept in
+  ``doc.meta["stereo_groups"]`` and written back to MOL / RXN V3000.
+- Clean Up Reaction (ChemDraw): even spacing of the components on one line, "+" signs
+  between them, an arrow long enough for its conditions.
+- HELM strings are recognised on insert (see :mod:`.sequence`).
 """
 from __future__ import annotations
 
@@ -30,7 +35,8 @@ __all__ = ["ANGSTROM", "to_specs", "to_mol", "fragment_mols", "structure_problem
            "to_smiles", "to_molblock", "to_sdf", "to_inchi", "to_inchikey", "insert_mol",
            "insert_text", "insert_reaction", "split_reaction", "ReactionSplit",
            "reaction_smiles", "reaction_rxn", "reaction_object", "clean_structure",
-           "expand_label", "apply_label_text", "mols_from_text"]
+           "expand_label", "apply_label_text", "mols_from_text", "stereo_groups",
+           "set_stereo_groups", "clean_up_reaction", "reaction_components"]
 
 ANGSTROM = 1.5          # RDKit 2D bond length; one document bond length maps onto it
 
@@ -163,6 +169,8 @@ def to_mol(doc: Document, atom_ids=None, sanitize: bool = True, expand: bool = T
     mol = mo.mol_from_graph(specs, bonds, sanitize=sanitize)
     for i, aid in enumerate(origin):
         mol.GetAtomWithIdx(i).SetIntProp("doc_id", aid)
+    if sanitize and doc.meta.get("stereo_groups"):
+        mol = _apply_stereo_groups(doc, mol)
     if sanitize and remove_hs and any(a.GetAtomicNum() == 1 for a in mol.GetAtoms()):
         try:
             ps = Chem.RemoveHsParameters()
@@ -216,20 +224,65 @@ def structure_problems(doc: Document) -> dict[int, str]:
     return out
 
 
+_GROUP_TYPES = {"ABS": Chem.StereoGroupType.STEREO_ABSOLUTE,
+                "AND": Chem.StereoGroupType.STEREO_AND, "OR": Chem.StereoGroupType.STEREO_OR}
+
+
+def stereo_groups(doc: Document) -> list[dict]:
+    """Enhanced stereo groups of the drawing: [{"type": "ABS"|"AND"|"OR", "id": n,
+    "atoms": [document atom ids]}] (ChemDraw's Structure > Enhanced Stereochemistry)."""
+    out = []
+    for g in doc.meta.get("stereo_groups") or []:
+        atoms = [a for a in g.get("atoms", []) if a in doc.atoms]
+        if atoms and g.get("type") in _GROUP_TYPES:
+            out.append({"type": g["type"], "id": int(g.get("id", 0)), "atoms": atoms})
+    return out
+
+
+def set_stereo_groups(doc: Document, groups: list[dict]) -> None:
+    doc.meta["stereo_groups"] = [dict(g, atoms=list(g["atoms"])) for g in groups]
+
+
+def _apply_stereo_groups(doc: Document, mol: Chem.Mol) -> Chem.Mol:
+    index: dict[int, int] = {}
+    for a in mol.GetAtoms():
+        if a.HasProp("doc_id"):
+            index.setdefault(a.GetIntProp("doc_id"), a.GetIdx())
+    rw = Chem.RWMol(mol)
+    groups = []
+    for g in stereo_groups(doc):
+        idx = [index[a] for a in g["atoms"] if a in index and
+               rw.GetAtomWithIdx(index[a]).GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED]
+        if idx:
+            try:
+                groups.append(Chem.CreateStereoGroup(_GROUP_TYPES[g["type"]], rw, idx,
+                                                     g["id"]))
+            except Exception:  # noqa: BLE001 - older RDKit signature
+                groups.append(Chem.CreateStereoGroup(_GROUP_TYPES[g["type"]], rw, idx))
+    if not groups:
+        return mol
+    rw.SetStereoGroups(groups)
+    return rw.GetMol()
+
+
 def to_smiles(doc: Document, atom_ids=None) -> str:
     return mo.to_smiles(to_mol(doc, atom_ids))
 
 
-def to_molblock(doc: Document, atom_ids=None) -> str:
-    return Chem.MolToMolBlock(_clean_props(to_mol(doc, atom_ids)))
+def to_molblock(doc: Document, atom_ids=None, v3000: bool = False) -> str:
+    """MOL block (V2000, or V3000 with enhanced stereo collections when ``v3000``)."""
+    m = _clean_props(to_mol(doc, atom_ids))
+    return Chem.MolToV3KMolBlock(m) if v3000 else Chem.MolToMolBlock(m)
 
 
-def to_sdf(doc: Document, atom_ids=None) -> str:
+def to_sdf(doc: Document, atom_ids=None, v3000: bool = False) -> str:
     out = []
     for comp, m in fragment_mols(doc, atom_ids):
         if isinstance(m, Exception):
             raise m
-        out.append(Chem.MolToMolBlock(_clean_props(m)) + "$$$$\n")
+        m = _clean_props(m)
+        out.append((Chem.MolToV3KMolBlock(m) if v3000 else Chem.MolToMolBlock(m)) +
+                   "$$$$\n")
     return "".join(out)
 
 
@@ -297,7 +350,36 @@ def insert_mol(doc: Document, mol: Chem.Mol, x: float, y: float,
             na = doc.atoms[aid]
             if implicit_h(doc, na) != a.explicit_h:
                 na.explicit_h = a.explicit_h
+    _keep_stereo_groups(doc, m, ids)
     return keys
+
+
+def _keep_stereo_groups(doc: Document, mol: Chem.Mol, ids: list[int]) -> None:
+    """Enhanced stereo groups of an inserted molecule, as document atom ids in doc.meta."""
+    try:
+        groups = list(mol.GetStereoGroups())
+    except Exception:  # noqa: BLE001
+        return
+    if not groups:
+        return
+    names = {v: k for k, v in _GROUP_TYPES.items()}
+    have = stereo_groups(doc)
+    used = {(g["type"], g["id"]) for g in have}
+    for g in groups:
+        kind = names.get(g.GetGroupType())
+        if kind is None:
+            continue
+        atoms = [ids[a.GetIdx()] for a in g.GetAtoms() if a.GetIdx() < len(ids)]
+        try:
+            num = int(g.GetReadId()) or 1
+        except Exception:  # noqa: BLE001
+            num = 1
+        if kind != "ABS":
+            while (kind, num) in used:
+                num += 1
+        used.add((kind, num))
+        have.append({"type": kind, "id": 0 if kind == "ABS" else num, "atoms": atoms})
+    set_stereo_groups(doc, have)
 
 
 def _finite(m: Chem.Mol) -> bool:
@@ -347,6 +429,9 @@ def insert_text(doc: Document, text: str, x: float, y: float) -> list[tuple[str,
         raise mo.ChemError("Empty structure")
     if t.startswith("$RXN") or mo.detect_format(t) == "reaction":
         return insert_reaction(doc, reaction_object(t), x, y)
+    from rsstatchem.core.chem_draw import sequence
+    if sequence.looks_like_helm(t):
+        return insert_mol(doc, sequence.mol_from_helm(t), x, y)
     mols = mols_from_text(text)
     if len(mols) == 1:
         return insert_mol(doc, mols[0], x, y)
@@ -495,8 +580,11 @@ def reaction_smiles(doc: Document, split: ReactionSplit | None = None,
     return f"{side(sp.reactants)}>{side(sp.agents) if agents else ''}>{side(sp.products)}"
 
 
-def reaction_rxn(doc: Document, split: ReactionSplit | None = None) -> str:
+def reaction_rxn(doc: Document, split: ReactionSplit | None = None,
+                 v3000: bool = False) -> str:
     rxn = _rxn(doc, split)
+    if v3000:
+        return rdChemReactions.ReactionToV3KRxnBlock(rxn)
     return rdChemReactions.ReactionToRxnBlock(rxn)
 
 
@@ -636,3 +724,81 @@ def _rewedge(doc: Document, comp, mol: Chem.Mol, origin) -> None:
         if db.a != i:
             db.a, db.b = i, j
         db.style = "wedge" if d == Chem.BondDir.BEGINWEDGE else "hash"
+
+
+# --- Clean Up Reaction ---------------------------------------------------------------------
+
+def reaction_components(doc: Document, split: ReactionSplit | None = None) -> dict:
+    """{"reactants" | "agents" | "products": [set of keys per component]} of the main
+    reaction, each component with its captions (text boxes just below or above it)."""
+    sp = split or split_reaction(doc)
+    out = {"reactants": [], "agents": [], "products": []}
+    if not sp.ok:
+        return out
+    bl = doc.style.bond_length
+    taken: set[int] = set()
+    for side in ("reactants", "agents", "products"):
+        for comp in getattr(sp, side):
+            keys = doc.with_bonds({("atom", a) for a in comp})
+            bb = doc.bbox(keys)
+            if bb is not None and side != "agents":
+                for t in doc.texts.values():
+                    if t.id in taken:
+                        continue
+                    if bb[0] - bl <= t.x <= bb[2] + bl and \
+                            bb[3] - bl * 0.2 <= t.y <= bb[3] + bl * 2.5:
+                        keys.add(("text", t.id))
+                        taken.add(t.id)
+            out[side].append(keys)
+    return out
+
+
+def clean_up_reaction(doc: Document) -> bool:
+    """ChemDraw's Structure > Clean Up Reaction for a single-step reaction with a straight
+    arrow: the components are spread evenly on the arrow's line, "+" signs are put between
+    reactants and between products (old ones removed) and the arrow is made long enough for
+    the conditions drawn on it. Returns False when there is no interpretable reaction."""
+    sp = split_reaction(doc)
+    if not sp.ok or abs(getattr(sp.arrow, "bend", 0.0)) > 1e-6:
+        return False
+    comps = reaction_components(doc, sp)
+    if sp.retro:
+        comps["reactants"], comps["products"] = comps["products"], comps["reactants"]
+    ar = sp.arrow
+    bl = doc.style.bond_length
+    gap = bl * 1.6
+    y = (ar.y1 + ar.y2) / 2
+    old_plus = [("plus", p.id) for p in doc.pluses.values()
+                if abs(p.y - y) < bl * 2.5]
+    doc.remove(old_plus)
+
+    def place(units, cursor):
+        for i, keys in enumerate(units):
+            bb = doc.bbox(keys)
+            cy = _atom_center_y(doc, keys, bb)
+            doc.move(keys, cursor - bb[0], y - cy)
+            cursor += bb[2] - bb[0]
+            if i < len(units) - 1:
+                doc.add_plus(cursor + gap / 2, y)
+                cursor += gap
+        return cursor
+    left = min((doc.bbox(k)[0] for k in comps["reactants"]), default=ar.x1)
+    cursor = place(comps["reactants"], left)
+    start = cursor + gap * 0.6
+    agent_w = sum(doc.bbox(k)[2] - doc.bbox(k)[0] for k in comps["agents"]) + \
+        bl * 0.6 * max(0, len(comps["agents"]) - 1)
+    text_w = max(len(ar.above or ""), len(ar.below or "")) * doc.style.caption_size * 0.55
+    length = max(bl * 3.5, agent_w + bl, text_w + bl)
+    ax = start + (length - agent_w) / 2
+    for keys in comps["agents"]:
+        bb = doc.bbox(keys)
+        doc.move(keys, ax - bb[0], (y - bl * 0.6) - bb[3])
+        ax += bb[2] - bb[0] + bl * 0.6
+    ar.x1, ar.y1, ar.x2, ar.y2 = start, y, start + length, y      # tail -> head, rightwards
+    place(comps["products"], start + length + gap * 0.6)
+    return True
+
+
+def _atom_center_y(doc: Document, keys, bb) -> float:
+    ys = [doc.atoms[i].y for k, i in keys if k == "atom" and i in doc.atoms]
+    return (min(ys) + max(ys)) / 2 if ys else (bb[1] + bb[3]) / 2
