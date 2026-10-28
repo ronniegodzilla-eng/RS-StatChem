@@ -64,6 +64,101 @@
    "java": "java version \"26.0.2\" 2026-07-21",
    "macro_sha256": "fdf245a5512797d4a388ccedfe770dd26ffaf0d696a031482d6d59b0323f51f5"
   },
+  "process_background": {
+   "date": "2026-10-28",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "386791b17475fdd8a9c14ece16c7a8a0c4bb862fe9ce01fe76a56d7b5152f1d1"
+  },
+  "process_binary": {
+   "date": "2026-10-28",
+   "files": [
+    "maxima_blobs_p0_exclude_list.csv",
+    "maxima_blobs_p0_light_list.csv",
+    "maxima_blobs_p0_plain_list.csv",
+    "maxima_blobs_p0_strict_list.csv",
+    "maxima_blobs_p0_strictexclude_list.csv",
+    "maxima_blobs_p1_exclude_list.csv",
+    "maxima_blobs_p1_light_list.csv",
+    "maxima_blobs_p1_plain_list.csv",
+    "maxima_blobs_p1_strict_list.csv",
+    "maxima_blobs_p1_strictexclude_list.csv",
+    "maxima_points.csv",
+    "maxima_synth16_p0_exclude_list.csv",
+    "maxima_synth16_p0_light_list.csv",
+    "maxima_synth16_p0_plain_list.csv",
+    "maxima_synth16_p0_strict_list.csv",
+    "maxima_synth16_p0_strictexclude_list.csv",
+    "maxima_synth16_p1_exclude_list.csv",
+    "maxima_synth16_p1_light_list.csv",
+    "maxima_synth16_p1_plain_list.csv",
+    "maxima_synth16_p1_strict_list.csv",
+    "maxima_synth16_p1_strictexclude_list.csv",
+    "maxima_synth32_p0_exclude_list.csv",
+    "maxima_synth32_p0_light_list.csv",
+    "maxima_synth32_p0_plain_list.csv",
+    "maxima_synth32_p0_strict_list.csv",
+    "maxima_synth32_p0_strictexclude_list.csv",
+    "maxima_synth32_p1_exclude_list.csv",
+    "maxima_synth32_p1_light_list.csv",
+    "maxima_synth32_p1_plain_list.csv",
+    "maxima_synth32_p1_strict_list.csv",
+    "maxima_synth32_p1_strictexclude_list.csv",
+    "maxima_synth8_above_list.csv",
+    "maxima_synth8_oval_list.csv",
+    "maxima_synth8_p0_exclude_list.csv",
+    "maxima_synth8_p0_light_list.csv",
+    "maxima_synth8_p0_plain_list.csv",
+    "maxima_synth8_p0_strict_list.csv",
+    "maxima_synth8_p0_strictexclude_list.csv",
+    "maxima_synth8_p1_exclude_list.csv",
+    "maxima_synth8_p1_light_list.csv",
+    "maxima_synth8_p1_plain_list.csv",
+    "maxima_synth8_p1_strict_list.csv",
+    "maxima_synth8_p1_strictexclude_list.csv",
+    "maxima_synth8_rect_list.csv",
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "e98461c13db229c604cde83403e7c9daf194294a0423c14c6df281eac135fe40"
+  },
+  "process_fft": {
+   "date": "2026-10-28",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "0e2dc0ab4cae0f695fdaf1afa9b3761a84a46206a228789bc6ce2ef00c4dd349"
+  },
+  "process_filters": {
+   "date": "2026-10-28",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "ad46665fb7ad254b8e721e61525a05d89a02f899f0637b30d1fa9a03dbeaccae"
+  },
+  "process_math": {
+   "date": "2026-10-28",
+   "files": [
+    "contrast_ranges.csv",
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "f49361262833dc47a56b078e5b35f2530da28cfbecd5b98135bb400c312e1124"
+  },
+  "process_threshold": {
+   "date": "2026-10-28",
+   "files": [
+    "extra_thresholds.csv",
+    "mask_luts.csv",
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "27168f31acde9720433cbc70e269c40afc483ce42e8d5b7811162315e00f2775"
+  },
   "thresholds": {
    "date": "2026-10-27",
    "files": [

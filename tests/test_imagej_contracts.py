@@ -294,7 +294,10 @@ def test_bar_opens_image_and_runs_commands(ctx):
     titles = [a.text() for a in bar.menuBar().actions()]
     assert titles == ["File", "Edit", "Image", "Process", "Analyze", "Plugins", "Window", "Help"]
     acts = bar.actions_by_label
-    assert acts["Tile"].isEnabled() and not acts["Gaussian Blur..."].isEnabled()
+    assert acts["Tile"].isEnabled()
+    for label, act in acts.items():   # entries light up exactly when a command is registered
+        cmd = bar.session.registry.get(label)
+        assert act.isEnabled() == (cmd is not None and cmd.available), label
     assert acts["Image..."].shortcut().toString() == "Ctrl+N"
     win = image_windows()[0]
     assert win.windowTitle() == "blobs.gif" and "inverting LUT" in win.info.text()
