@@ -270,7 +270,8 @@ class FitDialog(QDialog):
         self.kind = kind
         self.inputs = inputs
         self.setWindowTitle({"linear": "Linear Fit", "poly": "Polynomial Fit",
-                             "nlfit": "NLFit - Nonlinear Curve Fit"}[kind])
+                             "nlfit": "NLFit - Nonlinear Curve Fit"}.get(
+            kind, "NLFit - Nonlinear Curve Fit"))
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
         self.mode = QComboBox()
@@ -335,7 +336,8 @@ class FitDialog(QDialog):
         v = QVBoxLayout(box)
         row = QHBoxLayout()
         self.category = QComboBox()
-        self.category.addItems(fl.CATEGORIES + ["User Defined"])
+        self.category.addItems([c for c in fl.CATEGORIES if c != "User Defined"]
+                               + ["User Defined"])
         self.function = QComboBox()
         self.function.setMinimumWidth(180)
         row.addWidget(QLabel("Category:"))
