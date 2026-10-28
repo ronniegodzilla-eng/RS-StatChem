@@ -81,6 +81,8 @@ OWNER_RULES: tuple[tuple[str, str], ...] = (
     ("Analyze", "analyze"),
     ("Plugins", "plugins"),
     ("Plugins>Fiji", "process"),
+    ("Plugins>Fiji>Analyze", "analyze"),
+    ("Plugins>Fiji>Image", "image"),
     ("Window", "shell"),
     ("Help", "shell"),
 )
@@ -600,6 +602,16 @@ MENU_LAYOUT: tuple[Menu, ...] = (
                 I('Marker-controlled Watershed', '', 'RS-StatChem'),
                 I('Distance Transform Watershed', '', 'RS-StatChem'),
                 I('Connected Components Labeling', '', 'RS-StatChem'),
+            )),
+            M('Analyze', (
+                I('Cell Counter', '', 'RS-StatChem'),
+                I('Coloc 2', '', 'RS-StatChem'),
+                I('Analyze Skeleton (2D/3D)', '', 'RS-StatChem'),
+            )),
+            M('Image', (
+                I('Bleach Correction', '', 'RS-StatChem'),
+                I('Colour Deconvolution', '', 'RS-StatChem'),
+                I('KymographBuilder', '', 'RS-StatChem'),
             )),
         )),
     )),
