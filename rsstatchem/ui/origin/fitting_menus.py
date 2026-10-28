@@ -84,9 +84,12 @@ def install(main) -> None:
     _add(main, fm_, "Simulate &Curve...", simulate_curve_dialog, "simulate_curve")
     _add(main, fm_, "Simulate Sur&face...", simulate_surface_dialog, "simulate_surface")
     _add(main, fm_, "Ca&libration Curve (LOD/LOQ)...", calibration_dialog, "calibration")
+    _add(main, fm_, "&Quick Fit Gadget (graph region)...", quick_fit_gadget, "quick_fit")
     pk = _submenu(am, "Peaks and Baseline")
     pk.addSeparator()
     _add(main, pk, "&Peak Analyzer...", peak_analyzer, "peak_analyzer")
+    _add(main, pk, "Quick Peaks &Gadget (graph region)...", quick_peaks_gadget,
+         "quick_peaks_gadget")
     _add(main, pk, "&Quick Peaks (find and integrate)", quick_peaks, "quick_peaks")
     _add(main, pk, "&Batch Peak Analysis...", batch_peaks_dialog, "batch_peaks")
     spm = _submenu(am, "Spectroscopy")
@@ -103,6 +106,23 @@ def install(main) -> None:
         main.menus["matrix"].addSeparator()
         _add(main, main.menus["matrix"], "Surface &Fit...", surface_dialog, "matrix_surface")
     _wrap_change_parameters(main)
+    register_gadgets()
+    if "graph" in main.menus:   # also under Graph > Gadgets (WP-4) once that menu exists
+        main.menus["graph"].aboutToShow.connect(lambda: _gadget_entries(main))
+
+
+def _gadget_entries(main) -> None:
+    gm = main.menus["graph"]
+    gad = next((a.menu() for a in gm.actions() if a.menu() is not None and
+                a.menu().title().replace("&", "") == "Gadgets"), None)
+    if gad is None or any(a.objectName() == "wp1_gadget_quick_fit" for a in gad.actions()):
+        return
+    for key, text, slot in (("quick_fit", "Quick Fit...", quick_fit_gadget),
+                            ("quick_peaks", "Quick Peaks...", quick_peaks_gadget)):
+        act = QAction(text, main)
+        act.setObjectName(f"wp1_gadget_{key}")
+        act.triggered.connect(lambda _=False, f=slot: f(main))
+        gad.addAction(act)
 
 
 def _wrap_change_parameters(main) -> None:
@@ -234,6 +254,8 @@ def mlr_dialog(main, values: dict | None = None):
     """Multiple Linear Regression of a Y column on several X columns of the active sheet."""
     bw = main.active_book_window()
     ws = bw.worksheet() if bw is not None else None
+    if ws is None and bw is not None and values is not None:
+        ws = next((s for s in bw.book.sheets if isinstance(s, Worksheet)), None)
     if ws is None:
         main._warn("Activate a worksheet first.")
         return None
@@ -280,6 +302,8 @@ def mlr_dialog(main, values: dict | None = None):
 
 # ====================================================================== comparison
 def _model_list(main, title, n_models, multi=False, category=False, values=None):
+    if values is not None:
+        return values if values.get("inputs") else None
     got = _inputs(main)
     if got is None:
         return None
@@ -422,7 +446,7 @@ def surface_dialog(main, values: dict | None = None):
         x, y, z = sf.matrix_xyz(ms.data, (ms.x1, ms.x2, ms.y1, ms.y2))
         book = Workbook.new(main.project.unique_name("SurfaceFit"), 1, 1)
         main.new_book(book)
-        titles = (ms.x_title(), ms.y_title(), ms.z_title())
+        titles = (ms.x_title, ms.y_title, ms.z_title)
         source = f"[{mw.book.name}]{ms.name}"
     else:
         bw = main.active_book_window()
@@ -575,6 +599,8 @@ def peak_analyzer(main, goal: str | None = None, settings: dict | None = None,
                                src["sheet"], src["y"], src.get("x"), None,
                                tuple(src["rows"]) if src.get("rows") else None)]
         current, gwin = 0, None
+    elif values is not None:
+        choices, current, gwin = [], 0, main.active_graph_window()
     else:
         got = _inputs(main)
         if got is None:
@@ -745,6 +771,103 @@ def organizer(main):
     dlg = FunctionOrganizerDialog(main)
     dlg.exec()
     return dlg
+
+
+# ====================================================================== gadgets
+QUICK_FIT = {"model": "Gauss"}
+
+
+def _gadget_quick_fit(x, y, x0, x1, mask=None) -> dict:
+    """Quick Fit gadget: fit QUICK_FIT["model"] to the points inside the region."""
+    from rsstatchem.core.graph import gadgets as gd
+    xs, ys = gd.roi_data(x, y, x0, x1, mask)
+    res = fit.fit_curve(xs, ys, QUICK_FIT["model"])
+    out = {"X From": float(xs[0]), "X To": float(xs[-1]), "Function": res.model.name}
+    for name, v, e in zip(res.names, res.values, res.errors):
+        out[name] = float(v)
+        out[f"{name} SE"] = float(e)
+    out.update({"R-Square": float(res.r2), "Reduced Chi-Sqr": float(res.red_chisq),
+                "N": res.n})
+    xx = np.linspace(float(xs[0]), float(xs[-1]), 300)
+    out["_x"], out["_fit"] = xx, res.predict(xx)
+    return out
+
+
+def _gadget_quick_peaks(x, y, x0, x1, mask=None) -> dict:
+    """Quick Peaks gadget: straight-line baseline over the region, find and integrate."""
+    from rsstatchem.core.graph import gadgets as gd
+    xs, ys = gd.roi_data(x, y, x0, x1, mask)
+    anl = pa.PeakAnalysis(xs, ys, "integrate", "line", {"n_end": max(1, len(xs) // 50)},
+                          find_opts={"method": "local_max", "height_pct": 5.0}).run()
+    out = {"X From": float(xs[0]), "X To": float(xs[-1]), "Peaks": len(anl.integration)}
+    for r in anl.integration:
+        k = r["peak"]
+        out[f"Peak{k} X"] = r["x_max"]
+        out[f"Peak{k} Area"] = r["area"]
+        out[f"Peak{k} Height"] = r["height"]
+        out[f"Peak{k} FWHM"] = r["fwhm"]
+    out["_x"], out["_fit"] = anl.x, anl.baseline
+    return out
+
+
+def register_gadgets() -> None:
+    """Plug Quick Fit / Quick Peaks into WP-4's ROI gadgets (core.graph.gadgets)."""
+    try:
+        from rsstatchem.core.graph import gadgets as gd
+    except ImportError:
+        return
+    gd.register("quick_fit", "Quick Fit", _gadget_quick_fit)
+    gd.register("quick_peaks", "Quick Peaks", _gadget_quick_peaks)
+    try:
+        from rsstatchem.ui.origin import gadgets_ui
+        gadgets_ui.LABELS.setdefault("quick_fit", "Quick Fit")
+        gadgets_ui.LABELS.setdefault("quick_peaks", "Quick Peaks")
+    except ImportError:
+        pass
+
+
+def _start_gadget(main, key: str, curve_name: str, color: str):
+    gwin = main.active_graph_window()
+    if gwin is None:
+        main._warn("Activate a graph window first.")
+        return None
+    register_gadgets()
+    from rsstatchem.ui.origin import gadgets_ui
+    tool = gadgets_ui.start(main, gwin, key)
+    report = tool._report
+
+    def report_with_curve(title, result):   # the fitted curve / baseline goes on the graph
+        report(title, result)
+        if "_x" in result and result.get("_fit") is not None:
+            li = gwin.active_index()
+            gwin.mutate(lambda: add_xy_plot(gwin.graph, li, result["_x"], result["_fit"],
+                                            f"{curve_name} {result.get('Function', '')}"
+                                            .strip(), "line", color))
+    tool._report = report_with_curve
+    return tool
+
+
+def quick_fit_gadget(main, model: str | None = None):
+    """Graph > Gadgets > Quick Fit: drag a region; the chosen function is fitted to it."""
+    if model is None and main.active_graph_window() is not None:
+        from rsstatchem.ui.origin.dialogs import ParamDialog
+        names = {n: n for n in ["Line", "Poly2", "Poly3"] + sorted(fl.LIBRARY)}
+        dlg = ParamDialog("Quick Fit", [("model", "Function:", "choice", QUICK_FIT["model"],
+                                         names)], main)
+        if not dlg.exec():
+            return None
+        model = dlg.values()["model"]
+    if model:
+        QUICK_FIT["model"] = model
+    return _start_gadget(main, "quick_fit", "Quick Fit", FIT_COLOR)
+
+
+def quick_peaks_gadget(main):
+    """Graph > Gadgets > Quick Peaks: drag a region; peaks are found and integrated."""
+    return _start_gadget(main, "quick_peaks", "Quick Peaks Baseline", "#0000FF")
+
+
+register_gadgets()
 
 
 # ====================================================================== selftest

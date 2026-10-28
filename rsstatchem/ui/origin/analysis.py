@@ -86,17 +86,7 @@ def xy_data(book: Workbook, ws: Worksheet, ycol: int, xcol: int | None = -1,
     ok = np.isfinite(x) & np.isfinite(y)
     ok[:lo] = False
     ok[hi:] = False
-    masked = getattr(ws, "masked_rows", None)   # WP-2 cell masks: excluded from fits
-    if callable(masked):
-        for col in (ycol, xcol):
-            if col is None:
-                continue
-            try:
-                for r in masked(col) or ():
-                    if 0 <= int(r) < n:
-                        ok[int(r)] = False
-            except (TypeError, ValueError, KeyError, IndexError):
-                pass
+    ok &= ~ws.point_mask([ycol, xcol], n)   # masked cells are left out (Origin's Mask)
     e = None
     ecol = ws.yerr_of(ycol) if with_error else None
     if ecol is not None:   # error bars / instrumental weights, when complete

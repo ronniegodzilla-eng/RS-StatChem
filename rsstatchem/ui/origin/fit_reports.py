@@ -395,11 +395,17 @@ def analysis_from_settings(x, y, s: dict) -> pa.PeakAnalysis:
                          dict(s.get("baseline_opts") or {}),
                          None, dict(s.get("find_opts") or {"method": "local_max"}),
                          s.get("limits"), dict(s.get("fit_opts") or {"shape": "gauss"}))
-    if s.get("anchors"):
-        an.anchors = (np.asarray(s["anchors"][0], float), np.asarray(s["anchors"][1], float))
+    if s.get("anchors"):   # anchor X positions are kept; Y follows the (new) data
+        ax = np.asarray(s["anchors"][0], float)
+        an.anchors = (ax, np.interp(ax, an.x, an.y))
     if s.get("manual_peaks"):
         an.peaks = [dict(p) for p in s["manual_peaks"]]
         an.keep_peaks = True
+        if an.baseline_mode != "none":
+            an.compute_baseline()
+        for p in an.peaks:
+            p["y"] = p["height"] = float(np.interp(p["x"], an.x, an.subtracted))
+            p.setdefault("fwhm", float(np.ptp(an.x)) / 20)
     return an
 
 
