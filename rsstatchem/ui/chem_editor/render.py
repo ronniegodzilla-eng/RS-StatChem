@@ -4,6 +4,10 @@ Text is drawn as glyph outlines (``QPainterPath.addText``) from a 100 px referen
 scaled to the style's point size, so labels look identical on screen, in SVG/PDF and in
 PNGs of any resolution. Bonds stop at the label boxes (plus the style margin) instead of
 being masked, as in ChemDraw.
+
+Also draws the teaching / lab-report objects of :mod:`rsstatchem.core.chem_draw.objects`
+(drawing elements, chemical symbols, TLC and gel plates), clipware, circled charges,
+attachment points and the stereo indicators of Object > Show Stereochemistry.
 """
 from __future__ import annotations
 
@@ -13,14 +17,16 @@ import re
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QPainterPath, QPen,
-                           QPolygonF, QRadialGradient, QTransform)
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QLinearGradient,
+                           QPainterPath, QPen, QPolygonF, QRadialGradient, QTransform)
 from PySide6.QtWidgets import (QGraphicsLineItem, QGraphicsPathItem, QGraphicsPolygonItem,
                                QGraphicsScene)
 
 from rsstatchem.core.chem.formula import format_formula
 from rsstatchem.core.chem_draw import geometry as geo
+from rsstatchem.core.chem_draw import clipart as clip
 from rsstatchem.core.chem_draw import labels as lab
+from rsstatchem.core.chem_draw import objects as obj
 from rsstatchem.core.chem_draw.model import Document
 from rsstatchem.core.chem_draw.style import Style, element_color
 
@@ -104,6 +110,7 @@ class BuildInfo:
     arrow_text: dict = field(default_factory=dict)     # arrow id -> [QRectF]
     curve_boxes: dict = field(default_factory=dict)    # curve id -> QRectF
     orbital_boxes: dict = field(default_factory=dict)  # orbital id -> QRectF
+    object_boxes: dict = field(default_factory=dict)   # (kind, id) -> QRectF (new objects)
 
 
 class Builder:
@@ -254,6 +261,12 @@ class Builder:
                 scene.addItem(item)
             if a.number:
                 self._atom_number(scene, doc, a, boxes.get(a.id), z0)
+            if a.charge and getattr(a, "charge_circle", False):
+                self._circled_charge(scene, doc, a, boxes.get(a.id), z0)
+            if getattr(a, "attachment", 0):
+                self._attachment(scene, doc, a, boxes.get(a.id), z0)
+            if st.show_stereo and a.stereo and a.show_stereo:
+                self._stereo_atom(scene, doc, a, boxes.get(a.id), z0)
         info.label_boxes = boxes
         rings = doc.rings()
         for b in doc.bonds.values():
@@ -272,6 +285,8 @@ class Builder:
             color = _color(b, pen_color)
             for prim in geo.bond_primitives(doc, b, st, ta, tb, side, labelled):
                 self._prim(scene, prim, color, z0 + 1)
+            if st.show_stereo and getattr(b, "stereo", ""):
+                self._stereo_bond(scene, doc, b, side, z0)
         for ar in doc.arrows.values():
             z = z0 + 3 + ar.z
             for prim in geo.arrow_primitives(ar, st):
@@ -314,18 +329,46 @@ class Builder:
             info.text_boxes[t.id] = rect
         for br in doc.brackets.values():
             z = z0 + 3 + br.z
-            for prim in geo.bracket_primitives(br.x1, br.y1, br.x2, br.y2, br.kind, st):
+            sides = getattr(br, "sides", "both")
+            for prim in geo.bracket_primitives(br.x1, br.y1, br.x2, br.y2, br.kind, st, sides):
                 self._prim(scene, prim, _color(br, pen_color), z)
+            size = st.caption_size * 0.85
+            lx = (br.x1 - 1.5) if sides == "left" else br.x2 + 1.5
+            anchor = "r" if sides == "left" else "l"
             if br.label:
-                size = st.caption_size * 0.85
-                path, _ = self.runs_path([(br.label, "n")], size, br.x2 + 1.5, br.y2 + size * 0.5)
-                item = QGraphicsPathItem(path)
-                item.setBrush(QBrush(_color(br, pen_color)))
-                item.setPen(Qt.PenStyle.NoPen)
-                item.setZValue(z)
-                scene.addItem(item)
+                self._prim(scene, ("text", lx, br.y2 + size * 0.15, br.label, size, anchor),
+                           _color(br, pen_color), z)
+            top = " ".join(t for t in (POLYMER_SHORT.get(getattr(br, "polymer", ""), ""),
+                                       getattr(br, "repeat", "")) if t)
+            if top:
+                self._prim(scene, ("text", lx, br.y1 + size * 0.1, top, size * 0.85, anchor),
+                           _color(br, pen_color), z)
             info.bracket_boxes[br.id] = QRectF(br.x1, br.y1, br.x2 - br.x1, br.y2 - br.y1)
+        self._objects(scene, doc, info, z0, pen_color)
         return info
+
+    def _objects(self, scene, doc, info, z0, pen_color) -> None:
+        """Drawing elements, chemical symbols, TLC / gel plates and clipware."""
+        st = self.style
+        groups = (
+            ("shape", doc.shapes, lambda o: obj.shape_primitives(o, st), 3),
+            ("tlc", doc.tlcs, lambda o: obj.tlc_primitives(o, st), 0.2),
+            ("gel", doc.gels, lambda o: obj.gel_primitives(o, st), 0.2),
+            ("clipart", doc.cliparts,
+             lambda o: clip.clipart_primitives(o, st.line_width), 0.3),
+            ("symbol", doc.symbols, lambda o: obj.symbol_primitives(o, st), 3.2))
+        for kind, store, prims, dz in groups:
+            for o in store.values():
+                z = z0 + dz + o.z
+                r = QRectF()
+                for prim in prims(o):
+                    it = self._prim(scene, prim, _color(o, pen_color), z)
+                    if it is not None:
+                        r = r.united(it.sceneBoundingRect())
+                box = obj.object_box(doc, (kind, o.id))
+                if box is not None:
+                    r = r.united(QRectF(QPointF(box[0], box[1]), QPointF(box[2], box[3])))
+                info.object_boxes[(kind, o.id)] = r
 
     def _arrow_text(self, scene, ar, z) -> list:
         rects = []
@@ -370,6 +413,60 @@ class Builder:
         item.setZValue(z0 + 2)
         scene.addItem(item)
 
+    def _side_point(self, doc, atom, box, dist: float, avoid=()) -> tuple[float, float]:
+        ang = free_angle(doc, atom.id, avoid)
+        r = (max(box.width(), box.height()) / 2 if box is not None else 0) + dist
+        return atom.x + r * math.cos(ang), atom.y + r * math.sin(ang)
+
+    def _circled_charge(self, scene, doc, atom, box, z0) -> None:
+        st = self.style
+        r = obj.symbol_radius(st) * 0.8
+        x, y = self._side_point(doc, atom, box, r * 1.4)
+        kind = "circleplus" if atom.charge > 0 else "circleminus"
+        from rsstatchem.core.chem_draw.model import Symbol
+        s2 = st.updated(font_size=st.font_size * 0.8)
+        for prim in obj.symbol_primitives(Symbol(0, x, y, kind), s2):
+            self._prim(scene, prim, QColor(atom.color or "#000000"), z0 + 2)
+        if abs(atom.charge) > 1:
+            self._prim(scene, ("text", x - r * 1.3, y, str(abs(atom.charge)),
+                               st.font_size * 0.7, "r"), QColor("#000000"), z0 + 2)
+
+    def _attachment(self, scene, doc, atom, box, z0) -> None:
+        st = self.style
+        size = st.font_size * 0.6
+        x, y = self._side_point(doc, atom, box, size * 1.1, avoid=(-math.pi / 2,))
+        r = size * 0.75
+        path = QPainterPath()
+        path.addEllipse(QPointF(x, y), r, r)
+        item = QGraphicsPathItem(path)
+        item.setPen(QPen(QColor("#000000"), max(0.4, st.line_width * 0.7)))
+        item.setBrush(Qt.BrushStyle.NoBrush)
+        item.setZValue(z0 + 2)
+        scene.addItem(item)
+        self._prim(scene, ("text", x, y, str(atom.attachment), size, "c"), QColor("#000000"),
+                   z0 + 2)
+
+    def _stereo_text(self, label: str) -> str:
+        return f"({label})" if self.style.stereo_parens else label
+
+    def _stereo_atom(self, scene, doc, atom, box, z0) -> None:
+        size = self.style.font_size * 0.8
+        x, y = self._side_point(doc, atom, box, size * 1.15)
+        self._prim(scene, ("text", x, y, self._stereo_text(atom.stereo), size, "c",
+                           True), QColor(STEREO_COLOR), z0 + 2.5)
+
+    def _stereo_bond(self, scene, doc, b, side, z0) -> None:
+        pa, pb = doc.atoms[b.a], doc.atoms[b.b]
+        dx, dy = pb.x - pa.x, pb.y - pa.y
+        L = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / L, dx / L
+        s = -(side or 1)                        # opposite the second line
+        size = self.style.font_size * 0.8
+        d = self.style.spacing + size * 0.75
+        x, y = (pa.x + pb.x) / 2 + nx * s * d, (pa.y + pb.y) / 2 + ny * s * d
+        self._prim(scene, ("text", x, y, self._stereo_text(b.stereo), size, "c", True),
+                   QColor(STEREO_COLOR), z0 + 2.5)
+
     def _radicals(self, scene, x, y, n, z0):
         r = max(0.8, self.style.line_width * 1.1)
         xs = [x] if n == 1 else [x - r * 1.6, x + r * 1.6]
@@ -384,6 +481,20 @@ class Builder:
 
     def _prim(self, scene, prim, color, z, cap=Qt.PenCapStyle.RoundCap):
         kind = prim[0]
+        if kind == "text":
+            _, x, y, text, size, anchor = prim[:6]
+            italic = len(prim) > 6 and prim[6]
+            runs = chem_text_lines(text, False)[0]
+            w = sum(self.run_widths(runs, size, italic=italic))
+            x0 = x - w / 2 if anchor == "c" else (x - w if anchor == "r" else x)
+            path, _ = self.runs_path(runs, size, x0, y + self.cap_height(size) / 2,
+                                     italic=italic)
+            item = QGraphicsPathItem(path)
+            item.setBrush(QBrush(color))
+            item.setPen(Qt.PenStyle.NoPen)
+            item.setZValue(z)
+            scene.addItem(item)
+            return item
         if kind == "line":
             _, x1, y1, x2, y2, w, dashed = prim
             pen = QPen(color, w)
@@ -405,8 +516,19 @@ class Builder:
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             if dashed:
                 pen.setDashPattern([3.0, 2.4])
-            item.setPen(pen)
-            if fill == "solid":
+            item.setPen(pen if w > 0 else QPen(Qt.PenStyle.NoPen))
+            if fill and fill.startswith("#"):
+                item.setBrush(QBrush(QColor(fill)))
+            elif fill == "fade":
+                r = path.boundingRect()
+                g = QLinearGradient(r.topLeft(), r.bottomLeft())
+                base = QColor(color)
+                if base.lightness() < 40:
+                    base = QColor("#7A7A7A")
+                g.setColorAt(0.0, base)
+                g.setColorAt(1.0, QColor("#FFFFFF"))
+                item.setBrush(QBrush(g))
+            elif fill == "solid":
                 item.setBrush(QBrush(color))
             elif fill == "white":
                 item.setBrush(QBrush(QColor("#FFFFFF")))
@@ -443,6 +565,29 @@ class Builder:
         item.setZValue(z)
         scene.addItem(item)
         return item
+
+
+STEREO_COLOR = "#000000"
+POLYMER_SHORT = {"copolymer": "co", "alternating": "alt", "random": "ran", "block": "blk",
+                 "graft": "grf", "mer": "mer", "monomer": "mon", "crosslink": "xl",
+                 "mixture": "mix", "component": "c"}
+
+
+def free_angle(doc: Document, aid: int, avoid=()) -> float:
+    """Direction around an atom farthest from its bonds, symbols and ``avoid`` angles
+    (prefers up-right, where ChemDraw puts charges)."""
+    a = doc.atoms[aid]
+    taken = [math.atan2(doc.atoms[n].y - a.y, doc.atoms[n].x - a.x)
+             for n in doc.neighbors(aid)]
+    taken += [s.angle for s in doc.symbols_of(aid)] + list(avoid)
+    cands = [-math.pi / 4 + k * math.pi / 4 for k in range(8)]
+
+    def gap(c):
+        return min((abs(math.remainder(c - t, 2 * math.pi)) for t in taken),
+                   default=math.pi)
+    # any direction at least 60 deg from everything is fine; then prefer up-right
+    return max(cands, key=lambda c: (min(gap(c), math.pi / 3 + 1e-6),
+                                     -abs(math.remainder(c + math.pi / 4, 2 * math.pi))))
 
 
 def _color(obj, default: QColor) -> QColor:

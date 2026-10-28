@@ -3,6 +3,8 @@
 Buttons with a small corner triangle open a fly-out palette (press and hold, or right-click),
 like ChemDraw's bond, arrow, bracket and chemical-symbol palettes; picking a tool from a
 fly-out puts it on the button. The Templates button opens the template library menu.
+
+Tooltips name the ChemDraw 17.1 generic hotkey of a tool in brackets (e.g. "[x]").
 """
 from __future__ import annotations
 
@@ -21,25 +23,47 @@ PALETTE: list[list[tuple[str, str]]] = [
     [("select", "Marquee: select with a rectangle; drag selected objects to move them")],
     [("rotate", "Rotate: drag to rotate the selection (or the structure under the pointer)")],
     [("eraser", "Eraser: click or drag over objects to delete them")],
-    [("bond:single", "Solid Bond: click to add a bond, click a bond to cycle "
+    [("bond:single", "Solid Bond [x]: click to add a bond, click a bond to cycle "
                      "single / double / triple, drag to draw at fixed angles")],
-    [("text", "Text: click an atom to type a label (OH, Ph, CO2Me...), click elsewhere "
+    [("text", "Text [t]: click an atom to type a label (OH, Ph, CO2Me...), click elsewhere "
               "for a caption")],
     [("bond:double", "Double Bond"), ("bond:triple", "Triple Bond"),
-     ("bond:aromatic", "Aromatic (dashed double) Bond")],
-    [("arrow:forward", "Reaction Arrow"), ("arrow:equilibrium", "Equilibrium Arrow"),
+     ("bond:aromatic", "Aromatic (dashed double) Bond"),
+     ("bond:quadruple", "Quadruple Bond"), ("bond:bolddouble", "Bold Double Bond")],
+    [("arrow:forward", "Reaction Arrow [e]"), ("arrow:equilibrium", "Equilibrium Arrow"),
+     ("arrow:unbalanced", "Unbalanced Equilibrium Arrow"),
      ("arrow:retro", "Retrosynthetic Arrow"), ("arrow:resonance", "Resonance Arrow"),
-     ("arrow:curved", "Curved Arrow (electron pair)"),
-     ("arrow:fishhook", "Fishhook Arrow (single electron)"), ("arrow:line", "Line")],
+     ("arrow:nogo", "No-Go Arrow (reaction does not occur)"),
+     ("arrow:curved", "Curved Arrow (electron pair): drag from a lone pair, atom or bond "
+                      "to an atom or bond to anchor it"),
+     ("arrow:fishhook", "Fishhook Arrow (single electron)"),
+     ("arrow:double", "Double-Headed Arrow (bendable)"),
+     ("arrow:block", "Block Arrow"), ("arrow:dipole", "Dipole Arrow"),
+     ("arrow:arc:90", "Arc Arrow, 90°"), ("arrow:arc:180", "Arc Arrow, 180°"),
+     ("arrow:arc:270", "Arc Arrow, 270°"), ("arrow:line", "Line")],
     [("bond:dashed", "Dashed Bond"), ("bond:hashed", "Hashed Bond"),
      ("bond:dative", "Dative Bond (arrow from donor to acceptor)")],
     [("plus", "Plus sign (reaction)")],
     [("bond:hash", "Hashed Wedged Bond (stereo, down)")],
-    [("bracket:square", "Square Brackets (drag, or click with a selection)"),
-     ("bracket:round", "Parentheses"), ("bracket:curly", "Braces")],
+    [("bracket:square", "Square Brackets [Shift+t] (drag, or click with a selection); "
+                        "double-click for Bracket Properties (polymer SRU, copolymer...)"),
+     ("bracket:round", "Parentheses"), ("bracket:curly", "Braces"),
+     ("bracket:square:left", "Left Square Bracket"),
+     ("bracket:square:right", "Right Square Bracket"),
+     ("bracket:round:left", "Left Parenthesis"), ("bracket:round:right", "Right Parenthesis"),
+     ("bracket:curly:left", "Left Brace"), ("bracket:curly:right", "Right Brace")],
     [("bond:bold", "Bold Bond")],
-    [("charge+", "Positive Charge"), ("charge-", "Negative Charge"),
-     ("radical", "Radical"), ("map", "Atom-to-Atom Map Number")],
+    [("charge+", "Positive Charge [Shift+e: Chemical Symbols]"),
+     ("charge-", "Negative Charge"), ("radical", "Radical"),
+     ("symbol:lonepair", "Lone Pair (click an atom to attach it, or click in space)"),
+     ("symbol:electron", "Electron (radical dot)"),
+     ("symbol:circleplus", "Circled Plus (charge)"),
+     ("symbol:circleminus", "Circled Minus (charge)"),
+     ("symbol:radicalcation", "Radical Cation"), ("symbol:radicalanion", "Radical Anion"),
+     ("symbol:deltaplus", "Partial Positive Charge (δ+)"),
+     ("symbol:deltaminus", "Partial Negative Charge (δ−)"),
+     ("symbol:dagger", "Dagger (†)"), ("symbol:ddagger", "Double Dagger (‡)"),
+     ("map", "Atom-to-Atom Map Number")],
     [("bond:wedge", "Wedged Bond (stereo, up)"),
      ("bond:hollow", "Hollow Wedged Bond (stereo, up)")],
     [("periodic", "Periodic Table...")],
@@ -56,11 +80,11 @@ PALETTE: list[list[tuple[str, str]]] = [
     [("ring:cyclohexane", "Cyclohexane Ring")],
     [("ring:cycloheptane", "Cycloheptane Ring")],
     [("ring:cyclooctane", "Cyclooctane Ring")],
-    [("ring:benzene", "Benzene Ring")],
-    [("ring:cyclopentadiene", "Cyclopentadiene Ring")],
+    [("ring:benzene", "Benzene Ring [j]")],
+    [("ring:cyclopentadiene", "Cyclopentadiene Ring [Shift+j]")],
     [("ring:chair1", "Cyclohexane Chair 1")],
     [("ring:chair2", "Cyclohexane Chair 2")],
-    [("pen", "Pen: click for corner points, drag for smooth points, click the first point to "
+    [("pen", "Pen [l]: click for corner points, drag for smooth points, click the first point to "
              "close; double-click or Esc to finish. Style from the Curves menu")],
     [("orbital:p:shaded", "p Orbital, shaded (click an atom, or drag to size and turn)"),
      ("orbital:s:shaded", "s Orbital, shaded"), ("orbital:lobe:shaded", "Single Lobe, shaded"),
@@ -73,9 +97,26 @@ PALETTE: list[list[tuple[str, str]]] = [
      ("orbital:dxy:phase", "d(xy) Orbital, phased"),
      ("orbital:dz2:phase", "d(z²) Orbital, phased"),
      ("orbital:p:plain", "p Orbital, unshaded")],
-    [("fragment", "Mass Fragmentation Tool: drag a line across bonds to see the fragment "
+    [("fragment", "Mass Fragmentation Tool [k]: drag a line across bonds to see the fragment "
                   "formulas and masses")],
     [("perspective", "Structure Perspective: rotate the selected molecule in 3D...")],
+    [("shape:rect", "Rectangle [Shift+l: Drawing Elements] (drag a box)"),
+     ("shape:roundrect", "Rounded Rectangle"), ("shape:shadowrect", "Shadowed Rectangle"),
+     ("shape:circle", "Circle (drag from the centre)"),
+     ("shape:ellipse", "Oval (Shift: circle)"), ("shape:arc:90", "Arc, 90°"),
+     ("shape:arc:120", "Arc, 120°"), ("shape:arc:180", "Arc, 180°"),
+     ("shape:arc:270", "Arc, 270°")],
+    [("tlc", "TLC Plate [g]: drag a plate (the width sets the lanes); click a lane to add a "
+             "spot, drag spots to set Rf (Shift+drag: size / smear), right-click for options"),
+     ("gel", "Gel Electrophoresis Plate: drag a plate; click a lane to add a band, "
+             "right-click for lanes, range, scale and band sizes")],
+    [("clipart:beaker", "Clipware: Beaker (click to place)"),
+     ("clipart:erlenmeyer", "Erlenmeyer Flask"), ("clipart:roundbottom", "Round-Bottom Flask"),
+     ("clipart:testtube", "Test Tube"), ("clipart:cylinder", "Graduated Cylinder"),
+     ("clipart:funnel", "Funnel"), ("clipart:sepfunnel", "Separatory Funnel"),
+     ("clipart:condenser", "Liebig Condenser"), ("clipart:burette", "Burette"),
+     ("clipart:thermometer", "Thermometer"), ("clipart:petri", "Petri Dish"),
+     ("clipart:vial", "Vial")],
 ]
 TOOL_TIPS = {tid: tip for slot in PALETTE for tid, tip in slot}
 _ACTIONS = {"periodic", "perspective"}
@@ -207,6 +248,11 @@ class MainToolbar(QToolBar):
             self.buttons[k].setProperty("tool", tid)
         if self.buttons[k].isCheckable():
             self.buttons[k].setChecked(True)
+
+    def current_of(self, tid: str) -> str:
+        """Tool currently shown on the slot that holds ``tid`` (``tid`` if none)."""
+        k = self.slot_of(tid)
+        return tid if k is None else self.current[k]
 
     def button_for(self, tid: str) -> QToolButton | None:
         k = self.slot_of(tid)

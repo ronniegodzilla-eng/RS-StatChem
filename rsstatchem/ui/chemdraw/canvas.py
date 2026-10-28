@@ -132,7 +132,7 @@ class PageCanvas(ChemCanvas):
     def fit_later(self) -> None:
         self._fit_pending = True
         if self.isVisible():
-            QTimer.singleShot(0, self._do_pending_fit)
+            QTimer.singleShot(0, self, self._do_pending_fit)
 
     def _do_pending_fit(self) -> None:
         if getattr(self, "_fit_pending", False):
@@ -144,7 +144,7 @@ class PageCanvas(ChemCanvas):
         if not self._centered:
             self._centered = True
             if not getattr(self, "_fit_pending", False):
-                QTimer.singleShot(0, self.show_page_top)
+                QTimer.singleShot(0, self, self.show_page_top)
 
     def wheelEvent(self, e) -> None:  # noqa: N802
         if e.modifiers() & (Qt.KeyboardModifier.ControlModifier |
