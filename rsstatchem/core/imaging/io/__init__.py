@@ -276,9 +276,31 @@ def format_key(fmt: str | None, path=None) -> str:
     raise ValueError(f"Unsupported save() or saveAs() file format: \"{fmt}\"")
 
 
+def _as_8bit(doc: ImageDoc) -> ImageDoc:
+    """8-bit copy scaled with the display range ("8-bit TIFF" of Process > Batch)."""
+    import numpy as np
+
+    from rsstatchem.core.imaging.lut import render, to_8bit
+    if doc.bit_depth == 8 and not doc.is_rgb:
+        return doc
+    if doc.is_rgb:
+        planes = np.stack([render(doc, *doc.position_of(i)).mean(axis=2)
+                           for i in range(doc.stack_size)]).astype(np.uint8)
+    else:
+        planes = np.stack([to_8bit(doc.plane(*doc.position_of(i)),
+                                   *doc.display_ranges[doc.position_of(i)[0]])
+                           for i in range(doc.stack_size)])
+    out = ImageDoc.from_array(planes, "ZYX", doc.title)
+    out.calibration = doc.calibration.copy()
+    return out
+
+
 def save_image(doc: ImageDoc, path, fmt: str | None = None, **options) -> Path:
     """Write ``doc`` as ``fmt`` (ImageJ name or extension). Options: ``intel`` (byte order),
     ``quality`` (JPEG), ``precision`` (text image), ``compression``/``fps`` (AVI)."""
+    if fmt and fmt.strip().lower() == "8-bit tiff":
+        doc = _as_8bit(doc)
+        fmt = "tiff"
     key = format_key(fmt, path)
     ext, writer = WRITERS[key]
     path = Path(path)

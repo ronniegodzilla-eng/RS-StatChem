@@ -175,6 +175,9 @@ class ImageCanvas(QWidget):
         if type(roi).__name__ == "ImageRoi" and hasattr(roi, "pixels"):
             self._draw_image_roi(p, roi, handles)
             return
+        if getattr(roi, "image_data", None) is not None:
+            self._draw_image_roi(p, _ImageData(roi), handles)
+            return
         qc = QColor(color)
         width = roi.stroke_width * self.magnification if roi.stroke_width and \
             roi.stroke_width > 1 else 1.0
@@ -504,6 +507,23 @@ class ImageCanvas(QWidget):
         else:
             self.scroll_by(event.angleDelta().x() / 2, event.angleDelta().y() / 2)
         event.accept()
+
+
+class _ImageData:
+    """Adapter: a selection carrying ``image_data`` (WP-C Edit > Selection > Image to
+    Selection) drawn like an ImageRoi."""
+
+    def __init__(self, roi):
+        x, y, w, h = roi.bounds()
+        self.x, self.y, self.width, self.height = x, y, w, h
+        self.pixels = roi.image_data
+        props = getattr(roi, "properties", {}) or {}
+        try:
+            op = float(props.get("opacity", 100))
+        except ValueError:
+            op = 100.0
+        self.opacity = op / 100.0 if op > 1 else op
+        self.zero_transparent = str(props.get("zero_transparent", "False")) == "True"
 
 
 def handle_points(roi) -> list[tuple[float, float]]:

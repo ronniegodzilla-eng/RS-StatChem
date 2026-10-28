@@ -12,8 +12,8 @@ handling). **Owned by WP-A.**
 * Point: click (shift-click adds); multi-point adds points with the current counter,
   alt-click deletes the nearest point; "Auto-measure" / "Add to ROI Manager" options.
 * Wand: traces the object under the cursor (Wand Tool options: Legacy / 4- / 8-connected,
-  tolerance; the threshold range when the image is thresholded). Uses WP-C's
-  ``core/imaging/roi/wand.py`` (``wand_outline(plane, x, y, ...)``) when present.
+  tolerance; the threshold range when the image is thresholded), through WP-C's port of
+  ImageJ's Wand (``core/imaging/roi/wand.do_wand``).
 * Text: click to place, type, Enter for a new line; magnifier: click = zoom in, right/alt
   click = zoom out; scrolling hand (also the space bar held down); colour picker: click =
   foreground, alt-click = background.
@@ -46,20 +46,19 @@ def _mods(event):
 
 
 # ---------------------------------------------------------------------------------- wand
-def wand_roi(image, x: int, y: int, mode: str = "Legacy", tolerance: float = 0.0):
+def wand_roi(image, x: int, y: int, mode: str = "Legacy", tolerance: float = 0.0,
+             smooth: bool = False):
     """Traced selection of the object containing pixel (x, y)."""
     try:
         from rsstatchem.core.imaging.roi import wand as W  # WP-C port of ij/gui/Wand
-        fn = getattr(W, "wand_outline", None)
+        fn = getattr(W, "do_wand", None)
     except ImportError:
         fn = None
+    if fn is not None and not image.is_rgb:
+        return fn(image, x, y, tolerance, mode, smooth)
     plane = image.plane()
     if image.is_rgb:
         plane = plane.astype(np.float64).sum(axis=2) / 3.0
-    if fn is not None:
-        thr = image.threshold
-        lower, upper = (thr.lower, thr.upper) if thr is not None else (None, None)
-        return fn(plane, x, y, lower=lower, upper=upper, mode=mode, tolerance=tolerance)
     return _wand_fallback(plane, x, y, image.threshold, mode, tolerance)
 
 
@@ -244,7 +243,7 @@ class ToolHandler:
             o = self.options()
             ix, iy = self._ip(x, y)
             r = wand_roi(doc, ix, iy, o.wand_mode if o else "Legacy",
-                         o.wand_tolerance if o else 0.0)
+                         o.wand_tolerance if o else 0.0, o.wand_smooth if o else False)
             self.op, self.base_roi = self._composite_op(shift, alt)
             self._finish(canvas, r)
             return

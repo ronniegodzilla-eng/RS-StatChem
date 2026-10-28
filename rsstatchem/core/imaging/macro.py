@@ -2504,7 +2504,10 @@ def _setautothreshold(it, args, line):
     except ImportError:
         fn = None
     if fn is not None:
-        fn(im, spec, it.session.options)
+        try:
+            fn(im, spec, mode="red")
+        except ValueError as exc:
+            raise MacroError(str(exc), line) from None
         it.updated(im)
         return None
     if "setAutoThreshold" in it.session.registry:
@@ -3076,7 +3079,14 @@ def _fcurname(it, args, line):
 def run_macro(session, code: str, argument: str = "", ui: UIHooks | None = None,
               path: str | None = None, macro_name: str | None = None):
     """Run ImageJ macro ``code``; returns the value of a top-level ``return`` (or None).
-    Errors raise :class:`MacroError`; ``exit`` ends quietly."""
+    Errors raise :class:`MacroError`; ``exit`` ends quietly.
+
+    Batch mode (Process > Batch, ``Interpreter.runBatchMacro``): when the third argument is
+    an ImageDoc, the macro runs on that image (made active temporarily, it need not be open)
+    and the image active at the end is returned; images the macro opened are closed again."""
+    from rsstatchem.core.imaging.image import ImageDoc
+    if isinstance(argument, ImageDoc):
+        return _run_batch(session, code, argument, ui, path)
     prog = parse(code)
     it = Interpreter(session, ui, argument, path)
     try:
@@ -3085,6 +3095,28 @@ def run_macro(session, code: str, argument: str = "", ui: UIHooks | None = None,
         return None
     except RecursionError:
         raise MacroError("Stack overflow", it.line) from None
+
+
+def _run_batch(session, code: str, image, ui=None, path=None):
+    old_active = session.active
+    before = list(session.images)
+    session.active = image
+    try:
+        prog = parse(code)
+        it = Interpreter(session, ui, "", path)
+        it.batch_mode = True
+        try:
+            it.run_program(prog)
+        except MacroExit:
+            pass
+        result = session.active if session.active is not None else image
+    finally:
+        for im in list(session.images):
+            if im not in before:
+                session.close_image(im)
+        session.active = old_active if old_active in session.images else \
+            (session.images[-1] if session.images else None)
+    return result
 
 
 def macro_names(code: str) -> list[str]:

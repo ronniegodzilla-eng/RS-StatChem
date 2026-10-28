@@ -588,8 +588,7 @@ def _apply_imagej_metadata(doc: ImageDoc, page, desc: dict, ij: dict) -> None:
         cal.value_unit = _unescape(desc["vunit"])
     if doc.type == GRAY16 and cal.function == 0 and tuple(cal.coefficients) == (0.0, 1.0):
         cal.function, cal.coefficients = NONE, ()
-    if desc.get("hyperstack") == "true" or doc.n_channels > 1 or \
-            sum(d > 1 for d in doc.dims) >= 2:
+    if doc.stack_size > 1:   # FileOpener: setOpenAsHyperStack only for stacks
         doc.hyperstack = desc.get("hyperstack") == "true" or sum(d > 1 for d in doc.dims) >= 2
     mode = desc.get("mode")
     if doc.is_composite:
