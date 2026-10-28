@@ -1,5 +1,7 @@
-"""Views of the Design branch: design layout, Summary, Graph Columns, Evaluation
-and Notes."""
+"""Views of the Design branch: design layout, Summary, Graph Columns, Evaluation (degrees
+of freedom, terms with power for a signal/noise ratio or delta and sigma, matrix measures,
+alias matrix, leverage; FDS with a precision goal, standard error of design, correlation and
+alias heat maps), Constraints and Notes."""
 from __future__ import annotations
 
 import math
@@ -55,8 +57,11 @@ class DesignPage(QWidget):
 def summary_items(doc) -> list:
     meta = doc.meta
     items: list = []
-    study = {"process": "Response Surface", "mixture": "Mixture"}.get(meta.get("kind"),
-                                                                     "Response Surface")
+    study = {"process": "Response Surface", "mixture": "Mixture",
+             "combined": "Combined (Mixture-Process)"}.get(meta.get("kind"),
+                                                           "Response Surface")
+    if meta.get("design") == "historical":
+        study = "Historical Data" + (" (mixture)" if meta.get("kind") == "mixture" else "")
     if meta.get("design") in designs.FACTORIAL_DESIGNS:
         study = "Factorial"
     elif meta.get("design") == "taguchi":
@@ -82,6 +87,27 @@ def summary_items(doc) -> list:
                                                      str(meta["resolution"]))])
     if meta.get("model"):
         rows.append(["Design Model", str(meta["model"]).replace("_", " ").title()])
+    if meta.get("terms"):
+        rows.append(["Model Terms", ", ".join(model.term_name(model.key_term(t))
+                                              for t in meta["terms"])])
+    if meta.get("criterion"):
+        from rsstatchem.core.doe.optimal import CRITERIA, METHODS
+
+        rows.append(["Optimality", CRITERIA.get(meta["criterion"], meta["criterion"])
+                     + (f", {METHODS.get(meta.get('exchange'), '')}" if meta.get("exchange")
+                        else "")])
+    if meta.get("model_points"):
+        rows.append(["Model / LOF / Replicate Points",
+                     f"{meta['model_points']} / {meta.get('lof_points', 0)} / "
+                     f"{meta.get('replicate_points', 0)}"])
+    if meta.get("conference_order"):
+        rows.append(["Conference Matrix Order", str(meta["conference_order"])
+                     + (f" ({meta['fake_factors']} fake factors)" if meta.get("fake_factors")
+                        else "")])
+    if meta.get("space_filling"):
+        rows.append(["Space Filling", meta["space_filling"]])
+    for c in meta.get("constraints") or []:
+        rows.append(["Constraint", c.get("text", "")])
     if meta.get("taguchi"):
         rows.append(["Orthogonal Array", meta["taguchi"]])
     if meta.get("mixture"):
@@ -102,6 +128,12 @@ def summary_items(doc) -> list:
     for fo in meta.get("foldovers", []):
         rows.append(["Augmented", f"{fo.get('label')}: {fo.get('runs')} runs in block "
                                   f"{fo.get('block')}"])
+    for au in meta.get("augments", []):
+        where = f" in block {au['block']}" if au.get("block") is not None else ""
+        rows.append(["Augmented", f"{au.get('label')}{where}"])
+    for ch in meta.get("design_space_changes", []):
+        rows.append(["Design Space", f"{designs.letter(ch['factor'])} limits set to "
+                                     f"{num(ch['low'])} .. {num(ch['high'])}"])
     if doc.ignored:
         rows.append(["Ignored Runs", str(len(doc.ignored))])
     items.append(Table("Build Information", ["", "Value"], rows))
@@ -117,6 +149,11 @@ def summary_items(doc) -> list:
                           ", ".join(map(str, f.get("labels", []))), "", "", "", ""])
             continue
         typ = "Mixture" if f.get("type") == "mixture" else "Numeric"
+        if not np.any(np.isfinite(vals)):
+            frows.append([designs.letter(j), f["name"], f.get("units", ""), typ, "Continuous",
+                          "", "", f"-1 ↔ {num(f['low'])}" if typ == "Numeric" else "",
+                          f"+1 ↔ {num(f['high'])}" if typ == "Numeric" else "", "", ""])
+            continue
         clo = f"-1 ↔ {num(f['low'])}" if typ == "Numeric" else ""
         chi = f"+1 ↔ {num(f['high'])}" if typ == "Numeric" else ""
         frows.append([designs.letter(j), f["name"], f.get("units", ""),
@@ -238,17 +275,70 @@ class GraphColumnsPage(QWidget):
 
 
 # ---------------------------------------------------------------------------- evaluation
-def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, dict]:
+def model_choices(doc) -> list[tuple[str, str]]:
+    """(label, key) of the models the Evaluation offers."""
+    sp = doc.space()
+    out: list[tuple[str, str]] = []
+    if doc.combined:
+        from rsstatchem.core.doe import terms_combined as tc
+
+        for mname, mkey in tc.MIX_ORDERS:
+            for pname, pkey in tc.PROC_ORDERS:
+                out.append((f"{mname} x {pname}", f"{mkey}*{pkey}"))
+    else:
+        out = [(n, k) for n, k in model.model_orders(sp) if k != "mean"]
+    if doc.meta.get("terms"):
+        out.insert(0, ("Design model (edited)", "design"))
+    return out
+
+
+def default_model_key(doc) -> str:
+    meta = doc.meta
+    if meta.get("terms"):
+        return "design"
+    if doc.combined:
+        mix = meta.get("mixture") or {}
+        return f"{mix.get('model', 'quadratic')}*{mix.get('process_model', 'linear')}"
+    if meta.get("design") == "dsd":
+        return "linear"
+    return meta.get("model") or ("quadratic" if meta.get("design") in
+                                 ("ccd", "bbd", "threelevel", "dopt", "lattice", "mixdopt",
+                                  "ev", "centroid", "onefactor") else "2fi")
+
+
+def _evaluation_inputs(doc):
     sp = doc.space()
     coded = doc.coded_matrix()
     keep = np.ones(len(coded), bool)
     keep[list(doc.ignored)] = False
+    keep &= np.all(np.isfinite(coded), axis=1)
+    for j, f in enumerate(sp.factors):
+        if f.categoric:
+            keep &= coded[:, j] >= 0
     blocks = doc.ds.df["Block"].to_numpy(float)[keep] if doc.n_blocks > 1 else None
+    if blocks is not None and len(np.unique(blocks)) < 2:
+        blocks = None
     groups = doc.ds.df[doc.group_col].to_numpy(float)[keep] if doc.split_plot else None
+    return sp, coded, keep, blocks, groups
+
+
+def evaluation_items(doc, order: str, signal_noise: float = 2.0, alpha: float = 0.05,
+                     delta: float | None = None, sigma: float | None = None
+                     ) -> tuple[list, dict]:
+    sp, coded, keep, blocks, groups = _evaluation_inputs(doc)
     ratio = float((doc.meta.get("split_plot") or {}).get("variance_ratio", 1.0))
-    ev = evaluation.evaluate(sp, coded[keep], order, blocks=blocks, signal_noise=signal_noise,
-                             groups=groups, variance_ratio=ratio)
-    name = next((n for n, o in model.model_orders(sp) if o == order), order)
+    if delta is not None and sigma:
+        signal_noise = delta / sigma
+    terms = doc.model_terms(order)
+    if keep.sum() == 0:
+        raise ValueError("No runs with complete factor settings to evaluate.")
+    ev = evaluation.evaluate(sp, coded[keep], terms=terms, blocks=blocks,
+                             signal_noise=signal_noise, alpha=alpha, groups=groups,
+                             variance_ratio=ratio)
+    ev["order"] = order
+    ev["coded"] = coded[keep]
+    ev["blocks"] = blocks
+    name = next((n for n, o in model_choices(doc) if o == order), order)
     items: list = []
     if ev["aliased"]:
         items.append(Text("Aliased Terms", "These terms cannot be estimated with this design "
@@ -271,11 +361,17 @@ def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, 
                       f"{r['vif']:.3f}" if r["vif"] is not None else "",
                       f"{r['ri2']:.4f}" if r["ri2"] is not None else "",
                       f"{100 * p:.1f} %" if p is not None and math.isfinite(p) else ""])
+    if delta is not None and sigma:
+        power_note = (f"Power at the {100 * alpha:g} % alpha level to detect a change of "
+                      f"{delta:g} with a standard deviation of {sigma:g} (signal/noise "
+                      f"{signal_noise:.3g}).")
+    else:
+        power_note = (f"Power at the {100 * alpha:g} % alpha level to detect a signal/noise "
+                      f"ratio of {signal_noise:g} (an effect of {signal_noise:g} σ).")
     items.append(Table("Terms", ["Term", "Standard Error*", "df", "VIF", "Ri²", "Power"],
                        trows, footnotes=[
                            "* Standard errors in units of the (unknown) standard deviation σ.",
-                           f"Power at the 5 % alpha level to detect a signal/noise ratio of "
-                           f"{signal_noise:g} (an effect of {signal_noise:g} σ)."]))
+                           power_note]))
     notes = []
     vifs = [r["vif"] for r in ev["rows"] if r["vif"]]
     if vifs:
@@ -295,6 +391,42 @@ def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, 
                      "are estimated less precisely and have fewer error degrees of freedom.")
     if notes:
         items.append(annotation("\n".join(notes)))
+    # matrix measures
+    if not ev.get("split_plot") and ev.get("xtx_inv") is not None:
+        try:
+            mm = evaluation.matrix_measures(sp, coded[keep], ev["terms"], blocks,
+                                            doc.constraints)
+        except (ValueError, np.linalg.LinAlgError):
+            mm = {}
+        if mm and not mm.get("singular"):
+            mrows = [["Condition Number of Coefficient Matrix", f"{mm['condition']:.4g}"],
+                     ["Maximum Leverage", f"{mm['max_leverage']:.4f}"],
+                     ["Average Leverage", f"{mm['avg_leverage']:.4f}"],
+                     ["Scaled D-optimality |X'X/n|^(1/p)", f"{mm['scaled_d']:.4g}"],
+                     ["D-efficiency", f"{mm['d_eff']:.2f} %"],
+                     ["A-efficiency", f"{mm['a_eff']:.2f} %"],
+                     ["G-efficiency", f"{mm['g_eff']:.2f} %"],
+                     ["Trace of (X'X)⁻¹", f"{mm['trace']:.4g}"]]
+            if "i_value" in mm:
+                mrows.append(["Average Prediction Variance (I)", f"{mm['i_value']:.4g}"])
+                mrows.append(["Scaled I (n x average variance)", f"{mm['scaled_i']:.4g}"])
+            items.append(Table("Matrix Measures", ["Measure", "Value"], mrows, footnotes=[
+                "Efficiencies use the coded (or L-pseudo) model matrix; 100 % D- and "
+                "A-efficiency is reached by orthogonal two-level designs. The average "
+                "prediction variance is over the design region (constraints included)."]))
+            ev["measures"] = mm
+    # alias list for designs that are not regular fractions
+    if not ev.get("split_plot") and not doc.meta.get("aliases") and not sp.mixture:
+        try:
+            alist = evaluation.alias_list(sp, coded[keep], ev["terms"], None, blocks)
+        except (ValueError, np.linalg.LinAlgError):
+            alist = []
+        partial = [a for a in alist if "+" in a.split("=", 1)[1] or " - " in a]
+        if partial:
+            items.append(Table("Alias Matrix (next-order terms)", ["Aliases"],
+                               [[a] for a in alist], row_header_cols=0,
+                               footnotes=["Expected value of each coefficient if the "
+                                          "omitted next-order terms are active."]))
     lev = ev["leverage"]
     order_idx = doc.row_order("run")
     pos = np.flatnonzero(keep)
@@ -304,8 +436,9 @@ def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, 
         if row not in where:
             continue
         i = where[row]
+        st = doc.value(row, 'Space_Type')
         lrows.append([f"{doc.value(row, 'Run'):g}", f"{lev[i]:.3f}",
-                      designs.SPACE_TYPES.get(int(doc.value(row, 'Space_Type')), "")])
+                      designs.SPACE_TYPES.get(int(st), "") if math.isfinite(st) else ""])
     p = ev["p"]
     items.append(Table("Leverage", ["Run", "Leverage", "Space Type"], lrows,
                        footnotes=[f"Average leverage = p/n = {p}/{ev['n']} = "
@@ -315,38 +448,106 @@ def evaluation_items(doc, order: str, signal_noise: float = 2.0) -> tuple[list, 
     return items, ev
 
 
+EVAL_GRAPHS = [("fds", "FDS Graph"), ("se", "Standard Error of Design"),
+               ("corr", "Correlation of Coefficients"), ("pearson", "Correlation (Pearson r)"),
+               ("alias", "Alias Matrix")]
+
+
 class EvaluationPage(QWidget):
     def __init__(self, doc, parent=None):
         super().__init__(parent)
+        from PySide6.QtWidgets import QCheckBox
+
         self.doc = doc
-        sp = doc.space()
         self.order = QComboBox()
-        for name, key in model.model_orders(sp):
-            if key != "mean":
-                self.order.addItem(name, key)
-        default = doc.meta.get("model") or ("quadratic" if doc.meta.get("design") in
-                                            ("ccd", "bbd", "threelevel", "dopt", "lattice",
-                                             "mixdopt", "ev", "centroid") else "2fi")
-        i = self.order.findData(default)
+        for name, key in model_choices(doc):
+            self.order.addItem(name, key)
+        i = self.order.findData(default_model_key(doc))
         self.order.setCurrentIndex(i if i >= 0 else 0)
         self.sn = QDoubleSpinBox()
         self.sn.setRange(0.1, 10)
         self.sn.setValue(2.0)
         self.sn.setSingleStep(0.5)
-        self.order.currentIndexChanged.connect(lambda _: self.refresh())
-        self.sn.valueChanged.connect(lambda _: self.refresh())
+        self.use_delta = QCheckBox("Delta / sigma:")
+        self.delta = QDoubleSpinBox()
+        self.delta.setRange(1e-6, 1e9)
+        self.delta.setDecimals(4)
+        self.delta.setValue(2.0)
+        self.sigma = QDoubleSpinBox()
+        self.sigma.setRange(1e-6, 1e9)
+        self.sigma.setDecimals(4)
+        self.sigma.setValue(1.0)
+        self.alpha = QComboBox()
+        for a in (0.01, 0.05, 0.10):
+            self.alpha.addItem(f"{a:g}", a)
+        self.alpha.setCurrentIndex(1)
+        self.graph_kind = QComboBox()
+        for key, text in EVAL_GRAPHS:
+            self.graph_kind.addItem(text, key)
+        self.fds_type = QComboBox()
+        self.fds_type.addItem("Mean", "mean")
+        self.fds_type.addItem("Prediction", "prediction")
+        self.fds_d = QDoubleSpinBox()
+        self.fds_d.setRange(0, 1e9)
+        self.fds_d.setDecimals(4)
+        self.fds_d.setValue(0.0)
+        self.fds_d.setToolTip("Acceptable half-width d of the interval (0 = no goal)")
+        self.xf, self.yf = QComboBox(), QComboBox()
+        sp = doc.space()
+        for j, f in enumerate(sp.factors):
+            if not f.categoric:
+                self.xf.addItem(doc.factor_title(j), j)
+                self.yf.addItem(doc.factor_title(j), j)
+        if self.yf.count() > 1:
+            self.yf.setCurrentIndex(1)
+        for w in (self.order, self.alpha, self.graph_kind, self.fds_type, self.xf, self.yf):
+            w.currentIndexChanged.connect(lambda _: self.refresh())
+        for w in (self.sn, self.delta, self.sigma, self.fds_d):
+            w.valueChanged.connect(lambda _: self.refresh())
+        self.use_delta.toggled.connect(lambda _: self.refresh())
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Model:"))
         bar.addWidget(self.order)
-        bar.addSpacing(16)
+        bar.addSpacing(12)
         bar.addWidget(QLabel("Signal/noise ratio for power:"))
         bar.addWidget(self.sn)
+        bar.addWidget(self.use_delta)
+        bar.addWidget(self.delta)
+        bar.addWidget(QLabel("σ"))
+        bar.addWidget(self.sigma)
+        bar.addWidget(QLabel("α"))
+        bar.addWidget(self.alpha)
         bar.addStretch(1)
+        gbar = QHBoxLayout()
+        gbar.addWidget(QLabel("Graph:"))
+        gbar.addWidget(self.graph_kind)
+        self.fds_box = QWidget()
+        fl = QHBoxLayout(self.fds_box)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(QLabel("FDS for:"))
+        fl.addWidget(self.fds_type)
+        fl.addWidget(QLabel("d:"))
+        fl.addWidget(self.fds_d)
+        self.se_box = QWidget()
+        sl = QHBoxLayout(self.se_box)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.addWidget(QLabel("X:"))
+        sl.addWidget(self.xf)
+        sl.addWidget(QLabel("Y:"))
+        sl.addWidget(self.yf)
+        gbar.addWidget(self.fds_box)
+        gbar.addWidget(self.se_box)
+        gbar.addStretch(1)
         self.report = ReportView()
         self.graph = GraphView()
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addLayout(gbar)
+        rl.addWidget(self.graph, 1)
         split = QSplitter()
         split.addWidget(self.report)
-        split.addWidget(self.graph)
+        split.addWidget(right)
         split.setSizes([560, 440])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -355,23 +556,215 @@ class EvaluationPage(QWidget):
                              "response data needed.)"))
         lay.addLayout(bar)
         lay.addWidget(split, 1)
+        self.ev = None
         self.refresh()
+
+    def set_graph(self, key: str) -> None:
+        self.graph_kind.setCurrentIndex(self.graph_kind.findData(key))
 
     def refresh(self) -> None:
         order = self.order.currentData() or "linear"
+        use_delta = self.use_delta.isChecked()
+        self.sn.setEnabled(not use_delta)
+        self.delta.setEnabled(use_delta)
+        self.sigma.setEnabled(use_delta)
+        kind = self.graph_kind.currentData()
+        self.fds_box.setVisible(kind == "fds")
+        self.se_box.setVisible(kind == "se")
         try:
-            items, ev = evaluation_items(self.doc, order, self.sn.value())
-        except (ValueError, np.linalg.LinAlgError) as exc:
+            items, ev = evaluation_items(
+                self.doc, order, self.sn.value(), self.alpha.currentData() or 0.05,
+                self.delta.value() if use_delta else None,
+                self.sigma.value() if use_delta else None)
+        except (ValueError, np.linalg.LinAlgError, KeyError) as exc:
             self.report.set_items([Text("Evaluation", str(exc), style="warning")])
             self.graph.set_message(str(exc))
             return
-        self.report.set_items(items, "Evaluation")
-        frac, se = evaluation.fds_curve(self.doc.space(), ev)
-        if len(frac):
-            self.graph.set_png(plots.fds_plot(frac, se, f"FDS Graph ({self.order.currentText()}"
-                                                        " model)"), "fds_graph")
-        else:
-            self.graph.set_message("The FDS graph is not available for this model.")
+        self.ev = ev
+        extra = self._graph(ev)
+        self.report.set_items(items + extra, "Evaluation")
+
+    def _graph(self, ev) -> list:
+        from rsstatchem.core.doe import plots_design
+
+        sp = self.doc.space()
+        kind = self.graph_kind.currentData()
+        title_model = self.order.currentText()
+        if ev.get("xtx_inv") is None:
+            self.graph.set_message("The model cannot be estimated with this design.")
+            return []
+        if kind == "fds":
+            ftype = self.fds_type.currentData()
+            if self.doc.constraints or getattr(sp, "combined", False):
+                se = evaluation.fds_values(sp, ev, kind=ftype, constraints=self.doc.constraints)
+            else:
+                _, se = evaluation.fds_curve(sp, ev)
+                if ftype == "prediction":
+                    se = np.sqrt(se ** 2 + 1)
+            if not len(se):
+                self.graph.set_message("The FDS graph is not available for this model.")
+                return []
+            d = self.fds_d.value()
+            out = []
+            limit = frac = None
+            if d > 0:
+                sigma = self.sigma.value() if self.use_delta.isChecked() else 1.0
+                sc = evaluation.fds_score(se, d, sigma, self.alpha.currentData() or 0.05,
+                                          ev["df"]["Residuals"])
+                limit, frac = sc["limit"], sc["fraction"]
+                out.append(Table("FDS Score", ["", "Value"], [
+                    ["Half-width d", f"{d:g}"], ["σ", f"{sigma:g}"],
+                    ["α", f"{self.alpha.currentData():g}"],
+                    ["t value", f"{sc['t']:.4f}"],
+                    ["Required SE (σ units)", f"{limit:.4f}"],
+                    ["Fraction of design space", f"{100 * frac:.1f} %" if math.isfinite(frac)
+                     else ""]],
+                    footnotes=["Aim for at least 80 % of the design space with the "
+                               "half-width at or below d."]))
+            self.graph.set_png(plots_design.fds_plot(
+                se, f"FDS Graph ({title_model} model)", limit, frac,
+                "Std Error Mean" if ftype == "mean" else "Std Error Prediction"), "fds_graph")
+            return out
+        if kind == "se":
+            i, j = self.xf.currentData(), self.yf.currentData()
+            if i is None or j is None or i == j:
+                self.graph.set_message("Choose two different numeric factors.")
+                return []
+            fixed = np.zeros(sp.k)
+            if sp.mixture:
+                reg = self.doc.region()
+                fixed[reg.cont] = reg.centroid()
+            G1, G2, se = evaluation.se_grid(sp, ev, i, j, fixed)
+            pts = ev["coded"][:, [i, j]]
+            self.graph.set_png(plots_design.se_contour(
+                G1, G2, se, self.doc.factor_title(i) + " (coded)",
+                self.doc.factor_title(j) + " (coded)", pts,
+                f"Standard Error of Design ({title_model})"), "se_design")
+            return []
+        if kind in ("corr", "pearson"):
+            c = evaluation.correlations(sp, ev["coded"], ev["terms"], ev.get("blocks"))
+            if kind == "corr":
+                R, labels, title = c["coef"], c["labels"], "Correlation of Coefficients"
+            else:
+                R, labels, title = c["r"], c["r_labels"], "Correlation of Model Columns (r)"
+            self.graph.set_png(plots_design.heatmap(R, labels, None, title), "correlation")
+            return []
+        rows, cols, A = evaluation.alias_matrix(sp, ev["coded"], ev["terms"], None,
+                                                ev.get("blocks"))
+        if not cols:
+            self.graph.set_message("No omitted terms to check for aliasing.")
+            return []
+        self.graph.set_png(plots_design.heatmap(A, rows, cols, "Alias Matrix"), "alias")
+        return [Table("Alias Matrix", [""] + cols,
+                      [[r] + [f"{v:.3g}" if abs(v) > 1e-9 else "" for v in A[i]]
+                       for i, r in enumerate(rows)])]
+
+
+# ---------------------------------------------------------------------------- constraints
+class ConstraintsPage(QWidget):
+    """Design > Constraints: the multiple linear constraints of the design region, its
+    vertices, runs outside the region and a two-factor view of the region."""
+
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QPushButton
+
+        self.doc = doc
+        self.edit_btn = QPushButton("Edit Constraints...")
+        self.edit_btn.clicked.connect(self.edit)
+        self.xf, self.yf = QComboBox(), QComboBox()
+        sp = doc.space()
+        for j, f in enumerate(sp.factors):
+            if not f.categoric:
+                self.xf.addItem(doc.factor_title(j), j)
+                self.yf.addItem(doc.factor_title(j), j)
+        if self.yf.count() > 1:
+            self.yf.setCurrentIndex(1)
+        for w in (self.xf, self.yf):
+            w.currentIndexChanged.connect(lambda _: self.refresh())
+        bar = QHBoxLayout()
+        bar.addWidget(self.edit_btn)
+        bar.addSpacing(16)
+        bar.addWidget(QLabel("Plot X:"))
+        bar.addWidget(self.xf)
+        bar.addWidget(QLabel("Y:"))
+        bar.addWidget(self.yf)
+        bar.addStretch(1)
+        self.report = ReportView()
+        self.graph = GraphView()
+        split = QSplitter()
+        split.addWidget(self.report)
+        split.addWidget(self.graph)
+        split.setSizes([520, 480])
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.addWidget(page_title("Constraints"))
+        lay.addLayout(bar)
+        lay.addWidget(split, 1)
+        self.dialog = None
+        self.refresh()
+
+    def edit(self):
+        from rsstatchem.ui.dx.wizard import ConstraintsDialog
+
+        doc = self.doc
+        names = [f["name"] for f in doc.factors if not doc.combined or
+                 f.get("type") == "mixture"]
+        dlg = ConstraintsDialog(names, [c.get("text", "") for c in doc.constraints], self)
+
+        def done(result):
+            if result:
+                doc.set_constraints(dlg.constraints)
+                self.refresh()
+        dlg.finished.connect(done)
+        dlg.open()
+        self.dialog = dlg
+        return dlg
+
+    def refresh(self) -> None:
+        from rsstatchem.core.doe import constraints as cons
+        from rsstatchem.core.doe import plots_design
+
+        doc = self.doc
+        items: list = []
+        texts = cons.describe(doc.constraints)
+        items.append(Table("Multiple Linear Constraints", ["Constraint"],
+                           [[t] for t in texts] or [["(none: box limits only)"]],
+                           row_header_cols=0,
+                           footnotes=["Constraints are in actual units with the factor "
+                                      "letters. Edit them, then augment the design (or build "
+                                      "a new optimal design) to use the new region."]))
+        try:
+            reg = doc.region()
+            V = reg.vertices()
+        except ValueError as exc:
+            items.append(Text("Region", str(exc), style="warning"))
+            self.report.set_items(items, "Constraints")
+            self.graph.set_message(str(exc))
+            return
+        sp = doc.space()
+        cont = reg.cont
+        full = np.zeros((len(V), sp.k))
+        full[:, cont] = V
+        actual = sp.to_actual(full)
+        heads = [doc.factor_title(j) for j in cont]
+        items.append(Table(f"Vertices of the Design Region ({len(V)})", ["Vertex"] + heads,
+                           [[str(i + 1)] + [num(actual[i, j]) for j in cont]
+                            for i in range(len(V))]))
+        bad = doc.infeasible_runs()
+        if bad:
+            runs = ", ".join(f"{doc.value(r, 'Run'):g}" for r in bad)
+            items.append(Text("Runs Outside the Region", f"Runs {runs} violate the "
+                              "constraints.", style="warning"))
+        self.report.set_items(items, "Constraints")
+        i, j = self.xf.currentData(), self.yf.currentData()
+        if i is None or j is None or i == j:
+            self.graph.set_message("Choose two different factors.")
+            return
+        pts = doc.ds.df[[doc.factor_cols[i], doc.factor_cols[j]]].to_numpy(float)
+        self.graph.set_png(plots_design.region_points(
+            actual[:, [i, j]], pts, (doc.factor_title(i), doc.factor_title(j)),
+            "Design Region and Runs"), "constraints")
 
 
 # ---------------------------------------------------------------------------- notes

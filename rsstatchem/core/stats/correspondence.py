@@ -159,7 +159,11 @@ def correspondence(ds: Dataset, row: str, col: str, row_range=None, col_range=No
     sec.table(Table("Summary", ["Dimension", "Singular Value", "Inertia", "Chi Square", "Sig.ᵃ",
                                 ("Proportion of Inertia", "Accounted for"),
                                 ("Proportion of Inertia", "Cumulative")], rows,
-                    footnotes=[f"a. {df} degrees of freedom."]))
+                    footnotes=[f"a. {df} degrees of freedom.",
+                               "The orientation (sign) of each dimension is arbitrary and the "
+                               "rule SPSS uses is not documented by IBM; here the largest "
+                               "absolute column coordinate of each dimension is positive. "
+                               "Reversing a dimension changes no other statistic."]))
     d = res.dims
 
     def overview(rows_: bool):

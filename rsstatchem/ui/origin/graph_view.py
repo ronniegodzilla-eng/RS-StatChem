@@ -51,6 +51,7 @@ class _TextEditor(QLineEdit):
 
 class OriginGraphWindow(gw.GraphWindow):
     main = None   # the Origin main window (set after construction)
+    gadget = None  # active ROI gadget tool (ui/origin/gadgets_ui.py)
 
     def __init__(self, graph: Graph, main=None, path: str | None = None):
         super().__init__(graph, None, path)
@@ -200,7 +201,27 @@ class OriginGraphWindow(gw.GraphWindow):
             return
         self.commit_text()
 
+    def set_tool(self, tool) -> None:
+        if self.gadget is not None:
+            self.gadget = None
+        super().set_tool(tool)
+
+    def _on_motion(self, event) -> None:
+        if self.gadget is not None:
+            self.gadget.motion(event)
+            return
+        super()._on_motion(event)
+
+    def _on_release(self, event) -> None:
+        if self.gadget is not None:
+            self.gadget.release(event)
+            return
+        super()._on_release(event)
+
     def _on_press(self, event) -> None:
+        if self.gadget is not None:
+            self.gadget.press(event)
+            return
         if self._editing is not None:
             self.commit_text()
         if event.dblclick and event.button == 1 and not self._place and \

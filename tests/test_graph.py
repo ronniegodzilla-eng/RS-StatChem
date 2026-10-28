@@ -50,7 +50,9 @@ def _spec(key: str) -> tuple[str, PlotSpec]:
     """A sensible spec for each template: (which dataset, spec)."""
     xyz = {"contour": ("gx", "gy", "gz"), "heatmap": ("gx", "gy", "gz"),
            "surface3d": ("rx", "ry", "rz"), "scatter3d": ("rx", "ry", "rz"),
-           "ternary": ("a", "b", "c")}
+           "ternary": ("a", "b", "c"), "bar3d": ("gx", "gy", "gz"),
+           "line3d": ("rx", "ry", "rz"), "vector": ("gx", "gy", "theta"),
+           "floating_column": ("theta", "a", "b")}
     if key in xyz:
         x, y, z = xyz[key]
         return "xyz", PlotSpec(key, x=x, ys=[y], z=z)

@@ -1,7 +1,11 @@
 """Structure <-> name for ChemDraw's *Convert Structure to Name* / *Convert Name to Structure*.
 
-RDKit has no IUPAC naming, so names come from honest sources and are never generated:
+RDKit has no IUPAC naming, so names come from honest sources; a generated name is only used
+after OPSIN has parsed it back to the same structure:
 
+0. structure -> name: the rule-based namer of :mod:`iupac_namer` for teaching-level classes
+   (alkanes to amines, benzene derivatives), accepted only when OPSIN round-trips the name to
+   the same standard InChIKey (:func:`generated_name`, :func:`structure_name`);
 1. an offline dictionary of common compounds (name, systematic name, SMILES) plus the
    template library; structures are matched by their full InChIKey (so stereo matters);
 2. the offline name database ``resources/names/name_db.tsv.xz`` (InChIKey -> PubChem IUPAC
@@ -34,7 +38,8 @@ from functools import lru_cache
 __all__ = ["COMMON_COMPOUNDS", "NameResult", "NameLookupError", "offline_name",
            "offline_structure", "pubchem_name", "pubchem_structure", "PUBCHEM", "db_name",
            "db_structure", "name_db_path", "name_db_size", "find_java", "opsin_jar",
-           "opsin_available", "opsin_structure", "opsin_structures", "OPSIN_LOGGING"]
+           "opsin_available", "opsin_structure", "opsin_structures", "OPSIN_LOGGING",
+           "generated_name", "generated_names", "structure_name", "GENERATED_SOURCE"]
 
 PUBCHEM = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 TIMEOUT = 12.0
@@ -143,6 +148,7 @@ _SYNONYMS = {"acetylsalicylic acid": "aspirin", "acetaminophen": "paracetamol",
 
 
 DB_SOURCE = "offline database (PubChem data)"
+GENERATED_SOURCE = "rule-based IUPAC namer, checked by OPSIN"
 OPSIN_SOURCE = "OPSIN (offline)"
 # log4j's simple logger: OPSIN then needs only the java.base and java.xml modules (jlink)
 OPSIN_LOGGING = ("-Dlog4j2.loggerContextFactory="
@@ -445,3 +451,50 @@ def pubchem_structure(name: str, fetch=_get) -> NameResult:
     if "V2000" not in block and "V3000" not in block:
         raise NameLookupError("PubChem sent an unreadable structure.")
     return NameResult(name.strip(), name.strip(), "PubChem", molblock=block)
+
+
+# --- tier 0: generated names (rule-based namer + OPSIN round trip) -----------------------------
+
+_GENERATED: dict[str, str | None] = {}
+
+
+def generated_names(mols, opsin=None) -> list[NameResult | None]:
+    """Rule-based IUPAC names that OPSIN parses back to the same InChIKey (one OPSIN run for
+    all molecules; results cached by InChIKey). None for structures outside the namer's scope,
+    for names OPSIN does not reproduce, and when OPSIN cannot run."""
+    from rsstatchem.core.chem import molecule as mo
+    from rsstatchem.core.chem_draw import iupac_namer
+
+    keys = []
+    for m in mols:
+        try:
+            keys.append(mo.to_inchikey(m))
+        except Exception:  # noqa: BLE001
+            keys.append("")
+    todo = [(i, m) for i, (m, k) in enumerate(zip(mols, keys)) if k and k not in _GENERATED]
+    if todo:
+        try:
+            got = iupac_namer.verified_names([m for _i, m in todo], opsin=opsin)
+        except NameLookupError:
+            got = None                       # OPSIN missing: no generated names, not cached
+        if got is not None:
+            for (i, _m), name in zip(todo, got):
+                _GENERATED[keys[i]] = name
+    out: list[NameResult | None] = []
+    for k in keys:
+        name = _GENERATED.get(k) if k else None
+        out.append(NameResult(name, "", GENERATED_SOURCE) if name else None)
+    return out
+
+
+def generated_name(mol, opsin=None) -> NameResult | None:
+    return generated_names([mol], opsin)[0]
+
+
+def structure_name(mol, generated: bool = True, opsin=None) -> NameResult | None:
+    """Offline structure -> name in tier order: the curated offline list, the verified
+    rule-based name, then the offline PubChem name database."""
+    hit = offline_name(mol)
+    if hit is None and generated:
+        hit = generated_name(mol, opsin)
+    return hit or db_name(mol)

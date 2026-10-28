@@ -9,6 +9,13 @@
   material (categoric, 3 levels), four replicates.
 * Paper pulp (Montgomery Section 14.4): split-plot, pulp preparation method hard to change,
   temperature easy to change, three replicates (days) as blocks.
+* Chemical conversion (Myers & Montgomery, Response Surface Methodology; the experiment of
+  the Stat-Ease RSM tutorial): rotatable CCD in time (40-50 min), temperature (80-90 °C) and
+  catalyst (2-3 %), six centre points, responses conversion and activity (the activity
+  values come from a secondary source; check them against the book).
+* Flare (McLean & Anderson 1966): the constrained four-component mixture of magnesium,
+  sodium nitrate, strontium nitrate and binder; the 15-point extreme-vertices design
+  (8 vertices, 6 face centroids, overall centroid), no responses.
 """
 from __future__ import annotations
 
@@ -133,7 +140,67 @@ def battery_life(with_data: bool = True) -> DesignDocument:
     return doc
 
 
+# coded (time, temperature, catalyst) -> (conversion %, activity), Myers & Montgomery
+_A3 = 1.682
+_CONVERSION = [((-1, -1, -1), 74, 53.2), ((1, -1, -1), 51, 62.9), ((-1, 1, -1), 88, 53.4),
+               ((1, 1, -1), 70, 62.6), ((-1, -1, 1), 71, 57.3), ((1, -1, 1), 90, 67.9),
+               ((-1, 1, 1), 66, 59.8), ((1, 1, 1), 97, 67.8), ((-_A3, 0, 0), 76, 59.1),
+               ((_A3, 0, 0), 79, 65.9), ((0, -_A3, 0), 85, 60.0), ((0, _A3, 0), 97, 60.7),
+               ((0, 0, -_A3), 55, 57.4), ((0, 0, _A3), 81, 63.2), ((0, 0, 0), 81, 59.2),
+               ((0, 0, 0), 75, 60.4), ((0, 0, 0), 76, 59.1), ((0, 0, 0), 83, 60.6),
+               ((0, 0, 0), 80, 60.8), ((0, 0, 0), 91, 58.9)]
+
+
+def chemical_conversion(with_data: bool = True) -> DesignDocument:
+    spec = {"design": "ccd", "name": "Chemical conversion",
+            "factors": [{"name": "Time", "units": "min", "low": 40, "high": 50},
+                        {"name": "Temperature", "units": "°C", "low": 80, "high": 90},
+                        {"name": "Catalyst", "units": "%", "low": 2, "high": 3}],
+            "responses": [{"name": "Conversion", "units": "%"}, {"name": "Activity"}],
+            "options": {"alpha_type": "custom", "alpha": _A3, "center_points": 6},
+            "randomize": True, "seed": 23}
+    doc = DesignDocument.from_spec(spec)
+    if with_data:
+        coded = doc.coded_matrix()
+        pool = list(_CONVERSION)
+        changes = []
+        for row in np.argsort(doc.ds.df["Std"].to_numpy(float)):
+            k = next(i for i, (c, _, _) in enumerate(pool) if np.allclose(c, coded[row],
+                                                                          atol=1e-6))
+            _, conv, act = pool.pop(k)
+            changes += [(int(row), doc.response_cols[0], float(conv)),
+                        (int(row), doc.response_cols[1], float(act))]
+        doc.set_values(changes)
+    doc.notes = ("Myers & Montgomery, Response Surface Methodology: chemical conversion "
+                 "(the Stat-Ease RSM tutorial experiment). Expected: quadratic model for "
+                 "conversion (B = 4.04, AC = 11.375), linear model for activity. Activity "
+                 "values from a secondary source; check them against the book.")
+    doc.modified = False
+    return doc
+
+
+FLARE = [("Magnesium", 0.40, 0.60), ("Sodium nitrate", 0.10, 0.50),
+         ("Strontium nitrate", 0.10, 0.50), ("Binder", 0.03, 0.08)]
+
+
+def flare(with_data: bool = True) -> DesignDocument:
+    spec = {"design": "ev", "name": "Flare (constrained mixture)",
+            "factors": [{"name": n, "low": lo, "high": hi} for n, lo, hi in FLARE],
+            "responses": [{"name": "Illumination"}],
+            "options": {"include": ["vertex", "plane", "centroid"]},
+            "randomize": True, "seed": 13}
+    doc = DesignDocument.from_spec(spec)
+    doc.notes = ("McLean & Anderson (1966) flare: magnesium 0.40-0.60, sodium nitrate "
+                 "0.10-0.50, strontium nitrate 0.10-0.50, binder 0.03-0.08. Eight extreme "
+                 "vertices (the 0.50 upper limits are never active), six face centroids and "
+                 "the overall centroid (0.5, 0.2225, 0.2225, 0.055).")
+    doc.modified = False
+    return doc
+
+
 EXAMPLES = {"chemical": ("Chemical process (CCD, Montgomery 11.2)", chemical_process),
             "filtration": ("Filtration rate (2⁴ factorial, Montgomery 6.2)", filtration_rate),
             "battery": ("Battery life (numeric x categoric, Montgomery 5.1)", battery_life),
-            "pulp": ("Paper pulp (split-plot, Montgomery 14.4)", paper_pulp)}
+            "pulp": ("Paper pulp (split-plot, Montgomery 14.4)", paper_pulp),
+            "conversion": ("Chemical conversion (CCD, 2 responses)", chemical_conversion),
+            "flare": ("Flare (constrained mixture, McLean-Anderson)", flare)}

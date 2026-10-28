@@ -60,6 +60,9 @@ class FitResult:
     scale_errors: bool = True
     weighting: str = "none"
     notes: list[str] = field(default_factory=list)
+    n_active: int = 0                     # active linear constraints (reduce the free count)
+    constraints: list[str] = field(default_factory=list)
+    algorithm: str = "lm"
 
     # -- parameters
     @property
@@ -80,7 +83,70 @@ class FitResult:
 
     @property
     def dof(self) -> int:
-        return self.n - self.n_free
+        return self.n - self.n_free + self.n_active
+
+    @property
+    def k_eff(self) -> int:
+        """Effective number of fitted parameters (free minus active constraints)."""
+        return self.n_free - self.n_active
+
+    # -- information criteria (Origin's Fit Comparison: K = parameters + 1)
+    @property
+    def aic(self) -> float:
+        n, k = self.n, self.k_eff + 1
+        return n * math.log(self.rss / n) + 2 * k if self.rss > 0 else float("-inf")
+
+    @property
+    def aicc(self) -> float:
+        n, k = self.n, self.k_eff + 1
+        return self.aic + 2 * k * (k + 1) / (n - k - 1) if n - k - 1 > 0 else float("nan")
+
+    @property
+    def bic(self) -> float:
+        n, k = self.n, self.k_eff + 1
+        return n * math.log(self.rss / n) + k * math.log(n) if self.rss > 0 \
+            else float("-inf")
+
+    def correlation(self) -> np.ndarray:
+        """Parameter correlation matrix (free parameters; NaN rows for fixed ones)."""
+        e = np.where(self.free & (self.errors > 0), self.errors, np.nan)
+        with np.errstate(all="ignore"):
+            return self.cov / np.outer(e, e)
+
+    def dependency(self) -> np.ndarray:
+        """Origin's Dependency = 1 − 1/(Cᵢᵢ·(C⁻¹)ᵢᵢ) of each free parameter."""
+        idx = np.flatnonzero(self.free)
+        out = np.full(len(self.values), np.nan)
+        c = self.cov[np.ix_(idx, idx)]
+        try:
+            ci = np.linalg.pinv(c)
+        except np.linalg.LinAlgError:
+            return out
+        with np.errstate(all="ignore"):
+            out[idx] = 1 - 1 / (np.diag(c) * np.diag(ci))
+        return out
+
+    def derived(self) -> list[tuple[str, float, float]]:
+        """Derived parameters of the model (FWHM, height, half-life, EC50…) with standard
+        errors from the delta method."""
+        out = []
+        idx = np.flatnonzero(self.free)
+        c = self.cov[np.ix_(idx, idx)]
+        for name, fn in self.model.meta.get("derived", []):
+            try:
+                v = float(fn(self.params))
+                g = np.empty(len(idx))
+                for j, i in enumerate(idx):
+                    h = 1e-6 * max(abs(self.values[i]), 1e-8)
+                    up, dn = self.values.copy(), self.values.copy()
+                    up[i] += h
+                    dn[i] -= h
+                    g[j] = (fn(dict(zip(self.names, up))) - fn(dict(zip(self.names, dn)))) / (2 * h)
+                se = float(math.sqrt(max(g @ c @ g, 0.0)))
+            except (ValueError, ZeroDivisionError, OverflowError, KeyError):
+                continue
+            out.append((name, v, se))
+        return out
 
     @property
     def red_chisq(self) -> float:
@@ -226,7 +292,8 @@ class FitResult:
     def lack_of_fit(self) -> dict | None:
         """Lack-of-fit F test using pure error from replicated x values."""
         w = np.ones(self.n) if self.weights is None else self.weights
-        keys, inv = np.unique(self.x, return_inverse=True)
+        keys, inv = np.unique(self.x, return_inverse=True, axis=0 if self.x.ndim > 1 else None)
+        inv = inv.ravel()
         k = len(keys)
         df_pe = self.n - k
         df_lof = k - self.n_free
@@ -243,14 +310,75 @@ class FitResult:
 
 
 def _num_grad(model: FitFunction, x, values, idx) -> np.ndarray:
-    g = np.empty((len(x), len(idx)))
-    for j, i in enumerate(idx):
-        h = 6e-6 * abs(values[i]) if abs(values[i]) > 1e-10 else 6e-6
-        up, dn = values.copy(), values.copy()
-        up[i] += h
-        dn[i] -= h
-        g[:, j] = (model(x, *up) - model(x, *dn)) / (2 * h)
-    return g
+    """∂f/∂p of the free parameters ``idx`` (analytic Jacobian when the model has one)."""
+    return model.jacobian(x, values)[:, idx]
+
+
+# ---------------------------------------------------------------------- constraints
+@dataclass
+class Constraint:
+    """A general linear constraint ``a·p (= | <=) b`` in the parameters (Origin NLFit's
+    Linear Constraints page), parsed from text such as ``A1 + A2 = 1`` or ``xc1 < xc2``."""
+    text: str
+    a: np.ndarray
+    b: float
+    equality: bool
+
+
+def parse_constraints(texts, names: Sequence[str]) -> list[Constraint]:
+    """Parse constraint lines (``;`` or newline separated). Each must be linear in the
+    parameters: ``expr = expr``, ``expr < expr``, ``expr <= expr``, ``expr > expr`` or
+    ``expr >= expr``."""
+    import re
+
+    if texts is None:
+        return []
+    if isinstance(texts, str):
+        texts = [t for t in re.split(r"[;\n]", texts)]
+    out = []
+    for raw in texts:
+        t = raw.strip()
+        if not t:
+            continue
+        m = re.match(r"^(.*?)(<=|>=|==|=|<|>)(.*)$", t)
+        if not m or not m.group(1).strip() or not m.group(3).strip():
+            raise ValueError(f"Constraint '{t}': write e.g. 'A1 + A2 = 1' or 'xc1 < xc2'.")
+        lhs, op, rhs = m.group(1), m.group(2), m.group(3)
+        try:
+            f = fl.parse_function(f"y = ({lhs}) - ({rhs})", ("_unused_x",))
+        except fl.FunctionSyntaxError as exc:
+            raise ValueError(f"Constraint '{t}': {exc}") from None
+        unknown = set(f.params) - set(names)
+        if unknown:
+            raise ValueError(f"Constraint '{t}': unknown parameter(s) "
+                             f"{', '.join(sorted(unknown))}.")
+        k = [names.index(p) for p in f.params]
+        dummy = np.zeros(1)
+        p0 = np.zeros(len(f.params))
+        c0 = float(f(dummy, *p0)[0])
+        g = f.jacobian(dummy, p0)[0]
+        rng = np.random.default_rng(7)
+        for _ in range(3):
+            pr = rng.normal(0, 3, len(f.params))
+            if not np.isclose(float(f(dummy, *pr)[0]), c0 + g @ pr, rtol=1e-9, atol=1e-9):
+                raise ValueError(f"Constraint '{t}' is not linear in the parameters.")
+        a = np.zeros(len(names))
+        a[k] = g
+        if op in ("=", "=="):
+            out.append(Constraint(t, a, -c0, True))
+        elif op in ("<", "<="):
+            out.append(Constraint(t, a, -c0, False))
+        else:
+            out.append(Constraint(t, -a, c0, False))
+    return out
+
+
+def _null_space(A: np.ndarray) -> np.ndarray:
+    if A.shape[0] == 0:
+        return np.eye(A.shape[1])
+    U, s, Vt = np.linalg.svd(A)
+    rank = int((s > 1e-12 * (s[0] if len(s) else 1)).sum())
+    return Vt[rank:].T
 
 
 # ---------------------------------------------------------------------- fitting
@@ -277,9 +405,12 @@ def make_weights(kind: str, y, yerr=None) -> np.ndarray | None:
     if kind == "statistical":
         with np.errstate(divide="ignore"):
             return np.where(y > 0, 1.0 / y, np.nan)
-    if kind == "direct":
+    if kind == "experimental":
+        with np.errstate(divide="ignore"):
+            return np.where(y != 0, 1.0 / y ** 2, np.nan)
+    if kind in ("direct", "arbitrary"):
         if yerr is None:
-            raise ValueError("Direct weighting needs a weight column.")
+            raise ValueError("Direct / arbitrary-dataset weighting needs a weight column.")
         return np.asarray(yerr, float)
     raise ValueError(f"Unknown weighting '{kind}'")
 
@@ -298,27 +429,45 @@ def _as_dict(values, names) -> dict:
     return {k: v for k, v in zip(names, seq) if v is not None}
 
 
+ALGORITHMS = {"auto": "Levenberg-Marquardt (Trust Region Reflective with bounds)",
+              "lm": "Levenberg-Marquardt", "trf": "Trust Region Reflective",
+              "simplex": "Downhill Simplex, then Levenberg-Marquardt"}
+
+
+def _clean_xy(f: FitFunction, x, y, w):
+    x = np.asarray(x, float)
+    x = x.ravel() if f.nvar == 1 else x.reshape(-1, f.nvar)
+    y = np.asarray(y, float).ravel()
+    w = None if w is None else np.asarray(w, float).ravel()
+    ok = (np.isfinite(x) if f.nvar == 1 else np.isfinite(x).all(axis=1)) & np.isfinite(y)
+    if w is not None:
+        ok &= np.isfinite(w) & (w > 0)
+    return x[ok], y[ok], (None if w is None else w[ok])
+
+
 def fit_curve(x, y, model, params0=None, bounds=None, fixed=None, weights=None, *,
               scale_errors: bool = True, weighting: str | None = None,
-              max_nfev: int | None = None) -> FitResult:
+              max_nfev: int | None = None, constraints=None,
+              algorithm: str = "auto") -> FitResult:
     """Fit ``model`` to (x, y).
 
     ``params0``: initial values (dict or sequence; missing → automatic guess).
     ``bounds``: {name: (lower, upper)} with None for an open side.
-    ``fixed``: {name: value}, or names to keep at their initial value.
+    ``fixed``: {name: value}, or names to keep at their initial value. When None, the
+    parameters a library function fixes by default (e.g. the time offset x0 of ExpDecay1)
+    are fixed at their guess.
     ``weights``: w_i per point (instrumental: 1/σ²). Non-finite / non-positive w drop the point.
+    ``constraints``: linear constraints, e.g. ``["A1 + A2 = 1", "xc1 < xc2"]``.
+    ``algorithm``: "auto" / "lm" / "trf" / "simplex" (Nelder-Mead pre-iteration, then L-M).
+    For two-variable models (``model.nvar == 2``) ``x`` is an (n, 2) array.
     """
     f = resolve_model(model)
     names = f.params
-    x = np.asarray(x, float).ravel()
-    y = np.asarray(y, float).ravel()
-    w = None if weights is None else np.asarray(weights, float).ravel()
-    ok = np.isfinite(x) & np.isfinite(y)
-    if w is not None:
-        ok &= np.isfinite(w) & (w > 0)
-    x, y = x[ok], y[ok]
-    w = None if w is None else w[ok]
+    x, y, w = _clean_xy(f, x, y, weights)
     p0d = _as_dict(params0, names)
+    if fixed is None and f.meta.get("fixed"):
+        fixed = {k: (v if v is not None and k not in p0d else p0d.get(k))
+                 for k, v in f.meta["fixed"].items()}
     if fixed is not None and not isinstance(fixed, Mapping):
         fixed = {k: p0d.get(k) for k in fixed}
     fixed = dict(fixed or {})
@@ -330,7 +479,9 @@ def fit_curve(x, y, model, params0=None, bounds=None, fixed=None, weights=None, 
     n_free = int(free.sum())
     if n_free == 0:
         raise ValueError("All parameters are fixed; nothing to fit.")
-    if len(x) <= n_free:
+    cons = parse_constraints(constraints, names)
+    n_eq = sum(c.equality for c in cons)
+    if len(x) <= n_free - n_eq:
         raise ValueError(f"Not enough data points: {len(x)} valid point(s) for {n_free} free "
                          f"parameter(s).")
     lower = np.array([(bnd.get(p) or (None, None))[0] for p in names], dtype=object)
@@ -340,7 +491,7 @@ def fit_curve(x, y, model, params0=None, bounds=None, fixed=None, weights=None, 
     if np.any(lower >= upper):
         raise ValueError("Each lower bound must be smaller than its upper bound.")
 
-    if f.basis is not None:
+    if f.basis is not None and not cons:
         return _fit_linear(f, x, y, w, free, fixed, lower, upper, scale_errors, weighting)
 
     need_guess = any(p not in p0d and p not in fixed for p in names) or any(
@@ -362,15 +513,25 @@ def fit_curve(x, y, model, params0=None, bounds=None, fixed=None, weights=None, 
         r = (f(x, *p) - y) * sw
         return np.where(np.isfinite(r), r, 1e10)
 
+    def jac(pf):
+        p = p0.copy()
+        p[idx] = pf
+        J = f.jacobian(x, p)[:, idx] * sw[:, None]
+        return np.where(np.isfinite(J), J, 0.0)
+
+    jac_arg = jac if f.jac is not None else "2-point"
     starts = [p0[idx]]
     if f.user_defined and any(p not in p0d for p in names if p not in fixed):
         starts += _multistart(f, x, y, p0, idx, resid)
+    if algorithm == "simplex":
+        starts = [_simplex(resid, s) for s in starts]
     bounded = np.any(np.isfinite(lower[idx])) or np.any(np.isfinite(upper[idx]))
+    method = "trf" if bounded or algorithm == "trf" or len(y) < n_free else "lm"
     best = None
     for s in starts:
         try:
             r = optimize.least_squares(
-                resid, s, method="trf" if bounded or len(y) < n_free else "lm",
+                resid, s, jac=jac_arg, method=method,
                 bounds=(lower[idx], upper[idx]) if bounded else (-np.inf, np.inf),
                 x_scale="jac", ftol=1e-12, xtol=1e-12, gtol=1e-12,
                 max_nfev=max_nfev or 1000 * (n_free + 1))
@@ -380,23 +541,153 @@ def fit_curve(x, y, model, params0=None, bounds=None, fixed=None, weights=None, 
             best = r
     if best is None:
         raise ValueError("The fit failed to start; check the initial parameter values.")
+    if np.all(np.isfinite(best.fun)) and best.cost < 1e19:   # polish (tighter, better J)
+        try:
+            r2 = optimize.least_squares(
+                resid, best.x, jac=jac if f.jac is not None else "3-point", method=method,
+                bounds=(lower[idx], upper[idx]) if bounded else (-np.inf, np.inf),
+                x_scale="jac", ftol=1e-15, xtol=1e-15, gtol=1e-15,
+                max_nfev=max_nfev or 200 * (n_free + 1))
+            if np.isfinite(r2.cost) and r2.cost <= best.cost:
+                r2.nfev += best.nfev
+                r2.status = best.status if r2.status == 0 and best.status > 0 else r2.status
+                best = r2
+        except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+            pass
     values = p0.copy()
     values[idx] = best.x
-    if f.canonical is not None:
+    message = _status(best)
+    success = bool(best.success) and np.all(np.isfinite(best.fun)) and best.cost < 1e19
+    cov_free, n_active, cnotes = None, 0, []
+    if cons:
+        values, cov_free, n_active, cnotes, ok = _constrained(
+            f, x, y, w, values, free, lower, upper, cons, scale_errors)
+        success = success and ok
+        message = "Fit converged with linear constraints." if ok else \
+            "The constrained fit did not converge."
+    if f.canonical is not None and not cons:
         canon = f.canonical(dict(zip(names, values)))
         values = np.array([canon[p] for p in names], float)
-    message = _status(best)
-    return _finish(f, x, y, w, values, free, p0, lower, upper, scale_errors, weighting,
-                   bool(best.success) and np.all(np.isfinite(best.fun)) and
-                   best.cost < 1e19, message, int(best.nfev))
+    res = _finish(f, x, y, w, values, free, p0, lower, upper, scale_errors, weighting,
+                  success, message, int(best.nfev), cov_free=cov_free, n_active=n_active)
+    res.constraints = [c.text for c in cons]
+    res.notes += cnotes
+    res.algorithm = algorithm if algorithm != "auto" else ("trf" if bounded else "lm")
+    return res
+
+
+def _simplex(resid, s) -> np.ndarray:
+    """Nelder-Mead (Origin's Downhill Simplex) on the sum of squares."""
+    def cost(p):
+        r = resid(p)
+        return float(r @ r)
+    try:
+        out = optimize.minimize(cost, s, method="Nelder-Mead",
+                                options={"maxiter": 400 * (len(s) + 1), "xatol": 1e-10,
+                                         "fatol": 1e-14, "adaptive": len(s) > 3})
+        return out.x if np.isfinite(out.fun) and out.fun <= cost(s) else s
+    except (ValueError, FloatingPointError):
+        return s
+
+
+def _constrained(f, x, y, w, values, free, lower, upper, cons, scale_errors):
+    """Minimise χ² subject to the linear constraints (SLSQP), then refine on the active set
+    with L-M in the null-space parametrisation; the covariance is projected on that space."""
+    idx = np.flatnonzero(free)
+    sw = np.ones(len(y)) if w is None else np.sqrt(w)
+    fixed_vals = values.copy()
+    A = np.array([c.a for c in cons])
+    b = np.array([c.b for c in cons]) - A[:, ~free] @ values[~free]
+    Af = A[:, idx]
+    eq = np.array([c.equality for c in cons])
+
+    def full(pf):
+        p = fixed_vals.copy()
+        p[idx] = pf
+        return p
+
+    def resid(pf):
+        r = (f(x, *full(pf)) - y) * sw
+        return np.where(np.isfinite(r), r, 1e10)
+
+    def jac(pf):
+        J = f.jacobian(x, full(pf))[:, idx] * sw[:, None]
+        return np.where(np.isfinite(J), J, 0.0)
+
+    start = values[idx].copy()
+    viol = Af @ start - b
+    if not (np.all(np.abs(viol[eq]) < 1e-10 * (1 + np.abs(b[eq]))) and
+            np.all(viol[~eq] <= 1e-12 * (1 + np.abs(b[~eq])))):
+        scons = []
+        if eq.any():
+            scons.append({"type": "eq", "fun": lambda p: Af[eq] @ p - b[eq],
+                          "jac": lambda p: Af[eq]})
+        if (~eq).any():
+            scons.append({"type": "ineq", "fun": lambda p: b[~eq] - Af[~eq] @ p,
+                          "jac": lambda p: -Af[~eq]})
+        bnds = list(zip(np.where(np.isfinite(lower[idx]), lower[idx], None),
+                        np.where(np.isfinite(upper[idx]), upper[idx], None)))
+
+        def cost(p):
+            r = resid(p)
+            return 0.5 * float(r @ r)
+
+        def grad(p):
+            return jac(p).T @ resid(p)
+        try:
+            out = optimize.minimize(cost, start, jac=grad, method="SLSQP", bounds=bnds,
+                                    constraints=scons,
+                                    options={"maxiter": 2000, "ftol": 1e-16})
+            start = out.x
+        except (ValueError, np.linalg.LinAlgError):
+            pass
+    viol = Af @ start - b
+    tol = 1e-7 * (1 + np.abs(b)) + 1e-9 * np.abs(Af).sum(axis=1) * (1 + np.abs(start).max())
+    active = eq | (np.abs(viol) <= tol)
+    ok = bool(np.all(np.abs(viol[eq]) <= tol[eq]) and np.all(viol[~eq] <= tol[~eq]))
+    N = _null_space(Af[active])
+    base = start.copy()
+    if active.any():   # move exactly onto the active constraints
+        Aa, ba = Af[active], b[active]
+        base = base - np.linalg.pinv(Aa) @ (Aa @ base - ba)
+    if N.shape[1] > 0:
+        try:
+            r = optimize.least_squares(lambda z: resid(base + N @ z), np.zeros(N.shape[1]),
+                                       jac=lambda z: jac(base + N @ z) @ N,
+                                       method="lm" if len(y) >= N.shape[1] else "trf",
+                                       x_scale="jac", ftol=1e-15, xtol=1e-15, gtol=1e-15)
+            cand = base + N @ r.x
+            if np.all(Af[~active] @ cand - b[~active] <= tol[~active]) and \
+                    np.all(lower[idx] <= cand) and np.all(cand <= upper[idx]):
+                base = cand
+        except (ValueError, np.linalg.LinAlgError):
+            pass
+    values = fixed_vals.copy()
+    values[idx] = base
+    J = jac(base)
+    rr = resid(base)
+    n_active = int(np.linalg.matrix_rank(Af[active])) if active.any() else 0
+    dof = len(y) - len(idx) + n_active
+    if N.shape[1] > 0:
+        cov = N @ _cov_from_jac(J @ N) @ N.T
+    else:
+        cov = np.zeros((len(idx), len(idx)))
+    if scale_errors and dof > 0:
+        cov = cov * float(rr @ rr) / dof
+    notes = []
+    act = [c.text for c, a in zip(cons, active) if a and not c.equality]
+    if act:
+        notes.append("Active inequality constraint(s): " + "; ".join(act) + ".")
+    return values, cov, n_active, notes, ok
 
 
 def _multistart(f, x, y, p0, idx, resid) -> list[np.ndarray]:
     """Extra starting points for user functions (no analytic guess available)."""
     rng = np.random.default_rng(12345)
-    scales = np.array([1.0, -1.0, 0.1, 10.0, float(np.ptp(x) or 1), 1 / float(np.ptp(x) or 1),
-                       float(np.mean(np.abs(y)) or 1), float(np.median(y)), float(np.min(y)),
-                       float(np.max(y)), 0.5, 2.0])
+    xs = x if x.ndim == 1 else x[:, 0]
+    scales = np.array([1.0, -1.0, 0.1, 10.0, float(np.ptp(xs) or 1),
+                       1 / float(np.ptp(xs) or 1), float(np.mean(np.abs(y)) or 1),
+                       float(np.median(y)), float(np.min(y)), float(np.max(y)), 0.5, 2.0])
     cands = [scales[rng.integers(0, len(scales), len(idx))] for _ in range(80)]
     cands += [np.full(len(idx), s) for s in scales]
     scored = []
@@ -419,14 +710,18 @@ def _status(r) -> str:
 
 
 def _cov_from_jac(J: np.ndarray) -> np.ndarray:
-    U, s, Vt = np.linalg.svd(J, full_matrices=False)
+    J = np.where(np.isfinite(J), J, 0.0)
+    try:
+        U, s, Vt = np.linalg.svd(J, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return np.full((J.shape[1], J.shape[1]), np.nan)
     tol = np.finfo(float).eps * max(J.shape) * (s[0] if len(s) else 0)
     inv = np.where(s > tol, 1 / np.where(s > 0, s, 1) ** 2, 0.0)
     return (Vt.T * inv) @ Vt
 
 
 def _finish(f, x, y, w, values, free, p0, lower, upper, scale_errors, weighting, success,
-            message, nfev, cov_free=None) -> FitResult:
+            message, nfev, cov_free=None, n_active: int = 0) -> FitResult:
     ww = np.ones(len(y)) if w is None else w
     with np.errstate(all="ignore"):
         r = y - f(x, *values)
@@ -435,7 +730,7 @@ def _finish(f, x, y, w, values, free, p0, lower, upper, scale_errors, weighting,
     tss = float(np.sum(ww * (y - ybar) ** 2))
     uss = float(np.sum(ww * y ** 2))
     idx = np.flatnonzero(free)
-    dof = len(y) - len(idx)
+    dof = len(y) - len(idx) + n_active
     if cov_free is None:
         sw = np.sqrt(ww)
         g = f.basis(x)[:, idx] if f.basis is not None else _num_grad(f, x, values, idx)
@@ -451,7 +746,7 @@ def _finish(f, x, y, w, values, free, p0, lower, upper, scale_errors, weighting,
         notes.append(message)
     res = FitResult(f, x, y, w, values, errors, cov, free, p0, lower, upper, rss, tss, uss,
                     success, message, nfev, scale_errors, weighting or
-                    ("none" if w is None else "direct"), notes)
+                    ("none" if w is None else "direct"), notes, n_active=n_active)
     if np.any(res.at_bound):
         notes.append("Parameter(s) " + ", ".join(np.array(f.params)[res.at_bound])
                      + " reached a bound; their standard errors are not reliable.")
@@ -459,34 +754,79 @@ def _finish(f, x, y, w, values, free, p0, lower, upper, scale_errors, weighting,
 
 
 def _fit_linear(f, x, y, w, free, fixed, lower, upper, scale_errors, weighting) -> FitResult:
-    import statsmodels.api as sm
-
+    """Linear least squares on a column-equilibrated design via Householder QR (``lstsq``);
+    with very ill-conditioned designs (NIST Filip, Wampler5) one step of iterative refinement
+    on the residual recovers the lost digits."""
     B = f.basis(x)
     vals = np.array([float(fixed.get(p) or 0.0) if p in fixed else 0.0 for p in f.params])
     yy = y - B[:, ~free] @ vals[~free]
     Bf = B[:, free]
     sw = np.ones(len(y)) if w is None else np.sqrt(w)
-    scale = np.sqrt(((Bf * sw[:, None]) ** 2).sum(axis=0))
+    A = Bf * sw[:, None]
+    scale = np.sqrt((A ** 2).sum(axis=0))
     if np.any(scale == 0):
         raise ValueError("The X values do not vary enough to fit this model.")
-    model = sm.WLS(yy, Bf / scale, weights=np.ones(len(y)) if w is None else w)
-    res = model.fit()
-    coef = np.asarray(res.params) / scale
+    As = A / scale
+    rhs = yy * sw
+    Q, R = np.linalg.qr(As)
+    coef = _solve_triangular(R, Q.T @ rhs)
+    for _ in range(3):   # iterative refinement
+        res_ = rhs - As @ coef
+        coef = coef + _solve_triangular(R, Q.T @ res_)
     dof = len(y) - int(free.sum())
-    cov = (np.asarray(res.cov_params()) if scale_errors and dof > 0 else
-           np.asarray(res.normalized_cov_params)) / np.outer(scale, scale)
+    rank = np.linalg.matrix_rank(As)
+    Rinv = np.linalg.pinv(R) if rank < As.shape[1] else _solve_triangular(R, np.eye(len(R)))
+    ncov = (Rinv @ Rinv.T) / np.outer(scale, scale)
+    coef = coef / scale
+    rr = rhs - A @ coef
+    s2 = float(rr @ rr) / dof if dof > 0 else float("nan")
+    cov = ncov * s2 if scale_errors and dof > 0 else ncov
     vals[free] = coef
     if np.any(np.isfinite(lower[free]) | np.isfinite(upper[free])):
         clipped = np.clip(vals, lower, upper)
         if not np.allclose(clipped, vals):
             raise ValueError("Bounds are not supported for linear models; fix the parameter "
                              "instead.")
-    rank = np.linalg.matrix_rank(Bf / scale)
     ok = rank == Bf.shape[1]
     msg = "Linear least squares: exact solution." if ok else \
         "The design is rank deficient; some parameters are not identifiable."
     return _finish(f, x, y, w, vals, free, vals.copy(), lower, upper, scale_errors, weighting,
                    ok, msg, 0, cov_free=cov)
+
+
+def _solve_triangular(R, b):
+    from scipy.linalg import solve_triangular
+    return solve_triangular(R, b)
+
+
+def mlr_function(k: int, intercept: bool = True, names: Sequence[str] | None = None) \
+        -> FitFunction:
+    """Origin's Multiple Linear Regression model y = b0 + b1·x1 + … + bk·xk (x: (n, k))."""
+    params = (("Intercept",) if intercept else ()) + tuple(
+        names or [f"b{i}" for i in range(1, k + 1)])
+
+    def basis(x, k=k):
+        x = np.asarray(x, float).reshape(-1, k)
+        return np.column_stack(([np.ones(len(x))] if intercept else []) + [x[:, i]
+                                                                         for i in range(k)])
+
+    def func(x, *p):
+        return basis(x) @ np.asarray(p, float)
+
+    terms = " + ".join(f"{n}*x{i}" for i, n in enumerate(params[int(intercept):], 1))
+    return FitFunction("MLR", "Multiple Variables",
+                       f"y = {'Intercept + ' if intercept else ''}{terms}", params, func,
+                       basis=basis, nvar=k,
+                       description=f"Multiple linear regression on {k} variable(s).",
+                       meta={"order": None, "mlr": k})
+
+
+def fit_mlr(X, y, intercept: bool = True, weights=None, names=None,
+            scale_errors: bool = True) -> FitResult:
+    X = np.asarray(X, float)
+    X = X.reshape(len(X), -1)
+    return fit_curve(X, y, mlr_function(X.shape[1], intercept, names), weights=weights,
+                     scale_errors=scale_errors)
 
 
 # ---------------------------------------------------------------------- report

@@ -16,6 +16,32 @@
    "java": "java version \"26.0.2\" 2026-07-21",
    "macro_sha256": "676134e795fb01a8846759ea7c549f8d5752c8b270c2a0d38317795e0dec1900"
   },
+  "image_stacks": {
+   "date": "2026-10-28",
+   "files": [
+    "stats_16.csv",
+    "stats_8.csv",
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "8d0d00e2886d9be06b5a40c1022f832f2d2330774fc88eeaa2ef61d4aecf8f2a"
+  },
+  "image_transform": {
+   "date": "2026-10-28",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "ea7e817752a4db4e001a9bc6d0db8d6a701ca4d9e0caceba626ee41ed3281762"
+  },
+  "image_types": {
+   "date": "2026-10-28",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "e4bfd05349d654857697a212cfce3590a489faedca04e226772dcb7cf66dbd31"
+  },
   "io_read": {
    "date": "2026-10-28",
    "files": [

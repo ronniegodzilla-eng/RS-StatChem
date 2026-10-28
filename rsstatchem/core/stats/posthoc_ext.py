@@ -10,7 +10,9 @@ Two kinds of output, as in SPSS:
   GT2, Gabriel, Dunnett, T2, T3, Games-Howell, C) — :func:`pairwise`;
 * "Homogeneous Subsets" for the range tests (S-N-K, Tukey, Tukey-b, Duncan, Scheffe, REGW F,
   REGW Q, GT2, Gabriel, Waller-Duncan) — :func:`homogeneous_subsets`, using the harmonic mean
-  of the group sizes like SPSS.
+  of the group sizes like SPSS, except R-E-G-W F and Q, which use the actual n_i and n_j
+  (IBM SPSS Statistics Algorithms, Post Hoc Tests: "For homogeneous subsets, the n_i and n_j
+  are used for the R-E-G-W F test and the R-E-G-W Q test").
 
 The studentized maximum modulus distribution (GT2, Gabriel, T3) and Dunnett's multivariate t
 (one-factor correlation structure) are evaluated by deterministic quadrature, so results are
@@ -302,6 +304,7 @@ def homogeneous_subsets(groups: list[Group], method: str, mse: float, df_error: 
     order_local = np.argsort(means, kind="stable")
     order = [groups_ok[i] for i in order_local]
     ms = means[order_local]
+    ns_ord = np.array([groups[i].n for i in order], float)
     k = len(ms)
     nh = harmonic_n([groups[i] for i in order])
     se1 = math.sqrt(mse / nh)
@@ -320,12 +323,22 @@ def homogeneous_subsets(groups: list[Group], method: str, mse: float, df_error: 
             return False, 1.0
         q = rng / se1
         if method == "regwf":
-            sub = ms[i:j + 1]
-            F = nh * float(np.sum((sub - sub.mean()) ** 2)) / (p - 1) / mse
+            # IBM FREGW: [sum n x^2 - (sum n x)^2 / sum n] / ((r - 1) s^2) over the r means
+            sub, nsub = ms[i:j + 1], ns_ord[i:j + 1]
+            F = float(np.sum(nsub * sub ** 2) - np.sum(nsub * sub) ** 2 / nsub.sum()) \
+                / (p - 1) / mse
             raw = float(stats.f.sf(F, p - 1, df_error))
             a_p = _alpha_p(method, p, k, alpha)
             return raw < a_p, _sig_from_alpha_p(method, raw, p, k)
-        if method in ("snk", "duncan", "regwq"):
+        if method == "regwq":
+            # IBM QREGW: max over pairs in the range of |x_i - x_j| sqrt(min(n_i, n_j)) / s
+            sub, nsub = ms[i:j + 1], ns_ord[i:j + 1]
+            qq = max(abs(sub[a] - sub[b]) * math.sqrt(min(nsub[a], nsub[b]))
+                     for a in range(p) for b in range(a + 1, p)) / math.sqrt(mse)
+            raw = studentized_range_sf(qq, p, df_error)
+            a_p = _alpha_p(method, p, k, alpha)
+            return raw < a_p, _sig_from_alpha_p(method, raw, p, k)
+        if method in ("snk", "duncan"):
             raw = studentized_range_sf(q, p, df_error)
             a_p = _alpha_p(method, p, k, alpha)
             return raw < a_p, _sig_from_alpha_p(method, raw, p, k)

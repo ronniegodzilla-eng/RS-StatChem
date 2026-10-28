@@ -17,3 +17,7 @@ epam.indigo>=1.46
 tifffile==2026.10.15
 roifile==2026.9.22
 pydicom==3.0.2
+# optional: Graph & Analysis wavelets (MIT/BSD) and HDF5 / MATLAB v7.3 import (BSD-3); the
+# features are hidden or explain themselves when these are missing
+PyWavelets==1.10.0
+h5py==3.16.0

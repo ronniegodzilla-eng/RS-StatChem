@@ -50,13 +50,18 @@ def contrast_names(k: int) -> list[str]:
     return [base[i] if i < 3 else f"Order {i + 1}" for i in range(k - 1)]
 
 
-def epsilons(E: np.ndarray, ve: int) -> tuple[float, float, float]:
+def epsilons(E: np.ndarray, ve: int, n: int | None = None) -> tuple[float, float, float]:
     """Greenhouse-Geisser, Huynh-Feldt and lower-bound epsilon from the error SSCP of the
-    orthonormalised transformed variables."""
+    orthonormalised transformed variables.
+
+    Huynh-Feldt as in IBM SPSS Statistics Algorithms (GLM, "Adjustments to Degrees of Freedom"):
+    eps_HF = min(1, (n d eps_GG - 2) / (d (n - r_X) - d^2 eps_GG)), with n cases and
+    ve = n - r_X. Without ``n`` the one-group case n = ve + 1 is assumed."""
     d = E.shape[0]
     tr = float(np.trace(E))
     gg = tr * tr / (d * float(np.trace(E @ E))) if tr > 0 else float("nan")
-    hf = ((ve + 1) * d * gg - 2) / (d * (ve - d * gg))
+    n = ve + 1 if n is None else n
+    hf = (n * d * gg - 2) / (d * ve - d * d * gg)
     return gg, min(1.0, hf), 1.0 / d
 
 
@@ -68,7 +73,16 @@ def mauchly(E: np.ndarray, ve: int) -> tuple[float, float, int, float]:
     if df == 0:
         return 1.0, 0.0, 0, float("nan")
     chi = -(ve - (2 * d * d + d + 2) / (6 * d)) * math.log(W) if W > 0 else float("nan")
-    return W, chi, df, float(stats.chi2.sf(chi, df))
+    if not np.isfinite(chi):
+        return W, chi, df, float("nan")
+    # IBM SPSS Statistics Algorithms (GLM, Mauchly's test): Sig. includes the second-order
+    # term w2 [P(chi2_{f+4} > c) - P(chi2_f > c)] (Anderson 1958), rho = 1 - (2d^2+d+2)/(6d ve)
+    rho = 1 - (2 * d * d + d + 2) / (6 * d * ve)
+    w2 = ((d + 2) * (d - 1) * (d - 2) * (2 * d ** 3 + 6 * d * d + 3 * d + 2)
+          / (288 * d * d * ve * ve * rho * rho))
+    p = float(stats.chi2.sf(chi, df)) + w2 * (float(stats.chi2.sf(chi, df + 4))
+                                             - float(stats.chi2.sf(chi, df)))
+    return W, chi, df, max(0.0, min(1.0, p))
 
 
 class WithinDesign:
@@ -263,7 +277,7 @@ def repeated_measures(ds: Dataset, within: list[tuple[str, int]], dependents: li
     for eff in wd.effects:
         E = model.error(wd.M(eff))
         W, chi, df, p = mauchly(E, model.ve)
-        gg, hf, lb = epsilons(E, model.ve)
+        gg, hf, lb = epsilons(E, model.ve, model.n)
         eps_by_effect[eff] = (1.0, gg, hf, lb)
         rows.append([wd.label(eff), fmt(W), fmt(chi), fmt_int(df), fmt_p(p) if df else ".",
                      fmt(gg), fmt(hf), fmt(lb)])
