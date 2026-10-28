@@ -169,7 +169,11 @@ def test_split_plot_layout_and_reml_analysis(pulp_win, qapp, tmp_path):
     back = DesignDocument.load(str(path))
     assert back.split_plot and back.factors[0]["changes"] == "hard"
     assert np.array_equal(back.ds.df["Group"], doc.ds.df["Group"])
-    assert back.analyze(col).fit.term_p_values() == pytest.approx(a.fit.term_p_values())
+    got, want = back.analyze(col).fit.term_p_values(), a.fit.term_p_values()
+    assert got.keys() == want.keys()
+    for key in want:   # values may be tuples; pytest.approx refuses nested containers
+        assert np.ravel(got[key]).astype(float) == pytest.approx(
+            np.ravel(want[key]).astype(float))
 
 
 # ---------------------------------------------------------------------------- auto select

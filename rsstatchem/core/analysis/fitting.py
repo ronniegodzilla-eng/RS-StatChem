@@ -778,6 +778,11 @@ def _fit_linear(f, x, y, w, free, fixed, lower, upper, scale_errors, weighting) 
     Rinv = np.linalg.pinv(R) if rank < As.shape[1] else _solve_triangular(R, np.eye(len(R)))
     ncov = (Rinv @ Rinv.T) / np.outer(scale, scale)
     coef = coef / scale
+    if rank == As.shape[1] and A.size <= 4000 and A.shape[1] <= 16:
+        # small full-rank designs: the exact least-squares solution of the (float) data, so
+        # ill-conditioned polynomials (NIST Wampler, Filip) are correct to the last digit on
+        # every platform, independent of the BLAS behind numpy
+        coef, ncov = _exact_least_squares(A, rhs)
     rr = rhs - A @ coef
     s2 = float(rr @ rr) / dof if dof > 0 else float("nan")
     cov = ncov * s2 if scale_errors and dof > 0 else ncov
@@ -792,6 +797,33 @@ def _fit_linear(f, x, y, w, free, fixed, lower, upper, scale_errors, weighting) 
         "The design is rank deficient; some parameters are not identifiable."
     return _finish(f, x, y, w, vals, free, vals.copy(), lower, upper, scale_errors, weighting,
                    ok, msg, 0, cov_free=cov)
+
+
+def _exact_least_squares(A, b):
+    """Solve the normal equations A'A beta = A'b in exact rational arithmetic (float inputs
+    are exactly representable as fractions) and return beta and (A'A)^-1 as floats."""
+    from fractions import Fraction
+
+    n, p = A.shape
+    Af = [[Fraction(float(v)) for v in row] for row in A]
+    bf = [Fraction(float(v)) for v in b]
+    M = [[sum((Af[k][i] * Af[k][j] for k in range(n)), Fraction(0)) for j in range(p)]
+         for i in range(p)]
+    v = [sum((Af[k][i] * bf[k] for k in range(n)), Fraction(0)) for i in range(p)]
+    # Gauss-Jordan on [M | v | I]
+    aug = [M[i] + [v[i]] + [Fraction(int(i == j)) for j in range(p)] for i in range(p)]
+    for c in range(p):
+        piv = next(r for r in range(c, p) if aug[r][c] != 0)
+        aug[c], aug[piv] = aug[piv], aug[c]
+        inv = 1 / aug[c][c]
+        aug[c] = [x * inv for x in aug[c]]
+        for r in range(p):
+            if r != c and aug[r][c] != 0:
+                f = aug[r][c]
+                aug[r] = [x - f * y for x, y in zip(aug[r], aug[c])]
+    beta = np.array([float(aug[i][p]) for i in range(p)])
+    cov = np.array([[float(aug[i][p + 1 + j]) for j in range(p)] for i in range(p)])
+    return beta, cov
 
 
 def _solve_triangular(R, b):

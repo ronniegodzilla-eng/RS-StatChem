@@ -186,7 +186,7 @@ def test_weibull_mle_matches_scipy_and_lifelines():
     c, loc, scale = stats.weibull_min.fit(t, floc=0)
     assert m["beta"] == pytest.approx(c, rel=1e-4)
     assert m["eta"] == pytest.approx(scale, rel=1e-4)
-    from lifelines import WeibullFitter
+    WeibullFitter = pytest.importorskip("lifelines").WeibullFitter   # optional test-only dep
 
     d = r.random(80) < 0.75
     m2 = weibull_plot.weibull_mle(t, d)
