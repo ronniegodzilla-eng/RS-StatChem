@@ -11,7 +11,9 @@ column, optional 1-based row range): :class:`RangeRef` / :func:`parse_range`.
 A worksheet column (:class:`WColumn`) has Origin's header rows — short name, Long Name,
 Units, Comments, F(x)= formula — and a designation (X, Y, Z, X Error, Y Error, Label,
 Disregard). Cells hold ``float``, ``str`` or ``None`` (empty), like Origin's default
-"Text & Numeric" columns. Everything round-trips through :func:`project_to_dict` /
+"Text & Numeric" columns. Cells can be *masked* (Origin's Mask): they keep their value but are
+left out of plots, fits and analyses — see :meth:`Worksheet.masked_rows`,
+:meth:`Worksheet.mask_array`, :meth:`Worksheet.point_mask` and :meth:`Worksheet.xy_arrays`. Everything round-trips through :func:`project_to_dict` /
 :func:`project_from_dict`; :func:`save_project` writes the ``.rsop`` zip.
 """
 from __future__ import annotations
@@ -173,6 +175,9 @@ class WColumn:
     formula: str = ""               # F(x)= row, Origin syntax (col(A)*2, sin(i)...)
     values: list = field(default_factory=list)
     width: int = 0                  # display width in pixels, 0 = default
+    # Origin's masked cells: 0-based row indices excluded from plots, fits and analyses
+    # (shown in red in the grid). Use the Worksheet mask API rather than this set directly.
+    mask: set = field(default_factory=set)
 
     @property
     def title(self) -> str:
@@ -308,6 +313,8 @@ class Worksheet:
                 c.values.extend([None] * (n - len(c.values)))
             elif len(c.values) > n:
                 del c.values[n:]
+            if c.mask:
+                c.mask = {r for r in c.mask if r < n}
 
     def ensure_rows(self, n: int) -> None:
         if n > self.n_rows:
@@ -319,16 +326,34 @@ class Worksheet:
     def insert_rows(self, at: int, count: int = 1) -> None:
         for c in self.columns:
             c.values[at:at] = [None] * count
+            if c.mask:
+                c.mask = {r + count if r >= at else r for r in c.mask}
         self.n_rows += count
 
     def delete_rows(self, rows) -> None:
         rows = sorted({r for r in rows if 0 <= r < self.n_rows}, reverse=True)
+        gone = set(rows)
         for c in self.columns:
             for r in rows:
                 if r < len(c.values):
                     del c.values[r]
+            if c.mask:
+                c.mask = {m - sum(1 for r in gone if r < m) for m in c.mask if m not in gone}
         self.n_rows = max(1, self.n_rows - len(rows))
         self.ensure_rows(self.n_rows)
+
+    def permute_rows(self, order, n: int | None = None) -> None:
+        """Reorder the first ``n`` rows (default ``len(order)``) so that new row ``k`` is old
+        row ``order[k]``, moving cell masks with their values (use this for sorting)."""
+        order = [int(r) for r in order]
+        n = len(order) if n is None else int(n)
+        self.ensure_rows(n)
+        new_of = {old: k for k, old in enumerate(order)}
+        for c in self.columns:
+            vals = (c.values + [None] * n)[:n]
+            c.values[:n] = [vals[r] for r in order]
+            if c.mask:
+                c.mask = {new_of.get(m, m) if m < n else m for m in c.mask}
 
     # ------------------------------------------------------------------ cells
     def cell(self, row: int, col: int):
@@ -404,6 +429,103 @@ class Worksheet:
             if self.columns[i].designation == "Y":
                 return i
         return None
+
+    # ------------------------------------------------------------------ masks
+    # Origin's Mask: masked cells keep their value but are left out of plots, fits and
+    # analyses (and drawn red). A point (x, y) is masked when its X or its Y cell is masked.
+    # This is the stable API other packages use; rows are 0-based.
+    def _col_index(self, col) -> int:
+        return col if isinstance(col, (int, np.integer)) else self.find(str(col))
+
+    def masked_rows(self, col) -> list[int]:
+        """Sorted 0-based rows of column ``col`` (index or short name) that are masked."""
+        return sorted(self.columns[self._col_index(col)].mask)
+
+    def is_masked(self, row: int, col) -> bool:
+        return int(row) in self.columns[self._col_index(col)].mask
+
+    def has_masks(self, cols=None) -> bool:
+        cols = range(len(self.columns)) if cols is None else cols
+        return any(self.columns[self._col_index(c)].mask for c in cols)
+
+    def mask_array(self, col, n: int | None = None) -> np.ndarray:
+        """Boolean array of length ``n`` (default ``n_rows``): True where ``col`` is masked."""
+        n = self.n_rows if n is None else int(n)
+        out = np.zeros(n, dtype=bool)
+        if col is None:
+            return out
+        rows = [r for r in self.columns[self._col_index(col)].mask if 0 <= r < n]
+        out[rows] = True
+        return out
+
+    def point_mask(self, cols, n: int | None = None) -> np.ndarray:
+        """True for rows where any of ``cols`` (None entries ignored) is masked."""
+        n = self.n_rows if n is None else int(n)
+        out = np.zeros(n, dtype=bool)
+        for c in cols:
+            if c is not None:
+                out |= self.mask_array(c, n)
+        return out
+
+    def set_mask(self, col, rows, on: bool = True) -> None:
+        """Mask (``on``) or unmask the 0-based ``rows`` of column ``col``."""
+        c = self.columns[self._col_index(col)]
+        rows = {int(r) for r in rows if 0 <= int(r) < max(self.n_rows, 1)}
+        c.mask = (c.mask | rows) if on else (c.mask - rows)
+
+    def mask_cells(self, col, rows) -> None:
+        self.set_mask(col, rows, True)
+
+    def unmask_cells(self, col, rows) -> None:
+        self.set_mask(col, rows, False)
+
+    def swap_mask(self, col, rows) -> None:
+        """Origin's Swap Mask: masked cells of ``rows`` become unmasked and vice versa."""
+        c = self.columns[self._col_index(col)]
+        rows = {int(r) for r in rows if 0 <= int(r) < self.n_rows}
+        c.mask = c.mask ^ rows
+
+    def clear_mask(self, cols=None) -> None:
+        """Unmask every cell of ``cols`` (default: the whole sheet)."""
+        for c in (range(len(self.columns)) if cols is None else cols):
+            self.columns[self._col_index(c)].mask = set()
+
+    def mask_where(self, col, predicate) -> int:
+        """Mask the cells of ``col`` whose numeric value satisfies ``predicate(v)`` (Origin's
+        Mask by condition); returns how many cells were masked."""
+        ci = self._col_index(col)
+        vals = self.columns[ci].numeric(self.n_rows)
+        hit = [r for r, v in enumerate(vals) if math.isfinite(v) and predicate(v)]
+        self.set_mask(ci, hit, True)
+        return len(hit)
+
+    def xy_arrays(self, ycol, xcol=-1, rows: tuple[int, int] | None = None,
+                  honor_mask: bool = True, with_error: bool = False):
+        """The (x, y) data of column ``ycol`` against ``xcol`` (-1: its designated X;
+        None: row numbers) over the 1-based inclusive ``rows`` range, without empty /
+        non-numeric cells and, with ``honor_mask``, without masked points.
+        Returns ``(idx, x, y, yerr)``: 0-based rows used and their values (``yerr`` is the
+        Y Error column when ``with_error`` and complete, else None)."""
+        y_i = self._col_index(ycol)
+        x_i = self.x_of(y_i) if xcol == -1 else (None if xcol is None
+                                                  else self._col_index(xcol))
+        n = self.n_rows
+        lo, hi = row_window(n, rows) if rows else (0, n)
+        y = self.columns[y_i].numeric(n)
+        x = self.columns[x_i].numeric(n) if x_i is not None else \
+            np.arange(1, n + 1, dtype=float)
+        ok = np.isfinite(x) & np.isfinite(y)
+        ok[:lo] = False
+        ok[hi:] = False
+        if honor_mask:
+            ok &= ~self.point_mask([y_i, x_i], n)
+        e = None
+        e_i = self.yerr_of(y_i) if with_error else None
+        if e_i is not None:
+            ev = self.columns[e_i].numeric(n)[ok]
+            e = ev if np.isfinite(ev).all() else None
+        idx = np.flatnonzero(ok)
+        return idx, x[ok], y[ok], e
 
     def copy(self) -> "Worksheet":
         return copy.deepcopy(self)
@@ -848,16 +970,20 @@ def rename_refs(value, old: str, new: str, key: str = "book"):
 
 # ====================================================================== serialisation
 def _column_to_dict(c: WColumn) -> dict:
-    return {"name": c.name, "designation": c.designation, "long_name": c.long_name,
-            "units": c.units, "comments": c.comments, "formula": c.formula, "width": c.width,
-            "values": [None if v is None or (isinstance(v, float) and not math.isfinite(v))
-                       else v for v in c.values]}
+    d = {"name": c.name, "designation": c.designation, "long_name": c.long_name,
+         "units": c.units, "comments": c.comments, "formula": c.formula, "width": c.width,
+         "values": [None if v is None or (isinstance(v, float) and not math.isfinite(v))
+                    else v for v in c.values]}
+    if c.mask:   # only written when used, so older readers see an unchanged column
+        d["mask"] = sorted(int(r) for r in c.mask)
+    return d
 
 
 def _column_from_dict(d: dict) -> WColumn:
     return WColumn(d["name"], d.get("designation", "Y"), d.get("long_name", ""),
                    d.get("units", ""), d.get("comments", ""), d.get("formula", ""),
-                   list(d.get("values", [])), int(d.get("width", 0) or 0))
+                   list(d.get("values", [])), int(d.get("width", 0) or 0),
+                   {int(r) for r in d.get("mask") or [] if int(r) >= 0})
 
 
 _MATRIX_ATTRS = ("x1", "x2", "y1", "y2", "long_name", "units", "comments", "x_name",
