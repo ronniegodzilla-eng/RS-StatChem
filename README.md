@@ -1,8 +1,8 @@
 # RS-StatChem
 
 Aplikasi desktop untuk analisis statistik penelitian (S1–S3), Response Surface Methodology,
-grafik ilmiah, dan gambar struktur kimia. Saat dibuka, aplikasi menampilkan layar pemilih
-**empat modul**, masing-masing dengan jendela dan cara input datanya sendiri:
+grafik ilmiah, gambar struktur kimia, dan analisis citra. Saat dibuka, aplikasi menampilkan layar
+pemilih **lima modul**, masing-masing dengan jendela dan cara input datanya sendiri:
 
 | Modul | Mengikuti | Input data |
 |---|---|---|
@@ -10,13 +10,14 @@ grafik ilmiah, dan gambar struktur kimia. Saat dibuka, aplikasi menampilkan laya
 | **RSM / DOE** | Design-Expert | Wizard New Design, design layout (Std, Run, Factor, Response), panel navigasi Design / Analysis / Optimization |
 | **Graph & Analysis** | OriginLab | Workbook (kolom A(X), B(Y), Long Name, Units, F(x)), Project Explorer, grafik dan fitting di area kerja |
 | **Chemical Drawing** | ChemDraw | Dokumen gambar dengan palet alat, Analysis Window, Chemical Properties |
+| **Image Analysis** | ImageJ | Jendela gambar, toolbar ROI, menu File/Edit/Image/Process/Analyze/Plugins, ROI Manager, Results, macro |
 
 Modul lain bisa dibuka kapan saja lewat **Window → Modules**.
 
 Dibangun dengan Python 3.12, PySide6 (Qt), pandas, SciPy, dan statsmodels. Berjalan native di
 Apple Silicon dan sebagai aplikasi portable (tanpa instalasi) di Windows.
 
-## Status (v0.9.1)
+## Status (v0.10.0)
 
 129 entri menu aktif; yang masih nonaktif hanya Ratio dan Distances. 567 tes otomatis
 membandingkan hasil dengan SciPy, statsmodels, pingouin, lavaan (via contoh terpublikasi),
