@@ -288,5 +288,121 @@ def save_image(doc: ImageDoc, path, fmt: str | None = None, **options) -> Path:
     return path
 
 
+def lut_image(lut, title: str = "LUT") -> ImageDoc:
+    """The 256x32 ramp ImageJ shows when a LUT is opened without an image."""
+    import numpy as np
+
+    ramp = np.tile(np.arange(256, dtype=np.uint8), (32, 1))
+    doc = ImageDoc.from_array(ramp, "YX", title)
+    doc.luts = [lut.copy()]
+    if not (lut.is_grayscale() or lut.is_inverted()):
+        from rsstatchem.core.imaging.image import COLOR_256
+        doc.type = COLOR_256
+    return doc
+
+
+def open_in_session(session, path) -> Opened:
+    """File > Open into a session: images are added, a ``.roi`` becomes the active image's
+    selection, RoiSet archives fill the ROI Manager, LUTs apply to the active image (or open
+    as a LUT ramp), tables are shown, projects are loaded; text files and macros are announced
+    with the "text_opened" / "macro_opened" events (the UI opens an editor window)."""
+    opened = open_file(path)
+    kind, value = opened.kind, opened.value
+    if kind == "image":
+        session.add_image(value)
+    elif kind == "roi":
+        im = session.active
+        if im is None:
+            raise ValueError("There are no images open")
+        im.roi = value
+        session.image_updated(im)
+    elif kind == "rois":
+        session.roi_manager.extend(value)
+        session.emit("roi_manager_updated", session.roi_manager)
+    elif kind == "lut":
+        im = session.active
+        if im is None or im.is_rgb:
+            session.add_image(lut_image(value, Path(path).name))
+        else:
+            luts = list(im.luts)
+            luts[im.position[0]] = value.copy()
+            im.luts = luts
+            session.image_updated(im)
+    elif kind == "table":
+        session.show_table(value)
+    elif kind == "project":
+        from rsstatchem.core.imaging.project import load_project
+        load_project(session, path)
+    elif kind == "text":
+        session.emit("text_opened", (Path(path).name, value, str(path)))
+    elif kind == "macro":
+        session.emit("macro_opened", (Path(path).name, value, str(path)))
+    return opened
+
+
+IMAGE_TITLE_FORMATS = ("tiff", "zip", "gif", "jpeg", "png", "bmp", "pgm", "fits", "text image",
+                       "raw")
+
+
+def save_in_session(session, fmt: str, path, image: ImageDoc | None = None) -> Path:
+    """``saveAs(format, path)`` of ImageJ: image formats save the active image (renamed to the
+    file name, marked unchanged); "results"/"measurements", "selection", "xy coordinates",
+    "lut" and "text" (the Log) save those objects."""
+    key = fmt.strip().lower().rstrip(". ")
+    path = Path(path)
+    im = image if image is not None else session.active
+    opts = session.options
+    if key in ("results", "measurements", "table"):
+        if not path.suffix:
+            path = path.with_suffix(opts.results_extension or ".csv")
+        session.results.save(path, headers=opts.save_column_headers,
+                             row_numbers=opts.save_row_numbers if session.results is not None
+                             else None)
+        return path
+    if key == "text":
+        if not path.suffix:
+            path = path.with_suffix(".txt")
+        path.write_text("\n".join(session.log_lines) + "\n", encoding="utf-8")
+        return path
+    if im is None:
+        raise ValueError("There are no images open")
+    if key in ("selection", "roi"):
+        from rsstatchem.core.imaging.io.roi_codec import write_roi
+        if im.roi is None:
+            raise ValueError("Selection required")
+        if not path.suffix:
+            path = path.with_suffix(".roi")
+        write_roi(im.roi, path)
+        return path
+    if key in ("xy coordinates", "xy"):
+        from rsstatchem.core.imaging.io.text_image import xy_text
+        if im.roi is None:
+            raise ValueError("Selection required")
+        if not path.suffix:
+            path = path.with_suffix(".txt")
+        path.write_text(xy_text(im.roi, im.calibration, im.height))
+        return path
+    k = format_key(fmt, path)
+    if k == "lut":
+        from rsstatchem.core.imaging.io.lut_io import write_lut
+        if not path.suffix:
+            path = path.with_suffix(".lut")
+        write_lut(im.lut, path)
+        return path
+    out = save_image(im, path, k, intel=opts.intel_byte_order, quality=opts.jpeg_quality,
+                     precision=opts.decimal_places)
+    if k in IMAGE_TITLE_FORMATS:
+        title = out.name
+        if k == "zip":
+            title = out.stem + ".tif"
+        im.title = session.unique_title(title, exclude=im)
+        im.path = str(out)
+        if k in ("tiff", "zip"):
+            im.changed = False
+        session.image_updated(im)
+    return out
+
+
 __all__ = ["READERS", "register_reader", "open_image", "open_file", "Opened", "save_image",
-           "WRITERS", "format_key", "sniff", "read_pillow", "read_tiff"]
+           "WRITERS", "format_key", "sniff", "read_pillow", "read_tiff", "open_in_session",
+           "save_in_session", "lut_image"]

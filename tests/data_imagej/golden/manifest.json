@@ -1,5 +1,13 @@
 {
  "cases": {
+  "edit": {
+   "date": "2026-10-28",
+   "files": [
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "d0fdd3087a752754c0090ab1d066c0f7448d32449eeb6559bd4f6cfa7e039d5f"
+  },
   "filters": {
    "date": "2026-10-27",
    "files": [
