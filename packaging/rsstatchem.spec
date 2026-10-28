@@ -79,8 +79,10 @@ def indigo_binaries():
     """EPAM Indigo (epam.indigo, Apache-2.0; optional) for automatic reaction atom mapping. Its
     Python package loads the native library with ctypes from indigo/lib/<platform>/, which
     PyInstaller cannot see, so only that one library (not the renderer, InChI or Bingo
-    libraries the app does not use) is collected into the same relative folder. Nothing is
-    added when Indigo is not installed."""
+    libraries the app does not use) is collected into the same relative folder, with the
+    Microsoft C++ runtime DLLs the Windows wheel ships beside indigo.dll (Windows looks for
+    them in that folder; a PC without the Visual C++ redistributable has none elsewhere).
+    Nothing is added when Indigo is not installed."""
     try:
         import indigo
     except Exception:  # noqa: BLE001 - optional dependency
@@ -88,7 +90,9 @@ def indigo_binaries():
     lib = Path(indigo.__file__).parent / "lib"
     out = []
     for path in sorted(lib.rglob("*")):
-        if path.is_file() and path.name in ("libindigo.dylib", "libindigo.so", "indigo.dll"):
+        if path.is_file() and path.name.lower() in (
+                "libindigo.dylib", "libindigo.so", "indigo.dll",
+                "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
             out.append((str(path), str(Path("indigo/lib") / path.parent.relative_to(lib))))
     return out
 

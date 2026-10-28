@@ -17,7 +17,7 @@ Modul lain bisa dibuka kapan saja lewat **Window → Modules**.
 Dibangun dengan Python 3.12, PySide6 (Qt), pandas, SciPy, dan statsmodels. Berjalan native di
 Apple Silicon dan sebagai aplikasi portable (tanpa instalasi) di Windows.
 
-## Status (v0.10.1)
+## Status (v0.10.2)
 
 129 entri menu aktif; yang masih nonaktif hanya Ratio dan Distances. 567 tes otomatis
 membandingkan hasil dengan SciPy, statsmodels, pingouin, lavaan (via contoh terpublikasi),

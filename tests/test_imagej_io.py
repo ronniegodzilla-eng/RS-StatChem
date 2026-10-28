@@ -219,8 +219,9 @@ def test_committed_inputs_equal_current_writers():
     files = _make_inputs().build()
     committed = {p.name for p in (input_path("io")).iterdir()}
     assert set(files) == committed
-    for name, data in files.items():
-        assert (input_path("io") / name).read_bytes() == data, name
+    # every differing file at once, so one platform difference cannot hide the next
+    assert [name for name, data in files.items()
+            if (input_path("io") / name).read_bytes() != data] == []
 
 
 def test_imagej_reads_our_files():

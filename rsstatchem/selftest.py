@@ -83,6 +83,7 @@ def run() -> int:
             print(f"selftest ok: {module}")
     # the module windows import lazily, so a packaged build could miss them unnoticed
     import importlib
+    import importlib.util
 
     from rsstatchem.ui.modules import MODULES
 
@@ -118,6 +119,17 @@ def run() -> int:
     except Exception:  # noqa: BLE001
         failures += 1
         print(f"selftest FAILED: rsstatchem.ui.imagej\n{traceback.format_exc()}")
+    if importlib.util.find_spec("indigo") is not None:
+        try:  # bundled Indigo must load its native library (and on Windows its C++ runtime)
+            from indigo import Indigo
+
+            ind = Indigo()
+            rxn = ind.loadReaction("CCO>>CC=O")
+            rxn.automap("discard")
+            print(f"selftest ok: Indigo {ind.version()} atom mapping")
+        except Exception:  # noqa: BLE001
+            failures += 1
+            print(f"selftest FAILED: Indigo atom mapping\n{traceback.format_exc()}")
     if failures:
         return 1
     print("RS-StatChem selftest OK")

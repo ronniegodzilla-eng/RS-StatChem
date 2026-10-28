@@ -207,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     if "--selftest" in argv:
         from rsstatchem.selftest import run
 
+        # the Windows build has no console, so CI asks for the report in a file
+        log = os.environ.get("RSSTATCHEM_SELFTEST_LOG")
+        if log:
+            sys.stdout = sys.stderr = open(log, "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+
         return run()
     if sys.platform == "win32":
         try:  # own taskbar icon instead of python.exe's

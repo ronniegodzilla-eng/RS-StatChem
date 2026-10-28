@@ -205,7 +205,7 @@ def build() -> dict[str, bytes]:
 
 
 def _normalise(suffix: str, data: bytes) -> bytes:
-    """Make DICOM UIDs and zip timestamps deterministic."""
+    """Make DICOM UIDs and zip timestamps and "made by" systems deterministic."""
     import io
     import re
     import zipfile
@@ -218,6 +218,7 @@ def _normalise(suffix: str, data: bytes) -> bytes:
         for info in src.infolist():
             zi = zipfile.ZipInfo(info.filename, date_time=(2026, 1, 1, 0, 0, 0))
             zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.create_system = 3  # ZipInfo writes 0 (MS-DOS) on Windows and 3 (Unix) elsewhere
             zf.writestr(zi, src.read(info))
     return out.getvalue()
 

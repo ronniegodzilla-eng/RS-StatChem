@@ -131,8 +131,10 @@ jobs:
         env:
           RSSTATCHEM_SELFTEST_OPSIN: bundled   # name -> structure must work with the bundled Java
           RSSTATCHEM_SELFTEST_CDK: bundled     # CDK logP must work with the bundled Java
+          RSSTATCHEM_SELFTEST_LOG: selftest.log  # the windowed exe has no console to print to
         run: |
           $p = Start-Process dist/RS-StatChem/RS-StatChem.exe -ArgumentList "--selftest" -Wait -PassThru
+          if (Test-Path selftest.log) { Get-Content selftest.log } else { "no selftest report written" }
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }
 
       - name: Package (macOS)
