@@ -75,7 +75,15 @@ def test_ordinal_ase_equal_delta_method():
     }
     o = ct.ordinal_measures(n)
     for key, f in fns.items():
+        if key == "d_S":
+            continue
         assert o[key].ase == pytest.approx(ct.delta_ase(f, n), rel=1e-5), key
+    # symmetric Somers' d: IBM CROSSTABS prints 2 sqrt(Dr Dc)/(Dr + Dc) * ASE1(tau-b), which is
+    # close to but not the full delta-method value (WP7: follow IBM)
+    drv, dcv = dr(n), dc(n)
+    assert o["d_S"].ase == pytest.approx(2 * math.sqrt(drv * dcv) / (drv + dcv)
+                                         * o["btau"].ase, rel=1e-12)
+    assert o["d_S"].ase == pytest.approx(ct.delta_ase(fns["d_S"], n), rel=1e-2)
     # all ordinal measures share the null-hypothesis T, as SPSS prints them
     assert len({round(o[k].t, 10) for k in fns}) == 1
 

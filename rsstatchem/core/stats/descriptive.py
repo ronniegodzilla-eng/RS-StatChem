@@ -169,13 +169,15 @@ def _descriptives(ds: Dataset, names: list[str], stats=DEFAULT_DESCRIPTIVES,
             if key == "mean":
                 if "mean" in stats:
                     cells.append(fmt(r["mean"], d + 2))
-                if "sem" in stats:
-                    cells.append(fmt(r["sem"], d + 2))
+                if "sem" in stats:   # SPSS: mean d+2, its std. error d+3
+                    cells.append(fmt(r["sem"], d + 3))
             elif key in stats:
                 if key in ("range", "min", "max", "sum"):
                     cells.append(fmt(r[key], d))
                 elif key in ("std", "var"):
-                    cells.append(fmt(r[key], d + 3 if key == "var" else d + 2))
+                    # SPSS DESCRIPTIVES: Std. Deviation d+3, Variance 3 decimals
+                    # (UCLA hsb2 write: 9.47859, 89.844)
+                    cells.append(fmt(r[key], 3 if key == "var" else d + 3))
                 else:
                     cells += [fmt(r[key], 3), fmt(r["se_" + key], 3)]
         rows.append(cells)

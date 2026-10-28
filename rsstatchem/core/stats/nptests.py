@@ -647,12 +647,14 @@ def mcnemar_test(a: np.ndarray, b: np.ndarray) -> dict:
 
 def marginal_homogeneity_test(a: np.ndarray, b: np.ndarray) -> dict:
     """SPSS marginal homogeneity test (ordinal extension of McNemar): over the off-diagonal
-    pairs, MH = Σ x1, E(MH) = Σ (x1 + x2)/2, Var(MH) = Σ (x1 - x2)²/4."""
+    pairs, MH = Σ x2 (the second variable's scores, as SPSS prints it: IBM Exact Tests manual,
+    Fig. 5.8, observed 6.687 = sum of the control doses), E(MH) = Σ (x1 + x2)/2,
+    Var(MH) = Σ (x1 - x2)²/4."""
     a, b = np.asarray(a, float), np.asarray(b, float)
     distinct = len(np.unique(np.concatenate([a, b])))
     off = a != b
     x1, x2 = a[off], b[off]
-    obs = float(x1.sum())
+    obs = float(x2.sum())
     mean = float(((x1 + x2) / 2).sum())
     var = float((((x1 - x2) ** 2) / 4).sum())
     sd = math.sqrt(var) if var > 0 else float("nan")

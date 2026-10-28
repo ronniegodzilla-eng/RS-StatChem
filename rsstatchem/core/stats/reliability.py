@@ -93,33 +93,47 @@ def guttman_lambdas(x: np.ndarray) -> list[float]:
 
 
 def parallel_model(x: np.ndarray, strict: bool = False) -> dict:
-    """ML estimates under the parallel (equal variances and covariances) or strictly parallel
-    (also equal means) model, with the likelihood-ratio goodness-of-fit test."""
+    """Parallel / strictly parallel model (Kristof 1963) exactly as in the IBM SPSS Statistics
+    Algorithms, RELIABILITY: "Parallel Model" and "Strict Parallel" (common, true and error
+    variance, common inter-item correlation, reliability, unbiased reliability and the
+    goodness-of-fit chi-square with IBM's small-sample correction multiplier
+    1 - k(k+1)^2(2k-3) / (12(k-1) df (W-1)))."""
     n, k = x.shape
     s = np.cov(x, rowvar=False)
     m = x.mean(0)
-    target = s.copy()
-    if strict:
-        d = m - m.mean()
-        target = s + np.outer(d, d) * n / (n - 1)
-    common = np.trace(target) / k
-    true = (target.sum() - np.trace(target)) / (k * (k - 1))
-    sigma0 = np.full((k, k), true) + np.eye(k) * (common - true)
+    var_b = float(np.trace(s) / k)                               # mean item variance
+    cov_b = float((s.sum() - np.trace(s)) / (k * (k - 1)))       # mean inter-item covariance
     sign_u, logdet_u = np.linalg.slogdet(s)
-    sign_c, logdet_c = np.linalg.slogdet(sigma0)
-    inv0 = np.linalg.inv(sigma0)
-    chi = (n - 1) * (logdet_c - logdet_u + np.trace(inv0 @ s) - k)
     if strict:
-        d = m - m.mean()
-        chi += n * d @ inv0 @ d
-    dof = k * (k + 1) // 2 - 2 + (k - 1 if strict else 0)
-    rho = true / common if common else float("nan")
-    rel = k * rho / (1 + (k - 1) * rho)
-    return {"common": common, "true": true, "error": common - true, "rho": rho,
-            "reliability": rel, "unbiased": 1 - (n - 3) / (n - 1) * (1 - rel),
+        sd2 = float(np.sum((m - m.mean()) ** 2))                 # sum (T_i - G)^2
+        common = var_b + sd2 / k
+        resid = x - x.mean(1, keepdims=True)
+        error = float(np.sum(resid ** 2) / (n * (k - 1)))        # MS within people
+        true = common - error
+        rho = (cov_b - sd2 / ((k - 1) * k)) / common if common else float("nan")
+        rel = k * rho / (1 + (k - 1) * rho)
+        unbiased = (3 + (n - 3) * rel) / n
+        with np.errstate(divide="ignore", invalid="ignore"):
+            logdet_c = math.log(var_b + (k - 1) * cov_b) + (k - 1) * math.log(
+                var_b - cov_b + sd2 / k)
+        dof = k * (k + 3) // 2 - 3
+    else:
+        common, true = var_b, cov_b
+        error = var_b - cov_b
+        rho = cov_b / var_b if var_b else float("nan")
+        rel = k * rho / (1 + (k - 1) * rho)
+        unbiased = (2 + (n - 3) * rel) / (n - 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            logdet_c = (k - 1) * math.log(var_b - cov_b) + math.log(var_b + (k - 1) * cov_b)
+        dof = k * (k + 1) // 2 - 2
+    log_l = logdet_u - logdet_c
+    corr = 1 - k * (k + 1) ** 2 * (2 * k - 3) / (12 * (k - 1) * dof * (n - 1))
+    chi = -(n - 1) * corr * log_l
+    return {"common": common, "true": true, "error": error, "rho": rho,
+            "reliability": rel, "unbiased": unbiased,
             "chi": chi, "df": dof, "p": float(stats.chi2.sf(chi, dof)),
             "logdet_u": logdet_u if sign_u > 0 else float("nan"),
-            "logdet_c": logdet_c if sign_c > 0 else float("nan")}
+            "logdet_c": logdet_c}
 
 
 def one_factor_ml(s: np.ndarray, n: int | None = None) -> dict:

@@ -11,6 +11,7 @@ import pytest
 from scipy import stats
 
 from rsstatchem.core.dataset import Dataset
+from rsstatchem.core.stats import resample as rs
 from rsstatchem.core.stats import descriptive
 from rsstatchem.core.stats.common import fmt, fmt_p
 from rsstatchem.core.stats.descriptive import StatSpec
@@ -101,8 +102,10 @@ def test_one_sample_t_matches_scipy(qapp, ds):
                           n_resamples=1000, method="percentile",
                           rng=np.random.default_rng(2000000))
     row = t.rows[0]
-    assert row[-2] == fmt(ref.confidence_interval.low)
-    assert row[-1] == fmt(ref.confidence_interval.high)
+    # same bootstrap samples as SciPy; limits by IBM's order-statistic rule (WP7)
+    srt = np.sort(ref.bootstrap_distribution)
+    assert row[-2] == fmt(rs.ibm_order_statistic(srt, 0.025))
+    assert row[-1] == fmt(rs.ibm_order_statistic(srt, 0.975))
     assert row[3] == fmt(ref.standard_error)
     stats_t = _table(sec, "One-Sample Statistics")
     assert stats_t.rows[1][1] == "Bootstrapᵃ" and stats_t.rows[1][2] == "Bias"
@@ -141,7 +144,9 @@ def test_descriptives_and_frequencies_via_editor_params(qapp, ds):
     sds = np.array([np.nanstd(x2[i], ddof=1) for i in idx])
     sd_col = next(c for c, col in enumerate(t.columns) if col == "Std. Deviation")
     se_row = next(i for i, r in enumerate(t.rows) if r[0] == "x2") + 2
-    assert t.rows[se_row][sd_col] == fmt(sds.std(ddof=1), 4)
+    # bootstrap rows use the statistic's format; SPSS DESCRIPTIVES prints the SD with the
+    # variable's decimals + 3 (UCLA hsb2 write: 9.47859), so 2 + 3 = 5 here
+    assert t.rows[se_row][sd_col] == fmt(sds.std(ddof=1), 5)
     sec = descriptive.frequencies(ds, ["y"], StatSpec(["mean", "median", "quartiles"],
                                                       {"bootstrap": BOOT}), False)
     t = _table(sec, "Statistics")
@@ -159,7 +164,7 @@ def test_correlations_explore_means_crosstabs(qapp, ds):
         np.corrcoef(a, b)[0, 1], paired=True, n_resamples=1000, method="percentile",
         rng=np.random.default_rng(2000000))
     lower = next(r for r in tabs[0].rows if r[2] == "95% CI Lower")
-    assert lower[4] == fmt(ref.confidence_interval.low)
+    assert lower[4] == fmt(rs.ibm_order_statistic(np.sort(ref.bootstrap_distribution), 0.025))
     sec = _run(rdlg.PartialDialog, ds, {"vars": ["y", "x1"], "controls": ["x2"]})
     assert any(r[3] == "Bias" for r in _table(sec, "Correlations").rows)
     sec = _run(edlg.ExploreDialog, ds, {"deps": ["y"], "factors": ["g2"]},
@@ -187,9 +192,19 @@ def test_model_procedures(qapp, ds):
     idx = np.random.default_rng(2000000).integers(0, len(yv), (1000, len(yv)))
     bs = np.array([np.linalg.lstsq(X[i], yv[i], rcond=None)[0] for i in idx])
     assert t.rows[3][4] == fmt(bs[:, 1].std(ddof=1))
-    lo, hi = np.quantile(bs[:, 2], [0.025, 0.975])
+    srt = np.sort(bs[:, 2])
+    lo, hi = rs.ibm_order_statistic(srt, 0.025), rs.ibm_order_statistic(srt, 0.975)
     assert (t.rows[4][-2], t.rows[4][-1]) == (fmt(lo), fmt(hi))
-    p = min(1, 2 * min((bs[:, 2] <= 0).mean(), (bs[:, 2] >= 0).mean()))
+    # IBM percentile-t pivotal test with the OLS standard error in every sample
+    def ols_se(Xm, ym):
+        bb = np.linalg.lstsq(Xm, ym, rcond=None)[0]
+        r = ym - Xm @ bb
+        mse = r @ r / (len(ym) - Xm.shape[1])
+        return np.sqrt(np.diag(np.linalg.inv(Xm.T @ Xm)) * mse)
+    b_full = np.linalg.lstsq(X, yv, rcond=None)[0]
+    z0 = b_full[2] / ols_se(X, yv)[2]
+    zb = np.array([(bs[k, 2] - b_full[2]) / ols_se(X[i], yv[i])[2] for k, i in enumerate(idx)])
+    p = (np.count_nonzero(zb ** 2 >= z0 ** 2) + 1) / (len(idx) + 1)
     assert t.rows[4][5] == fmt_p(p)
     for cls, memory, opts, title in [
         (ldlg.BinaryLogisticDialog, {"dep": ["yb"]}, {"blocks": [["enter", ["x1", "x2"]]]},

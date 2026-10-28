@@ -413,17 +413,19 @@ def oneway(ds: Dataset, dependents: list[str], factor: str, descriptives: bool =
 
 def _omega_random(F: float, dfb: int, dfw: int, groups: list[Group], level: float
                   ) -> list[str]:
-    """Random-effect omega squared (intraclass correlation) with its F-based interval."""
-    n = sum(g.n for g in groups)
-    n0 = (n - sum(g.n ** 2 for g in groups) / n) / dfb
-    a = (1 - level) / 2
+    """Random-effect omega squared as in the IBM SPSS Statistics Algorithms (ONEWAY, "Effect
+    Size for One-way ANOVA", v31 edition): point (BSSM - WSSM)/(BSSM + df_t WSSM) =
+    (F - 1)/(F + df_t), df_t = N - 1; limits (df_t eta^2 - df_e)/((df_w - df_t df_e) eta^2 +
+    df_t df_e) evaluated at the noncentral-F (Steiger 2004) limits of eta^2. Negative values
+    are shown as they are."""
+    dft = dfb + dfw
+    e_lo, e_hi = eta_interval(F, dfb, dfw, level)
 
-    def om(fv):
-        return (fv - 1) / (fv + n0 - 1)
+    def lim(e):
+        den = (dfw - dft * dfb) * e + dft * dfb
+        return (dft * e - dfb) / den if den else float("nan")
 
-    lo = F / stats.f.ppf(1 - a, dfb, dfw)
-    hi = F / stats.f.ppf(a, dfb, dfw)
-    return [fmt(om(F)), fmt(om(lo)), fmt(om(hi))]
+    return [fmt((F - 1) / (F + dft)), fmt(lim(e_lo)), fmt(lim(e_hi))]
 
 
 def _contrast_rows(var, groups: list[Group], contrasts, msw, dfw, level, coef_rows,

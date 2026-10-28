@@ -9,16 +9,24 @@ and SPSS's columns are reported:
 
 * **Bias** = mean of the bootstrap estimates minus the original estimate,
 * **Std. Error** = standard deviation (n-1) of the bootstrap estimates,
-* **Sig. (2-tailed)** = ``min(1, 2·min(P*(θ* ≤ θ0), P*(θ* ≥ θ0)))`` — the significance level
-  at which the percentile interval just excludes the null value θ0 (0 unless stated), so the
-  p value and the percentile interval never contradict each other,
-* **Confidence interval**: *percentile* or *bias-corrected and accelerated (BCa)* (Efron &
-  Tibshirani 1993, §14.3), computed exactly as ``scipy.stats.bootstrap`` does (linear
-  quantiles, z0 from the "mean" percentile of the original estimate, acceleration from the
-  jackknife), so results with the same seed agree with SciPy to machine precision.
+* **Sig. (2-tailed)** = IBM's percentile-t pivotal test (IBM SPSS Statistics Algorithms,
+  "Bootstrapping Algorithms" > "Percentile-t Pivotal Tests"): z0 = (T - T0)/SE,
+  z*_b = (T*_b - T)/SE*_b, p = (#{z*_b^2 >= z0^2} + 1)/(B + 1), with the procedure's own
+  standard error in every sample where the refit provides one (linear and binary logistic
+  regression coefficients); otherwise SE and SE*_b are both the bootstrap standard
+  error (the basic-bootstrap form of the same test). T0 = 0 unless stated.
+* **Confidence interval**: *percentile* or *bias-corrected and accelerated (BCa)*, both by
+  IBM's order-statistic rule: the limit for tail probability alpha is T*_((B+1) alpha), and a
+  non-integer (B+1) alpha is interpolated on the normal-quantile scale between the
+  neighbouring order statistics (the extreme order statistic is used when (B+1) alpha < 1 or
+  > B). BCa: alpha~ = Phi(w + (w + z_alpha)/(1 - a (w + z_alpha))),
+  w = Phi^-1(#{T*_b < T}/(B + 1)), a = sum l^3 / (6 (sum l^2)^(3/2)), l = (N - 1)(T - T_(-i))
+  (jackknife).
 
-The random numbers come from NumPy's PCG64 generator seeded with the dialog's seed (SPSS uses
-the Mersenne Twister, so individual bootstrap samples differ from SPSS, the method does not).
+The random numbers come from NumPy's PCG64 generator seeded with the dialog's seed. IBM
+documents two generators (Version 12 compatible and Mersenne Twister) but not the default
+generator, the default seed or how draws map to cases, so individual bootstrap samples cannot
+reproduce SPSS's; the default seed 2000000 and B = 1000 follow the SPSS dialogs.
 Statistics are evaluated on batches of index matrices so simple statistics are fully
 vectorised; model refits (logistic, Cox, GENLIN…) go through ``ModelInfo.refit``.
 
@@ -191,6 +199,8 @@ class BootResult:
     accel: np.ndarray | None = None
     null: np.ndarray | float = 0.0
     seconds: float = 0.0
+    boot_se: np.ndarray | None = None  # (B, k) per-sample standard errors, if the refit has them
+    se0: np.ndarray | None = None      # analytic standard errors of the original estimates
 
     def cells(self, i: int, decimals: int = 3, sig: bool = True) -> list[str]:
         """Bias, Std. Error, [Sig. (2-tailed)], Lower, Upper as formatted strings."""
@@ -207,6 +217,26 @@ class BootResult:
         return int(finite.min()) if len(finite) else 0
 
 
+def ibm_order_statistic(sorted_vals: np.ndarray, alpha: float) -> float:
+    """IBM bootstrap limit for tail probability ``alpha``: T*_((B+1) alpha) from the sorted
+    bootstrap values, interpolated on the normal-quantile scale when (B+1) alpha is not an
+    integer (IBM SPSS Statistics Algorithms, "Percentile confidence interval")."""
+    B = len(sorted_vals)
+    if B == 0 or not np.isfinite(alpha):
+        return float("nan")
+    pos = (B + 1) * alpha
+    k = int(math.floor(pos + 1e-9))
+    if k < 1:
+        return float(sorted_vals[0])
+    if k >= B:
+        return float(sorted_vals[-1])
+    lo, hi = float(sorted_vals[k - 1]), float(sorted_vals[k])
+    if abs(pos - k) < 1e-9:
+        return lo
+    zk, zk1 = special.ndtri(k / (B + 1)), special.ndtri((k + 1) / (B + 1))
+    return lo + (special.ndtri(alpha) - zk) / (zk1 - zk) * (hi - lo)
+
+
 def _summarise(res: BootResult, jack: np.ndarray | None) -> BootResult:
     boot, est, spec = res.boot, res.estimate, res.spec
     k = boot.shape[1]
@@ -220,8 +250,8 @@ def _summarise(res: BootResult, jack: np.ndarray | None) -> BootResult:
     res.accel = np.full(k, np.nan)
     null = np.broadcast_to(np.asarray(res.null, float), (k,))
     for j in range(k):
-        col = boot[:, j]
-        col = col[np.isfinite(col)]
+        ok = np.isfinite(boot[:, j])
+        col = boot[ok, j]
         B = len(col)
         res.n_valid[j] = B
         if B < 2 or not np.isfinite(est[j]):
@@ -232,31 +262,45 @@ def _summarise(res: BootResult, jack: np.ndarray | None) -> BootResult:
         if spec.ci == "bca" and jack is not None:
             jj = jack[:, j]
             jj = jj[np.isfinite(jj)]
-            pct_score = (np.count_nonzero(col < est[j]) + np.count_nonzero(col <= est[j])) \
-                / (2.0 * B)
-            z0 = special.ndtri(pct_score)
+            w = special.ndtri(np.count_nonzero(col < est[j]) / (B + 1.0))
             nj = float(len(jj))
-            u = (nj - 1) * (jj.mean() - jj)
-            den = np.sum(u ** 2) / nj ** 2
-            a = (np.sum(u ** 3) / nj ** 3) / 6 / den ** 1.5 if den > 0 else 0.0
+            u = (nj - 1) * (est[j] - jj)
+            den = np.sum(u ** 2)
+            a = np.sum(u ** 3) / (6 * den ** 1.5) if den > 0 else 0.0
             res.accel[j] = a
             za = special.ndtri(alpha)
-            n1, n2 = z0 + za, z0 - za
-            lo_q = special.ndtr(z0 + n1 / (1 - a * n1))
-            hi_q = special.ndtr(z0 + n2 / (1 - a * n2))
+            n1, n2 = w + za, w - za
+            lo_q = special.ndtr(w + n1 / (1 - a * n1))
+            hi_q = special.ndtr(w + n2 / (1 - a * n2))
         if np.isfinite(lo_q) and np.isfinite(hi_q):
-            res.lower[j], res.upper[j] = np.quantile(col, [lo_q, hi_q], method="linear")
-        below = np.count_nonzero(col <= null[j]) / B
-        above = np.count_nonzero(col >= null[j]) / B
-        res.p[j] = min(1.0, 2 * min(below, above))
+            srt = np.sort(col)
+            res.lower[j] = ibm_order_statistic(srt, lo_q)
+            res.upper[j] = ibm_order_statistic(srt, hi_q)
+        # percentile-t pivotal test (IBM)
+        se_b = res.boot_se[ok, j] if res.boot_se is not None else None
+        se0 = res.se0[j] if res.se0 is not None else float("nan")
+        if se_b is not None and np.isfinite(se0) and se0 > 0 and np.all(np.isfinite(se_b)) \
+                and np.all(se_b > 0):
+            z0 = (est[j] - null[j]) / se0
+            zb = (col - est[j]) / se_b
+        else:
+            sd = res.se[j]
+            if not sd > 0:
+                res.p[j] = 1.0
+                continue
+            z0 = (est[j] - null[j]) / sd
+            zb = (col - est[j]) / sd
+        res.p[j] = (np.count_nonzero(zb ** 2 >= z0 ** 2 * (1 - 1e-12)) + 1) / (B + 1.0)
     return res
 
 
 def bootstrap_indices(n: int, evaluate: Callable[[np.ndarray], np.ndarray],
                       estimate, spec: BootSpec, strata=None, null=0.0,
-                      batch: int | None = None) -> BootResult:
+                      batch: int | None = None, se0=None) -> BootResult:
     """Core engine. ``evaluate(idx)`` maps a (b, n) index matrix to (b, k) statistics (rows of
-    NaN for samples where the statistic cannot be computed)."""
+    NaN for samples where the statistic cannot be computed). With ``se0`` (analytic standard
+    errors of the k estimates) ``evaluate`` returns (b, 2k): the statistics followed by their
+    standard errors in each sample, used by IBM's percentile-t significance test."""
     t0 = time.perf_counter()
     estimate = np.atleast_1d(np.asarray(estimate, float))
     rng = np.random.default_rng(spec.seed)
@@ -268,12 +312,17 @@ def bootstrap_indices(n: int, evaluate: Callable[[np.ndarray], np.ndarray],
         done += len(idx)
         if PROGRESS is not None:
             PROGRESS(done, spec.samples)
-    boot = np.vstack(out) if out else np.empty((0, len(estimate)))
+    k = len(estimate)
+    boot = np.vstack(out) if out else np.empty((0, k * (2 if se0 is not None else 1)))
+    boot_se = None
+    if se0 is not None:
+        boot, boot_se = boot[:, :k], boot[:, k:2 * k]
     jack = None
     if spec.ci == "bca":
-        jack = np.vstack([np.asarray(evaluate(j), float).reshape(len(j), -1)
+        jack = np.vstack([np.asarray(evaluate(j), float).reshape(len(j), -1)[:, :k]
                           for j in _jackknife_batches(n, batch)])
-    res = BootResult(estimate, boot, spec, null=null)
+    res = BootResult(estimate, boot, spec, null=null, boot_se=boot_se,
+                     se0=None if se0 is None else np.asarray(se0, float))
     _summarise(res, jack)
     res.seconds = time.perf_counter() - t0
     return res
@@ -334,6 +383,8 @@ class ModelInfo:
     bootable: bool = True
     batch: int | None = None          # bootstrap samples per refit_batch call
     stat_label: str = ""              # pooled statistic column title (default t / Wald)
+    refit_batch_se: Callable | None = None  # like refit_batch, returning (b, 2k): estimates
+                                            # then their standard errors (IBM Sig. test)
 
     @property
     def p_values(self) -> np.ndarray:
@@ -348,7 +399,10 @@ class ModelInfo:
 
 
 def bootstrap_model(model: ModelInfo, spec: BootSpec, strata=None) -> BootResult:
-    if model.refit_batch is not None:
+    use_se = model.refit_batch_se is not None and model.se is not None
+    if use_se:
+        evaluate = model.refit_batch_se
+    elif model.refit_batch is not None:
         evaluate = model.refit_batch
     else:
         def evaluate(idx):
@@ -362,7 +416,8 @@ def bootstrap_model(model: ModelInfo, spec: BootSpec, strata=None) -> BootResult
             return out
     batch = model.batch if model.refit_batch is not None else 25
     with np.errstate(all="ignore"):
-        return bootstrap_indices(model.n, evaluate, model.estimate, spec, strata, batch=batch)
+        return bootstrap_indices(model.n, evaluate, model.estimate, spec, strata, batch=batch,
+                                 se0=model.se if use_se else None)
 
 
 # ============================================================================ output helpers
@@ -401,7 +456,10 @@ def specifications_table(spec: BootSpec) -> Table:
         rows.append(["Strata Variables", ", ".join(spec.strata)])
     if spec.seed is not None:
         rows.append(["Random Number Seed", str(spec.seed)])
-    return Table("Bootstrap Specifications", ["", ""], rows)
+    return Table("Bootstrap Specifications", ["", ""], rows, footnotes=[
+        "Random numbers: NumPy PCG64 generator. IBM does not document SPSS's default generator "
+        "or how its draws map to cases, so individual bootstrap samples (and Monte Carlo "
+        "results) differ slightly from SPSS output with the same seed."])
 
 
 def add_specifications(section: Section, spec: BootSpec) -> None:
