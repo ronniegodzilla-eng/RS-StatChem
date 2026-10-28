@@ -39,6 +39,8 @@ SPARK_HEIGHT = 34
 LABEL_BG = QColor("#f2f2f2")
 FORMULA_BG = QColor("#eef3fb")
 EXTRA_ROWS = 10   # rows added when typing into the last row
+MASK_FG = QColor("#d00000")       # masked cells (Origin: red)
+MASK_BG = QColor("#ffe3e3")
 
 
 def label_attr(row: int) -> str | None:
@@ -125,6 +127,13 @@ class SheetModel(QAbstractTableModel):
             left = isinstance(value, str)
             return int((Qt.AlignmentFlag.AlignLeft if left else Qt.AlignmentFlag.AlignRight)
                        | Qt.AlignmentFlag.AlignVCenter)
+        if r - HEADER_ROWS in col.mask:   # Origin draws masked cells red
+            if role == Qt.ItemDataRole.ForegroundRole:
+                return QBrush(MASK_FG)
+            if role == Qt.ItemDataRole.BackgroundRole:
+                return QBrush(MASK_BG)
+            if role == Qt.ItemDataRole.ToolTipRole:
+                return "Masked: excluded from plots, fits and analyses"
         if role == Qt.ItemDataRole.ForegroundRole and col.designation == "N":
             return QBrush(QColor("#9a9a9a"))
         return None
@@ -275,6 +284,7 @@ class SheetView(QTableView):
         self.setItemDelegateForRow(SPARK_ROW, SparklineDelegate(self))
         self.apply_widths()
         self.apply_sparklines()
+        self.selectionModel().selectionChanged.connect(self._quick_stats)
 
     @property
     def ws(self) -> Worksheet:
@@ -373,6 +383,40 @@ class SheetView(QTableView):
         cols = [i.column() for i in idx]
         return min(rows), min(cols), max(rows), max(cols)
 
+    def quick_stats(self) -> dict | None:
+        """Count / sum / mean / min / max of the selected numeric cells (masked cells
+        excluded) — shown in the status bar like Origin's quick statistics."""
+        sm = self.selectionModel()
+        idx = sm.selectedIndexes() if sm is not None else []
+        if len(idx) < 2:
+            return None
+        vals = []
+        for i in idx:
+            r = i.row() - HEADER_ROWS
+            if r < 0 or i.column() >= len(self.ws.columns):
+                continue
+            col = self.ws.columns[i.column()]
+            if r in col.mask:
+                continue
+            v = to_float(self.ws.cell(r, i.column()))
+            if math.isfinite(v):
+                vals.append(v)
+        if not vals:
+            return None
+        a = np.asarray(vals)
+        return {"count": len(a), "sum": float(a.sum()), "mean": float(a.mean()),
+                "min": float(a.min()), "max": float(a.max())}
+
+    def _quick_stats(self, *_args) -> None:
+        main = getattr(self.window, "main", None)
+        if main is None or not hasattr(main, "show_status"):
+            return
+        st = self.quick_stats()
+        if st is not None:
+            main.show_status(f"Average={st['mean']:.6g}  Sum={st['sum']:.6g}  "
+                             f"Count={st['count']}  Min={st['min']:.6g}  "
+                             f"Max={st['max']:.6g}")
+
     # ------------------------------------------------------------------ keys
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and \
@@ -459,6 +503,9 @@ class BookWindow(QWidget):
 
     def refresh(self) -> None:
         """Repaint the current grid after an in-place change (same sheets)."""
+        if self.tabs.count() != len(self.book.sheets):   # sheets added / removed
+            self.reload()
+            return
         for i in range(self.tabs.count()):
             w = self.tabs.widget(i)
             if isinstance(w, SheetView):
@@ -715,7 +762,66 @@ class BookWindow(QWidget):
         menu.addAction("Insert Rows", self.insert_rows)
         menu.addAction("Delete Rows", self.delete_rows)
         menu.addAction("Clear", self.clear_selection)
+        menu.addSeparator()
+        self.add_mask_actions(menu.addMenu("Mask"))
         menu.exec(global_pos)
+
+    # ------------------------------------------------------------------ masks
+    def add_mask_actions(self, menu: QMenu) -> QMenu:
+        """Origin's Mask submenu (Mask, Unmask, Swap Mask, Unmask Column/Sheet)."""
+        menu.addAction("&Mask", lambda: self.mask_selection("mask"))
+        menu.addAction("&Unmask", lambda: self.mask_selection("unmask"))
+        menu.addAction("&Swap Mask", lambda: self.mask_selection("swap"))
+        menu.addSeparator()
+        menu.addAction("Unmask Selected &Columns", self.unmask_columns)
+        menu.addAction("Unmask &All (Sheet)", self.unmask_all)
+        return menu
+
+    def selected_cells(self) -> dict[int, list[int]]:
+        """Selected data cells as {column: [0-based rows]} (whole columns: all data rows)."""
+        v = self.sheet_view()
+        if v is None:
+            return {}
+        sm = v.selectionModel()
+        out: dict[int, set] = {}
+        if sm is not None and sm.selectedColumns():
+            n = max(v.ws.data_rows(), 1)
+            return {i.column(): list(range(n)) for i in sm.selectedColumns()}
+        idx = sm.selectedIndexes() if sm is not None else []
+        if not idx and v.currentIndex().isValid():
+            idx = [v.currentIndex()]
+        for i in idx:
+            if i.row() >= HEADER_ROWS:
+                out.setdefault(i.column(), set()).add(i.row() - HEADER_ROWS)
+        return {c: sorted(r) for c, r in out.items()}
+
+    def mask_selection(self, how: str = "mask") -> int:
+        """Mask / unmask / swap the selected cells (one undo step); returns the cell count."""
+        ws = self.worksheet()
+        cells = self.selected_cells()
+        if ws is None or not cells:
+            return 0
+
+        def fn():
+            for c, rows in cells.items():
+                if how == "swap":
+                    ws.swap_mask(c, rows)
+                else:
+                    ws.set_mask(c, rows, how == "mask")
+        self.change({"mask": "Mask", "unmask": "Unmask", "swap": "Swap Mask"}[how], fn,
+                    recalc=False)
+        return sum(len(r) for r in cells.values())
+
+    def unmask_columns(self) -> None:
+        ws = self.worksheet()
+        cols = self.selected_columns()
+        if ws is not None and cols:
+            self.change("Unmask Columns", lambda: ws.clear_mask(cols), recalc=False)
+
+    def unmask_all(self) -> None:
+        ws = self.worksheet()
+        if ws is not None and ws.has_masks():
+            self.change("Unmask All", lambda: ws.clear_mask(), recalc=False)
 
     @staticmethod
     def lock_icon(target) -> str:

@@ -86,6 +86,7 @@ def xy_data(book: Workbook, ws: Worksheet, ycol: int, xcol: int | None = -1,
     ok = np.isfinite(x) & np.isfinite(y)
     ok[:lo] = False
     ok[hi:] = False
+    ok &= ~ws.point_mask([ycol, xcol], n)   # masked cells are left out (Origin's Mask)
     e = None
     ecol = ws.yerr_of(ycol) if with_error else None
     if ecol is not None:   # error bars / instrumental weights, when complete
@@ -134,19 +135,22 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
             params0=None, fixed=None, bounds=None, level: float = 0.95,
             conf_band: bool = True, pred_band: bool = False, residual_plot: bool = True,
             points: int = 200, output_fitted: bool = False, report: ReportSheet | None = None,
-            curve: Worksheet | None = None, mode: str = "manual") -> FitOutcome:
+            curve: Worksheet | None = None, mode: str = "manual", constraints=None,
+            algorithm: str = "auto", extra_tables: bool = True,
+            residual_extra: bool = False) -> FitOutcome:
     """Fit ``model`` (library name / FitFunction / "y = ..." equation) to ``data`` and put an
     Origin-style report sheet and fitted-curve sheet into the source workbook. With
     ``report`` / ``curve`` (a recalculation) those sheets are updated in place."""
     book, ws = data.book, data.sheet
     f = fit.resolve_model(model)
     w = fit.make_weights(weighting, data.y, data.yerr) if weighting != "none" else None
-    if weighting in ("instrumental", "direct") and data.yerr is None:
+    if weighting in ("instrumental", "direct", "arbitrary") and data.yerr is None:
         raise AnalysisError("Instrumental weighting needs a Y Error column to the right of the "
                             "Y column.")
     try:
         res = fit.fit_curve(data.x, data.y, f, params0=params0, bounds=bounds, fixed=fixed,
-                            weights=w, weighting=weighting)
+                            weights=w, weighting=weighting, constraints=constraints or None,
+                            algorithm=algorithm)
     except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
         raise AnalysisError(str(exc)) from None
     base, label = FIT_KINDS.get(kind, FIT_KINDS["nlfit"])
@@ -172,9 +176,14 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
     for note in res.notes:
         new.add_text("Warning", note, "warning")
     _table_into(new, fit.parameter_table(res, yname, level))
+    if extra_tables and kind == "nlfit":
+        from rsstatchem.ui.origin import fit_reports as frep
+        frep.add_derived(new, res, yname)
     _table_into(new, fit.statistics_table(res, yname))
     if res.dof > 0:
         _table_into(new, fit.anova_table(res, yname))
+    if extra_tables and kind == "nlfit":
+        frep.add_matrices(new, res, constraints)
     # fitted curve sheet (Origin's FitLinearCurve1)
     lo, hi = float(np.min(data.x)), float(np.max(data.x))
     xx = np.linspace(lo, hi, max(points, 10)) if hi > lo else np.array([lo])
@@ -191,6 +200,9 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
                       group="Residual Plots")
         new.add_graph("Histogram of the Residual", rg.residual_histogram_graph(res, yname),
                       width=460, group="Residual Plots")
+        if residual_extra:
+            from rsstatchem.ui.origin import fit_reports as frep
+            frep.add_residual_diagnostics(new, res, yname)
     new.op = {"kind": "fit", "fit_kind": kind, "input": src, "curve": curve_name,
               "mode": report.op.get("mode", mode) if rerun else mode,
               "settings": jsonable({"model": model if isinstance(model, str) else f.name,
@@ -198,7 +210,10 @@ def run_fit(data: XYData, model, kind: str = "nlfit", *, weighting: str = "none"
                                     "fixed": fixed, "bounds": bounds, "level": level,
                                     "conf_band": conf_band, "pred_band": pred_band,
                                     "residual_plot": residual_plot,
-                                    "output_fitted": output_fitted, "points": points})}
+                                    "output_fitted": output_fitted, "points": points,
+                                    "constraints": constraints or None,
+                                    "algorithm": algorithm,
+                                    "residual_extra": residual_extra})}
     if rerun:
         report.replace_items(new)
         report.op.update({k: v for k, v in new.op.items()})
@@ -259,6 +274,9 @@ def refit(book: Workbook, report: ReportSheet, books: dict) -> FitOutcome:
     data = xy_data(src_book, ws, y, x, with_error=True,
                    rows=tuple(src["rows"]) if src.get("rows") else None)
     s = dict(op.get("settings", {}))
+    if op.get("fit_kind") == "peaks":
+        from rsstatchem.ui.origin import fit_reports as frep
+        return frep.rerun_peaks(data, report, book)
     curve = book.sheet(op.get("curve", ""))
     bounds = {k: tuple(v) for k, v in (s.get("bounds") or {}).items()} or None
     return run_fit(data, s.get("model", "Line"), op.get("fit_kind", "nlfit"),
@@ -267,7 +285,9 @@ def refit(book: Workbook, report: ReportSheet, books: dict) -> FitOutcome:
                    conf_band=s.get("conf_band", True), pred_band=s.get("pred_band", False),
                    residual_plot=s.get("residual_plot", True), points=s.get("points", 200),
                    output_fitted=s.get("output_fitted", False), report=report,
-                   curve=curve if isinstance(curve, Worksheet) else None)
+                   curve=curve if isinstance(curve, Worksheet) else None,
+                   constraints=s.get("constraints"), algorithm=s.get("algorithm", "auto"),
+                   residual_extra=s.get("residual_extra", False))
 
 
 def _append_column(ws: Worksheet, long_name: str, rows, values, comments: str = "",

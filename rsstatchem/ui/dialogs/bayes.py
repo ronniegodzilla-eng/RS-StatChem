@@ -71,7 +71,7 @@ class _BayesDialog(VariablePickerDialog):
 
 
 class BayesOneSampleNormalDialog(_BayesDialog):
-    DEFAULTS = {**_BayesDialog.BASE, "test_value": 0.0, "r": 0.707, "prior": "diffuse",
+    DEFAULTS = {**_BayesDialog.BASE, "test_value": 0.0, "r": 1.0, "prior": "diffuse",
                 "known": False, "known_var": 1.0, "mu0": 0.0, "kappa0": 1.0, "a0": 1.0,
                 "b0": 1.0}
     TEST_VALUE = "Test Value:"
@@ -109,7 +109,8 @@ class BayesOneSampleNormalDialog(_BayesDialog):
     def _bf(self):
         dlg = SubDialog(f"{self.windowTitle()}: Bayes Factor", self, columns=1)
         box = dlg.group("Rouder's JZS Method")
-        dlg.number(box, "r", "Cauchy prior scale r:", self.opts["r"], 0.01, 10, 4)
+        dlg.number(box, "r", "Cauchy prior scale r (SPSS: 1; JASP: 0.707):", self.opts["r"],
+                   0.01, 10, 4)
         values = dlg.run()
         if values:
             self.opts.update(values)
@@ -137,8 +138,8 @@ class BayesRelatedNormalDialog(BayesOneSampleNormalDialog):
 
 
 class BayesIndependentNormalDialog(GroupingMixin, _BayesDialog):
-    DEFAULTS = {**_BayesDialog.BASE, "method": "rouder", "r": 0.707, "mu_delta": 0.0,
-                "var_delta": 1.0, "equal": True, "group_def": None}
+    DEFAULTS = {**_BayesDialog.BASE, "method": "rouder", "r": 1.0, "mu_delta": 0.0,
+                "var_delta": 1.0, "hyper_a": -0.75, "equal": True, "group_def": None}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Bayesian Independent Sample Inference", parent)
@@ -161,13 +162,16 @@ class BayesIndependentNormalDialog(GroupingMixin, _BayesDialog):
     def _bf(self):
         dlg = SubDialog(f"{self.windowTitle()}: Bayes Factor", self, columns=1)
         box = dlg.group("Method")
-        dlg.radio(box, "method", [("rouder", "Rouder method (JZS)"), ("gonen", "Gönen method")],
+        dlg.radio(box, "method", [("rouder", "Rouder method (JZS)"), ("gonen", "Gönen method"),
+                                  ("hyper", "Hyper-prior method (Wang & Liu)")],
                   self.opts["method"])
-        dlg.number(box, "r", "Rouder: Cauchy scale r:", self.opts["r"], 0.01, 10, 4)
+        dlg.number(box, "r", "Rouder: Cauchy scale r (SPSS: 1):", self.opts["r"], 0.01, 10, 4)
         dlg.number(box, "mu_delta", "Gönen: effect size mean:", self.opts["mu_delta"], -10, 10,
                    4)
         dlg.number(box, "var_delta", "Gönen: effect size variance:", self.opts["var_delta"],
                    1e-6, 100, 4)
+        dlg.number(box, "hyper_a", "Hyper-prior: a (SPSS: -0.75):", self.opts["hyper_a"],
+                   -0.9999, -0.5, 4)
         values = dlg.run()
         if values:
             self.opts.update(values)
@@ -180,11 +184,11 @@ class BayesIndependentNormalDialog(GroupingMixin, _BayesDialog):
         g1, g2 = o["group_def"]["groups"]
         return bs.independent_normal(self.ds, self.selected("vars"), self.selected_one("group"),
                                      g1, g2, self.bopts(), o["method"], o["r"], o["mu_delta"],
-                                     o["var_delta"], o["equal"])
+                                     o["var_delta"], o["equal"], hyper_a=o["hyper_a"])
 
 
 class BayesPearsonDialog(_BayesDialog):
-    DEFAULTS = {**_BayesDialog.BASE, "kappa": 1.0}
+    DEFAULTS = {**_BayesDialog.BASE, "kappa": 1.0, "method": "jzs"}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Bayesian Pearson Correlation", parent)
@@ -195,15 +199,19 @@ class BayesPearsonDialog(_BayesDialog):
 
     def _bf(self):
         dlg = SubDialog(f"{self.windowTitle()}: Bayes Factor", self, columns=1)
-        box = dlg.group("Prior on rho (stretched beta)")
-        dlg.number(box, "kappa", "Kappa (1 = uniform):", self.opts["kappa"], 0.01, 10, 4)
+        box = dlg.group("Bayes Factor Method")
+        dlg.radio(box, "method", [("jzs", "JZS prior (Wetzels & Wagenmakers) - SPSS"),
+                                  ("stretched", "Stretched beta prior (Ly et al.) - JASP")],
+                  self.opts["method"])
+        dlg.number(box, "kappa", "Stretched beta: kappa (1 = uniform):", self.opts["kappa"],
+                   0.01, 10, 4)
         values = dlg.run()
         if values:
             self.opts.update(values)
 
     def compute(self):
         return bs.pearson_correlation(self.ds, self.selected("vars"), self.bopts(),
-                                      self.opts["kappa"])
+                                      self.opts["kappa"], self.opts["method"])
 
 
 _G_PRIORS = [("jzs", "JZS (Zellner-Siow) method"), ("zellner", "Zellner's method"),
@@ -246,7 +254,7 @@ class BayesRegressionDialog(_BayesDialog):
 
 
 class BayesAnovaDialog(_BayesDialog):
-    DEFAULTS = {**_BayesDialog.BASE, "method": "rouder", "r": 0.5, "g": 0.0, "a": 3.0}
+    DEFAULTS = {**_BayesDialog.BASE, "method": "rouder", "r": 1.0, "g": 0.0, "a": 3.0}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Bayesian One-way ANOVA", parent)
@@ -259,9 +267,10 @@ class BayesAnovaDialog(_BayesDialog):
     def _bf(self):
         dlg = SubDialog(f"{self.windowTitle()}: Bayes Factor", self, columns=1)
         box = dlg.group("Bayes Factor Method")
-        dlg.radio(box, "method", [("rouder", "Rouder's method (JZS fixed effects)")] +
-                  _G_PRIORS, self.opts["method"])
-        dlg.number(box, "r", "Scale r:", self.opts["r"], 0.01, 10, 4)
+        dlg.radio(box, "method", [("rouder", "Rouder's method (SPSS)")] + _G_PRIORS +
+                  [("rouder2012", "Multivariate JZS (BayesFactor anovaBF, use scale 0.5)")],
+                  self.opts["method"])
+        dlg.number(box, "r", "Scale (Rouder s / JZS r):", self.opts["r"], 0.01, 10, 4)
         dlg.number(box, "g", "Zellner g (0 = N):", self.opts["g"], 0, 1e9, 3)
         dlg.number(box, "a", "Hyper-g parameter a:", self.opts["a"], 2.0001, 4, 3)
         values = dlg.run()
@@ -275,7 +284,7 @@ class BayesAnovaDialog(_BayesDialog):
 
 
 class BayesRepeatedDialog(_BayesDialog):
-    DEFAULTS = {**_BayesDialog.BASE, "r": 0.707, "pairwise": True}
+    DEFAULTS = {**_BayesDialog.BASE, "r": 1.0, "pairwise": True}
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Bayesian One-way Repeated Measures ANOVA", parent)
@@ -291,7 +300,7 @@ class BayesRepeatedDialog(_BayesDialog):
 
 class BayesBinomialDialog(_BayesDialog):
     DEFAULTS = {**_BayesDialog.BASE, "test_value": 0.5, "success": "last", "success_value": "",
-                "a": 1.0, "b": 1.0}
+                "a": 1.0, "b": 1.0, "null_beta": False, "a0": 1.0, "b0": 1.0}
     TEST_VALUE = "Test Proportion:"
 
     def __init__(self, ds, parent=None):
@@ -320,9 +329,14 @@ class BayesBinomialDialog(_BayesDialog):
 
     def _priors(self):
         dlg = SubDialog(f"{self.windowTitle()}: Prior Distribution", self, columns=1)
-        box = dlg.group("Beta Prior")
+        box = dlg.group("Beta Prior (alternative hypothesis and posterior)")
         dlg.number(box, "a", "Shape parameter a:", self.opts["a"], 1e-6, 1e6, 4)
         dlg.number(box, "b", "Shape parameter b:", self.opts["b"], 1e-6, 1e6, 4)
+        box = dlg.group("Null hypothesis prior (Bayes factor)")
+        dlg.check(box, "null_beta", "Beta(a0, b0) prior under H0 (SPSS) instead of the point "
+                  "null at the test proportion", self.opts["null_beta"])
+        dlg.number(box, "a0", "Null shape a0:", self.opts["a0"], 1e-6, 1e6, 4)
+        dlg.number(box, "b0", "Null shape b0:", self.opts["b0"], 1e-6, 1e6, 4)
         values = dlg.run()
         if values:
             self.opts.update(values)
@@ -351,7 +365,9 @@ class BayesBinomialDialog(_BayesDialog):
     def compute(self):
         return bs.one_sample_binomial(self.ds, self.selected("vars"), self._success_spec(),
                                       self.opts["test_value"], self.bopts(), self.opts["a"],
-                                      self.opts["b"])
+                                      self.opts["b"],
+                                      null_a=self.opts["a0"] if self.opts["null_beta"] else None,
+                                      null_b=self.opts["b0"] if self.opts["null_beta"] else None)
 
 
 class BayesPoissonDialog(_BayesDialog):

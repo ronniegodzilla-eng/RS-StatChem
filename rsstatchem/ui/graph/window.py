@@ -37,7 +37,8 @@ from rsstatchem.ui.graph.properties import PropertiesDialog, PropertyForm, schem
 WINDOWS: list["GraphWindow"] = []
 REF_ROLE = Qt.ItemDataRole.UserRole
 ZOOMS = [25, 50, 75, 100, 125, 150, 200, 300]
-_PRIORITY = {"annotation": 0, "legend": 1, "plot": 2, "axis": 3, "colorbar": 4, "layer": 5}
+_PRIORITY = {"annotation": 0, "legend": 1, "plot": 2, "ref": 3, "axis": 3, "colorbar": 4,
+             "roi": 5, "layer": 5}
 _counter = [0]
 
 
@@ -397,8 +398,10 @@ class GraphWindow(QMainWindow):
         if li >= len(g.layers):
             return None
         layer = g.layers[li]
-        if kind in ("layer", "colorbar"):
+        if kind in ("layer", "colorbar", "roi"):
             return layer
+        if kind == "ref":
+            return next((r for r in layer.refs if r.id == ref[2]), None)
         if kind == "axis":
             return layer.axis(ref[2])
         if kind == "legend":
@@ -454,6 +457,18 @@ class GraphWindow(QMainWindow):
                 lg.setCheckState(0, Qt.CheckState.Checked if layer.legend.visible
                                  else Qt.CheckState.Unchecked)
                 item.addChild(lg)
+            if layer.refs:
+                rf = QTreeWidgetItem(["Reference Lines"])
+                rf.setIcon(0, gicons.icon("folder"))
+                rf.setData(0, REF_ROLE, ("layer", li))
+                item.addChild(rf)
+                for r in layer.refs:
+                    text = r.label or (f"{r.axis.upper()} = {r.value:g}" if r.mode == "value"
+                                       else f"{r.axis.upper()} {r.mode.replace('_', ' ± ')}")
+                    ri = QTreeWidgetItem([("Band: " if r.kind == "band" else "") + text])
+                    ri.setIcon(0, gicons.icon("annotation"))
+                    ri.setData(0, REF_ROLE, ("ref", li, r.id))
+                    rf.addChild(ri)
             if layer.annotations:
                 an = QTreeWidgetItem(["Annotations"])
                 an.setIcon(0, gicons.icon("folder"))
@@ -485,8 +500,12 @@ class GraphWindow(QMainWindow):
         names = [("x", "X Axis"), ("y", "Y Axis")]
         if layer.kind == "3d":
             names.append(("z", "Z Axis"))
-        elif layer.show_y2 or any(p.y_axis == "right" for p in layer.plots):
+        elif layer.show_y2 or layer.y2_formula or any(p.y_axis == "right" or
+                                                      p.type == "pareto" for p in layer.plots):
             names.append(("y2", "Right Y Axis"))
+        if layer.kind == "cartesian" and (layer.show_x2 or any(p.x_axis == "top"
+                                                                for p in layer.plots)):
+            names.append(("x2", "Top X Axis"))
         return names
 
     def _refresh_tree_texts(self) -> None:
@@ -567,6 +586,8 @@ class GraphWindow(QMainWindow):
             return f"{base} › {self.resolve(ref).name or 'Plot'}"
         if kind == "annotation":
             return f"{base} › {self.resolve(ref).kind.capitalize()}"
+        if kind == "ref":
+            return f"{base} › Reference Line"
         return f"{base} › {kind.capitalize()}" if kind not in ("layer",) else base
 
     def open_properties(self, ref: tuple | None = None) -> None:
@@ -884,6 +905,13 @@ class GraphWindow(QMainWindow):
             def fn():
                 layer = self.graph.layers[ref[1]]
                 layer.annotations = [a for a in layer.annotations if a.id != ref[2]]
+        elif ref[0] == "ref":
+            def fn():
+                layer = self.graph.layers[ref[1]]
+                layer.refs = [r for r in layer.refs if r.id != ref[2]]
+        elif ref[0] == "roi":
+            def fn():
+                self.graph.layers[ref[1]].options.pop("roi", None)
         elif ref[0] in ("layer", "colorbar"):
             def fn():
                 edit.remove_layer(self.graph, ref[1])

@@ -8,18 +8,22 @@ from rsstatchem.core.graph.themes import THEMES, apply_theme_to_layer
 
 COMPATIBLE = {"cartesian": {"line", "scatter", "line_symbol", "column", "bar", "area",
                             "histogram", "box", "bubble", "color_scatter", "contour",
-                            "heatmap"},
-              "polar": {"line", "scatter", "line_symbol", "area"},
-              "3d": {"surface3d", "scatter3d"}, "ternary": {"line", "scatter", "line_symbol"},
+                            "heatmap", "violin", "qq", "probability", "kde", "kde2d", "ecdf",
+                            "pareto", "meanbar", "bland_altman", "control",
+                            "floating_column", "lollipop", "vector"},
+              "polar": {"line", "scatter", "line_symbol", "area", "radar", "windrose"},
+              "3d": {"surface3d", "scatter3d", "bar3d", "line3d", "waterfall3d"},
+              "ternary": {"line", "scatter", "line_symbol"},
               "pie": {"pie", "doughnut"}}
 
 
 def _styled_layer(graph: Graph, like: Layer | None, kind: str = "cartesian") -> Layer:
     layer = Layer(kind=kind)
     if like is not None:
-        for which in ("x", "y", "y2", "z"):
+        for which in ("x", "y", "y2", "z", "x2"):
             ax = copy.deepcopy(like.axis(which))
             ax.title, ax.min, ax.max, ax.major_step = "", None, None, None
+            ax.breaks, ax.custom_ticks = [], []
             setattr(layer, which, ax)
         layer.box = like.box
         layer.legend = copy.deepcopy(like.legend)

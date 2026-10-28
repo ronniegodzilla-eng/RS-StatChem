@@ -248,7 +248,20 @@ def test_cox_baseline_residuals_vs_lifelines():
     s_mean = np.array([float(r[2]) for r in base])
     ref_at = ref_s.reindex(times, method="nearest").to_numpy()
     unique = ~pd.Series(times).duplicated(keep=False).to_numpy()   # printed with 3 decimals
-    np.testing.assert_allclose(s_mean[unique], ref_at[unique], atol=6e-4)
+    # SPSS (IBM COXREG Algorithms) uses the Kalbfleisch-Prentice baseline with covariates
+    # centred at their means, not lifelines' Breslow estimator: check it independently
+    # (no ties: alpha_i = (1 - e_i / sum_R e)^(1 / e_i)) and stay close to Breslow.
+    b = cph.params_.to_numpy()
+    xc = df[["x1", "x2"]].to_numpy() - df[["x1", "x2"]].to_numpy().mean(0)
+    e = np.exp(xc @ b)
+    order = np.argsort(df["T"].to_numpy())
+    tt, ee, dd = df["T"].to_numpy()[order], e[order], df["E"].to_numpy()[order]
+    risk = np.cumsum(ee[::-1])[::-1]
+    alpha = np.where(dd == 1, (1 - ee / risk) ** (1 / ee), 1.0)
+    kp = pd.Series(np.cumprod(alpha), index=tt)[dd == 1]
+    kp_at = kp.reindex(times, method="nearest").to_numpy()
+    np.testing.assert_allclose(s_mean[unique], kp_at[unique], atol=6e-4)
+    np.testing.assert_allclose(s_mean[unique], ref_at[unique], atol=0.02)
     sch = cph.compute_residuals(df, "schoenfeld")
     pr1 = res.saved["PR1"][1]
     np.testing.assert_allclose(pr1.loc[sch.index], sch["x1"], atol=1e-4)

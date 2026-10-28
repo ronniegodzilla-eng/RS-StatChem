@@ -1526,8 +1526,52 @@ def _ordinal_fit(y: np.ndarray, X: np.ndarray, J: int, link: str):
     for i in range(k):
         jac[J - 1 + i, i] = 1
     cov = jac @ np.asarray(res.cov_params()) @ jac.T
+    fisher = _plum_fisher_cov(th, beta, X, link)
+    if fisher is not None and np.all(np.isfinite(fisher)):
+        cov = fisher
     conv = bool(res.mle_retvals.get("converged", True))
     return th, beta, cov, float(res.llf), conv
+
+
+def _plum_fisher_cov(th, beta, X, link, tau=None, Z=None, w=None) -> np.ndarray | None:
+    """Inverse expected (Fisher) information of a cumulative link model over
+    [thresholds, location, scale]. SPSS PLUM prints standard errors from this matrix
+    (IBM SPSS Statistics Algorithms, PLUM: Fisher scoring covariance); the observed-Hessian
+    covariance differs slightly (e.g. UCLA ologit: SE(pared) .268 Fisher vs .266 observed)."""
+    d = _distr(link)
+    n = X.shape[0]
+    k = X.shape[1]
+    J1 = len(th)
+    m = Z.shape[1] if Z is not None and tau is not None and len(tau) else 0
+    eta = X @ beta if k else np.zeros(n)
+    s = np.exp(Z @ tau) if m else np.ones(n)
+    z = (th[None, :] - eta[:, None]) / s[:, None]                     # n x (J-1)
+    f = d.pdf(z)
+    F = d.cdf(z)
+    zero = np.zeros((n, 1))
+    Fc = np.hstack([zero, F, zero + 1])
+    fc = np.hstack([zero, f, zero])
+    zc = np.hstack([zero, np.where(np.isfinite(z), z, 0.0), zero])
+    pi = np.clip(np.diff(Fc, axis=1), 1e-300, None)                   # n x J
+    wts = np.ones(n) if w is None else np.asarray(w, float)
+    npar = J1 + k + m
+    info = np.zeros((npar, npar))
+    for c in range(J1 + 1):
+        g = np.zeros((n, npar))
+        if c < J1:
+            g[:, c] += f[:, c] / s
+        if c >= 1:
+            g[:, c - 1] -= f[:, c - 1] / s
+        dfc = (fc[:, c + 1] - fc[:, c]) / s
+        if k:
+            g[:, J1:J1 + k] = -X * dfc[:, None]
+        if m:
+            g[:, J1 + k:] = -Z * (fc[:, c + 1] * zc[:, c + 1] - fc[:, c] * zc[:, c])[:, None]
+        info += (g * (wts / pi[:, c])[:, None]).T @ g
+    try:
+        return np.linalg.inv(info)
+    except np.linalg.LinAlgError:
+        return None
 
 
 def plum_mle(y: np.ndarray, X: np.ndarray, Z: np.ndarray, J: int, link: str,
@@ -1577,11 +1621,13 @@ def plum_mle(y: np.ndarray, X: np.ndarray, Z: np.ndarray, J: int, link: str,
     def nll_flat(v):
         return nll_nat(v[:J - 1], v[J - 1:J - 1 + k], v[J - 1 + k:])
 
-    H = approx_hess3(nat, nll_flat)
-    try:
-        cov = np.linalg.inv(H)
-    except np.linalg.LinAlgError:
-        cov = np.linalg.pinv(H)
+    cov = _plum_fisher_cov(th, beta, X, link, tau, Z)
+    if cov is None or not np.all(np.isfinite(cov)):
+        H = approx_hess3(nat, nll_flat)
+        try:
+            cov = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            cov = np.linalg.pinv(H)
     return th, beta, tau, cov, -float(res.fun), bool(res.success), history
 
 

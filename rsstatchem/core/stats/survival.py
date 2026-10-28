@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy import stats
+from scipy import optimize, stats
 
 from rsstatchem.core.dataset import NUMERIC, Dataset, Variable
 from rsstatchem.core.output import Section, Table
@@ -1314,20 +1314,58 @@ def _cox_select(data: CoxData, terms: list[_Term], method: str, p_enter: float,
     return steps
 
 
-def _baseline(data: CoxData, cols, beta, cov, zbar) -> dict:
-    """Breslow baseline cumulative hazard (covariates = 0) and survival at the covariate means,
-    per stratum, with the SE of the survival at the means."""
+def _kp_alpha(e_dead: np.ndarray, risk: float) -> float:
+    """Kalbfleisch-Prentice conditional survival alpha_i at one event time (IBM COXREG
+    Algorithms, "Estimation of the Baseline Function"): closed form for a single event,
+    otherwise the root of sum_D e/(1 - alpha^e) = sum_R e, started from Breslow's
+    exp(-d / sum_R e). ``e_dead`` are exp(x'b) of the events (centred x), ``risk`` the risk-set
+    sum of exp(x'b)."""
+    if len(e_dead) == 1:
+        e = float(e_dead[0])
+        base = 1 - e / risk
+        return float(base ** (1 / e)) if base > 0 else 0.0
+
+    def g(a):
+        return float(np.sum(e_dead / (1 - a ** e_dead))) - risk
+    if float(np.sum(e_dead)) >= risk * (1 - 1e-12):   # everybody at risk fails
+        return 0.0
+    # g increases from sum_D e - sum_R e < 0 (alpha -> 0) to +inf (alpha -> 1)
+    lo, hi = 0.0, 1 - 1e-15
+    while g(hi) < 0 and hi < 1 - 1e-300:
+        hi = 1 - (1 - hi) / 1e3
+    return float(optimize.brentq(g, lo, hi, xtol=1e-15, rtol=1e-14))
+
+
+def _baseline(data: CoxData, cols, beta, cov, zbar, estimator: str = "kp") -> dict:
+    """Baseline cumulative hazard (covariates = 0) and survival at the covariate means, per
+    stratum, with the SE of the survival at the means.
+
+    ``estimator`` "kp" (default, IBM COXREG: covariates centred at their means and the
+    Kalbfleisch-Prentice product S0(t) = prod alpha_i, iterative for tied events) or
+    "breslow" (h0 = d / sum exp(x'b)). The variance of -ln S0(t) is the IBM / Kalbfleisch-
+    Prentice formula sum |D_i| (sum_R exp(x'b))^-2 + a' I^-1 a in both cases."""
     out = {}
     X = data.X[:, cols] if len(cols) else np.zeros((data.n, 0))
     for b in data.blocks:
         if not len(b["et"]):
             continue
-        s0, s1, _, shift, _ = data.risk_sums(b, beta, cols, order=1)
+        s0, s1, _, shift, eta = data.risk_sums(b, beta, cols, order=1)
         s0_true = s0 * math.exp(shift)
-        h0 = b["d"] / s0_true
-        H0 = np.cumsum(h0)
         rel = math.exp(float(zbar @ beta)) if len(cols) else 1.0
-        H = H0 * rel
+        h0 = b["d"] / s0_true
+        if estimator == "kp":
+            risk_c = s0_true / rel                     # sum over R of exp((x - xbar)'b)
+            ev = b["ev_idx"]
+            e_c = np.exp(eta[ev] - float(zbar @ beta)) if len(cols) else np.ones(len(ev))
+            pos = np.searchsorted(b["et"], data.stop[ev])
+            alpha = np.array([_kp_alpha(e_c[pos == i], float(risk_c[i]))
+                              for i in range(len(b["et"]))])
+            with np.errstate(divide="ignore"):
+                H = -np.log(np.cumprod(alpha))
+            H0 = H / rel
+        else:
+            H0 = np.cumsum(h0)
+            H = H0 * rel
         if len(cols):
             xbar = s1 / s0[:, None]
             q = np.cumsum((h0 * rel)[:, None] * (xbar - zbar), axis=0)

@@ -20,6 +20,7 @@ of saturated models, as SPSS does).
 from __future__ import annotations
 
 import itertools
+from types import SimpleNamespace
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -205,6 +206,8 @@ class _GLMFit:
     converged: bool
     iterations: int
     nb_k: float = 1.0
+    nb_k_se: float = float("nan")
+    ll_original: float | None = None    # IBM "original" log likelihood (phi = 1), see below
 
 
 def _fit_glm(y, X, family, dist, w, offset, scale_method, scale_value, cov_type, method,
@@ -236,9 +239,9 @@ def _fit_glm(y, X, family, dist, w, offset, scale_method, scale_value, cov_type,
     elif scale_method == "ml":
         phi = _ml_scale(family, dist, y, mu, vw, tweedie_p)
     elif scale_method == "deviance":
-        phi = dev / (n - p)
+        phi = dev / (n - p - (1 if nb_estimate and dist == "negbin" else 0))
     elif scale_method == "pearson":
-        phi = pear / (n - p)
+        phi = pear / (n - p - (1 if nb_estimate and dist == "negbin" else 0))
     else:
         phi = float(scale_value)
     params = np.asarray(res.params, float)
@@ -247,13 +250,43 @@ def _fit_glm(y, X, family, dist, w, offset, scale_method, scale_value, cov_type,
         cov = np.linalg.inv(-H)
     except np.linalg.LinAlgError:
         cov = np.linalg.pinv(-H)
+    nb_k_se = float("nan")
+    if nb_estimate and dist == "negbin":
+        # IBM GENLIN: k is estimated jointly with beta by ML, so the covariance is the inverse
+        # of the observed information over (beta, k); the beta block differs from the
+        # k-fixed GLM covariance and k gets its own standard error.
+        from statsmodels.tools.numdiff import approx_hess3
+        off_ = 0 if offset is None else offset
+
+        def ll_bk(theta):
+            kk = theta[-1]
+            if kk <= 0:
+                return -1e300
+            fam = _family("negbin", link, power, nb_k=kk)
+            with np.errstate(all="ignore"):
+                m_ = fam.link.inverse(X @ theta[:-1] + off_)
+                return _loglike(fam, dist, y, m_, 1.0, w)
+        theta = np.r_[np.asarray(res.params, float), nb_k]
+        try:
+            Hf = approx_hess3(theta, ll_bk)
+            cov_full = np.linalg.inv(-Hf)
+            if np.all(np.isfinite(cov_full)) and np.all(np.diag(cov_full) > 0):
+                cov = cov_full[:-1, :-1] * phi
+                nb_k_se = float(math.sqrt(cov_full[-1, -1]))
+        except (np.linalg.LinAlgError, ValueError):
+            pass
     if cov_type == "robust":
         S = model.score_obs(params, scale=phi)
         cov = cov @ (S.T @ S) @ cov
     ll = _loglike(family, dist, y, mu, phi, w, n_trials=n_trials, tweedie_p=tweedie_p)
+    # IBM GENLIN (Goodness-of-Fit Statistics): with the scale set from the deviance or the
+    # Pearson chi-square, the displayed log likelihood (and the information criteria) use the
+    # assumed phi = 1 ("original"); the "revised" one with phi-hat is used in model tests.
+    ll_orig = (_loglike(family, dist, y, mu, 1.0, w, n_trials=n_trials, tweedie_p=tweedie_p)
+               if scale_method in ("deviance", "pearson") else ll)
     it = int(getattr(res, "fit_history", {}).get("iteration", 0) or 0)
     return _GLMFit(params, cov, mu, eta, phi, ll, dev, pear, model, res, n,
-                   bool(getattr(res, "converged", True)), it, nb_k)
+                   bool(getattr(res, "converged", True)), it, nb_k, nb_k_se, ll_orig)
 
 
 def _wald(b, C) -> float:
@@ -456,8 +489,9 @@ def genlin(ds: Dataset, dependent: str, factors: list[str] = (), covariates: lis
     # ---------------------------------------------------------------- goodness of fit
     ml_scale = scale_method == "ml" and distribution not in ("binomial", "poisson", "negbin")
     k = p + (1 if ml_scale else 0) + (1 if nb_estimate and distribution == "negbin" else 0)
-    df_res = n - p
-    ll = fit.ll
+    # IBM: df = N - p_x, minus one more when the negative binomial k is estimated by ML
+    df_res = n - p - (1 if nb_estimate and distribution == "negbin" else 0)
+    ll = fit.ll if fit.ll_original is None else fit.ll_original
     aic = -2 * ll + 2 * k
     aicc = aic + 2 * k * (k + 1) / (n - k - 1) if n - k - 1 > 0 else float("nan")
     bic = -2 * ll + k * math.log(n)
@@ -498,9 +532,12 @@ def genlin(ds: Dataset, dependent: str, factors: list[str] = (), covariates: lis
                                     tweedie_p), float(np.sum(family.resid_dev(
                                         y, mu0, var_weights=w if n_trials is None else
                                         w * n_trials) ** 2)), 0.0, None, None, n, True, 0)
+        # IBM: an ancillary k estimated by ML in the model is re-estimated by ML in the
+        # initial / constrained model; a fixed or deviance/Pearson scale is held fixed.
         return _fit_glm(y, Xr, family, distribution, w, off,
                         scale_method if scale_method == "ml" else "fixed",
-                        fit.phi, "model", method, n_trials, tweedie_p, max_iter)
+                        fit.phi, "model", method, n_trials, tweedie_p, max_iter,
+                        nb_estimate and distribution == "negbin", link, power)
 
     def lr_stat(red: _GLMFit) -> float:
         if ml_scale:
@@ -607,8 +644,15 @@ def _effects_tables(section, analysis_type, chi_type, fit, X, y, frame, factors,
             if intercept:
                 Xe.insert(0, "(Intercept)", 1.0)
             E = Xe.to_numpy(float)
-            fe = _fit_glm(y, E, family, distribution, w, off, "fixed", fit.phi, cov_type,
-                          method, n_trials, tweedie_p, max_iter)
+            if np.isfinite(fit.nb_k_se):
+                # negative binomial with k by ML: re-express the joint (beta, k) covariance in
+                # the effect-coded basis (E A = X spans the same space) instead of refitting
+                # with k held fixed, as IBM's Type III Wald uses the full-information matrix
+                A = np.linalg.lstsq(E, X, rcond=None)[0]
+                fe = SimpleNamespace(params=A @ fit.params, cov=A @ fit.cov @ A.T)
+            else:
+                fe = _fit_glm(y, E, family, distribution, w, off, "fixed", fit.phi, cov_type,
+                              method, n_trials, tweedie_p, max_iter)
             cols = list(Xe.columns)
             groups = ([("(Intercept)", [0])] if intercept else []) + \
                 [(t, [cols.index(c) for c in keep]) for t, keep, _ in tdev]
@@ -682,7 +726,8 @@ def _parameter_table(section, fit, names, tdummy, intercept, level, exp_params, 
     def add(name, i):
         b, s = fit.params[i], se[i]
         wv = (b / s) ** 2 if s > 0 else float("nan")
-        row = [name, fmt(b), fmt(s), fmt(b - z * s), fmt(b + z * s), fmt(wv), "1",
+        # SPSS prints GENLIN standard errors with 4 decimals (B with 3)
+        row = [name, fmt(b), fmt(s, 4), fmt(b - z * s), fmt(b + z * s), fmt(wv), "1",
                _sig(stats.chi2.sf(wv, 1))]
         if exp_params:
             row += [fmt(_exp(b)), fmt(_exp(b - z * s)), fmt(_exp(b + z * s))]
@@ -704,7 +749,14 @@ def _parameter_table(section, fit, names, tdummy, intercept, level, exp_params, 
     blank = ["", "", "", ""] + (["", "", ""] if exp_params else [])
     if distribution == "negbin":
         if nb_estimate:
-            rows.append(["(Negative binomial)", fmt(fit.nb_k), "", "", ""] + blank)
+            ks = fit.nb_k_se
+            if np.isfinite(ks) and fit.nb_k > 0:
+                # IBM: Wald limits for an ancillary parameter are exp(log k +- z se(log k))
+                rows.append(["(Negative binomial)", fmt(fit.nb_k), fmt(ks, 4),
+                             fmt(fit.nb_k * math.exp(-z * ks / fit.nb_k)),
+                             fmt(fit.nb_k * math.exp(z * ks / fit.nb_k))] + blank)
+            else:
+                rows.append(["(Negative binomial)", fmt(fit.nb_k), "", "", ""] + blank)
         else:
             rows.append(["(Negative binomial)", fmt_int(fit.nb_k) + sup("b")
                          if float(fit.nb_k).is_integer() else fmt(fit.nb_k) + sup("b"),
@@ -720,7 +772,7 @@ def _parameter_table(section, fit, names, tdummy, intercept, level, exp_params, 
         h = 1e-4
         d2 = (f(lp + h) - 2 * f(lp) + f(lp - h)) / h ** 2
         se_lp = math.sqrt(-1 / d2) if d2 < 0 else float("nan")
-        rows.append(["(Scale)", fmt(phi) + sup("c"), fmt(phi * se_lp),
+        rows.append(["(Scale)", fmt(phi) + sup("c"), fmt(phi * se_lp, 4),
                      fmt(phi * math.exp(-z * se_lp)), fmt(phi * math.exp(z * se_lp))] + blank)
         notes.append("c. Maximum likelihood estimate.")
     else:
@@ -1210,23 +1262,25 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
     pchi = float(stats.chi2.sf(chi, df)) if df > 0 else float("nan")
     het = df > 0 and pchi < het_alpha
     hf = chi / df if het else 1.0
+    # IBM PROBIT Algorithms (Asymptotic Covariance Matrix): the parameter table uses I^-1 and
+    # normal-theory limits; the heterogeneity factor h enters only the fiducial / RMP limits.
     cov_h = cov * hf
-    se = np.sqrt(np.clip(np.diag(cov_h), 0, None))
+    se = np.sqrt(np.clip(np.diag(cov), 0, None))
+    zpar = stats.norm.ppf(0.5 + level / 2)
+    # fiducial limits: t = 1.96 (z) without, t(0.025, df) with the heterogeneity factor
     zq = stats.t.ppf(0.5 + level / 2, df) if het else stats.norm.ppf(0.5 + level / 2)
     label = "PROBIT" if model == "probit" else "LOGIT"
     tnote = {"none": "", "log10": " (Covariates X are transformed using the base 10.000 "
                                   "logarithm.)",
              "ln": " (Covariates X are transformed using the base 2.718 logarithm.)"}[transform]
     prow = [[f"{label}ᵃ", ds.var(covariate).title, fmt(b), fmt(se[ng]), fmt(b / se[ng]),
-             _sig(2 * stats.norm.sf(abs(b / se[ng]))), fmt(b - zq * se[ng]),
-             fmt(b + zq * se[ng])]]
+             _sig(2 * stats.norm.sf(abs(b / se[ng]))), fmt(b - zpar * se[ng]),
+             fmt(b + zpar * se[ng])]]
     for i in range(ng):
         name = "Interceptᵇ" if not factor else value_text(ds.var(factor), flv[i])
         prow.append(["", name if factor else "Interceptᵇ", fmt(a[i]), fmt(se[i]),
                      fmt(a[i] / se[i]), _sig(2 * stats.norm.sf(abs(a[i] / se[i]))),
-                     fmt(a[i] - zq * se[i]), fmt(a[i] + zq * se[i])])
-    if natural == "estimate":
-        prow.append(["Natural Response", "", fmt(c_hat), fmt(se[-1]), "", "", "", ""])
+                     fmt(a[i] - zpar * se[i]), fmt(a[i] + zpar * se[i])])
     g = f"{pct(level)} Confidence Interval"
     section.table(Table("Parameter Estimates", ["Parameter", "", "Estimate", "Std. Error", "Z",
                                                 "Sig.", (g, "Lower Bound"),
@@ -1235,23 +1289,43 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
                                    "b. Corresponds to the grouping variable " +
                                    ds.var(factor).title if factor else
                                    "b. Intercept of the probit line."]))
+    if natural == "estimate":
+        section.table(Table("Natural Response Rate", ["", "Estimate", "Std. Error"],
+                            [[label, fmt(c_hat), fmt(se[-1])]], row_header_cols=1,
+                            footnotes=["a. Control group is provided." if control.any() else
+                                       "a. Control group is not provided."]))
     crow = [["Pearson Goodness-of-Fit Test", fmt(chi), fmt_int(df), _sig(pchi)
              + (sup("b") if het else sup("a"))]]
     if parallelism and factor and ng > 1:
-        def nll_sep(pp):
-            tot = 0.0
-            for gi in range(ng):
-                m = groups == gi
-                eta_g = pp[2 * gi] + pp[2 * gi + 1] * x[m]
+        # IBM: chi2 = chi2_0 - sum_j chi2_j, chi2_j the Pearson chi-square of a separate fit to
+        # group j (own intercept, slope and, when estimated, natural response rate); df q - 1.
+        sep_chi = 0.0
+        for gi in range(ng):
+            m = groups == gi
+            xm, rm, nm = x[m], r[m], nn[m]
+
+            def nll_g(pp, xm=xm, rm=rm, nm=nm):
+                cg = special.expit(pp[2]) if natural == "estimate" else fixed_c
+                eta_g = pp[0] + pp[1] * xm
                 Fg = stats.norm.cdf(eta_g) if model == "probit" else special.expit(eta_g)
-                Pg = np.clip(c_hat + (1 - c_hat) * Fg, 1e-12, 1 - 1e-12)
-                tot += np.sum(r[m] * np.log(Pg) + (nn[m] - r[m]) * np.log(1 - Pg))
-            return -tot
-        sp = np.ravel([[a[i], b] for i in range(ng)])
-        sep = optimize.minimize(nll_sep, sp, method="BFGS")
-        pchi2 = 2 * (opt.fun - sep.fun)
+                Pg = np.clip(cg + (1 - cg) * Fg, 1e-12, 1 - 1e-12)
+                with np.errstate(all="ignore"):
+                    return -float(np.sum(rm * np.log(Pg) + (nm - rm) * np.log(1 - Pg)))
+            sp = [a[gi], b] + ([special.logit(np.clip(c_hat, 1e-4, 0.99))]
+                               if natural == "estimate" else [])
+            fit_g = optimize.minimize(nll_g, sp, method="BFGS", options={"gtol": 1e-9})
+            fit_g = optimize.minimize(nll_g, fit_g.x, method="Nelder-Mead",
+                                      options={"xatol": 1e-10, "fatol": 1e-12,
+                                               "maxiter": 20000})
+            pp = fit_g.x
+            cg = special.expit(pp[2]) if natural == "estimate" else fixed_c
+            eta_g = pp[0] + pp[1] * xm
+            Fg = stats.norm.cdf(eta_g) if model == "probit" else special.expit(eta_g)
+            Pg = np.clip(cg + (1 - cg) * Fg, 1e-12, 1 - 1e-12)
+            sep_chi += float(np.sum((rm - nm * Pg) ** 2 / (nm * Pg * (1 - Pg))))
+        pchi2 = max(chi - sep_chi, 0.0)
         crow.append(["Parallelism Test", fmt(pchi2), fmt_int(ng - 1),
-                     _sig(stats.chi2.sf(pchi2, ng - 1)) + sup("c")])
+                     _sig(stats.chi2.sf(pchi2, ng - 1))])
     section.table(Table("Chi-Square Tests", ["", "", "Chi-Square", "df", "Sig."],
                         [[label] + row for row in crow], row_header_cols=2, footnotes=[
                             "a. Since the significance level is greater than "
@@ -1259,10 +1333,7 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
                             "calculation of confidence limits." if not het else
                             "b. Since the significance level is less than "
                             f"{fmt(het_alpha, 3)}, a heterogeneity factor is used in the "
-                            "calculation of confidence limits."]
-                        + (["c. Statistics based on individual cases differ from statistics "
-                            "based on aggregated cases (likelihood-ratio test of a common "
-                            "slope)."] if parallelism and factor else [])))
+                            "calculation of confidence limits."]))
     if frequencies:
         frows = []
         for i in range(len(x)):
@@ -1314,23 +1385,53 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
             for j in range(ng):
                 if i == j:
                     continue
-                # log relative potency = (a_i - a_j) / b  (dose_j / dose_i at equal response)
-                V = cov_h[np.ix_([i, j, ng], [i, j, ng])]
-                num_ = a[i] - a[j]
-                v_num = V[0, 0] + V[1, 1] - 2 * V[0, 1]
-                c_nb = V[0, 2] - V[1, 2]
-                lo, hi = fieller(num_, b, np.array([[v_num, c_nb], [c_nb, V[2, 2]]]), 0.0, zq,
-                                 ratio=True)
-                est = num_ / b
-                rrows.append([f"{i + 1}", f"{j + 1}", fmt(inv_t(est), 3), fmt(inv_t(lo), 3),
-                              fmt(inv_t(hi), 3)])
+                est, lo, hi = relative_median_potency(a[i], a[j], b, cov_h, i, j, ng, zq)
+                row = [f"{i + 1}", f"{j + 1}", fmt(inv_t(est), 3), fmt(inv_t(lo), 3),
+                       fmt(inv_t(hi), 3)]
+                if transform != "none":
+                    row += [fmt(est, 3), fmt(lo, 3), fmt(hi, 3)]
+                rrows.append(row)
         g3 = f"{pct(level)} Confidence Limits"
-        section.table(Table("Relative Median Potency Estimates", [
-            f"{ds.var(factor).title} (I)", f"{ds.var(factor).title} (J)", (g3, "Estimate"),
-            (g3, "Lower Bound"), (g3, "Upper Bound")], rrows, row_header_cols=2,
-            footnotes=["Levels: " + ", ".join(f"{k + 1} = {value_text(ds.var(factor), v)}"
-                                              for k, v in enumerate(flv))]))
+        cols = [f"{ds.var(factor).title} (I)", f"{ds.var(factor).title} (J)", (g3, "Estimate"),
+                (g3, "Lower Bound"), (g3, "Upper Bound")]
+        if transform != "none":
+            g4 = f"{pct(level)} Confidence Limits with LOG Transformᵃ"
+            cols += [(g4, "Estimate"), (g4, "Lower Bound"), (g4, "Upper Bound")]
+        notes = ([f"a. Logarithm base = {'10' if transform == 'log10' else '2.718'}."]
+                 if transform != "none" else [])
+        if het:
+            notes.append("A heterogeneity factor is used.")
+        section.table(Table("Relative Median Potency Estimates", cols, rrows, row_header_cols=2,
+                            footnotes=notes + [
+                                "Estimate = dose(I) / dose(J) giving the same response (IBM "
+                                "M_IJ = (a_J - a_I)/b on the transformed scale). Levels: "
+                                + ", ".join(f"{k + 1} = {value_text(ds.var(factor), v)}"
+                                            for k, v in enumerate(flv))]))
     return section
+
+
+def relative_median_potency(a_i: float, a_j: float, b: float, V: np.ndarray, i: int, j: int,
+                            islope: int, t: float) -> tuple[float, float, float]:
+    """IBM PROBIT relative median potency of group ``i`` versus ``j`` on the transformed scale,
+    with the confidence limits exactly as printed in the IBM Algorithms ("Relative Median
+    Potency"): M = (a_j - a_i)/b, v11 = v(a_i)+v(a_j)-2cov, v12 = cov(a_i,b) - cov(a_j,b),
+    v22 = v(b), g = t^2 v22 / b^2, limits M + g/(1-g)(M - v12/v22) +- t/(b(1-g)) sqrt(...).
+    ``V`` is the covariance times h when the heterogeneity factor is used (equivalent to IBM's
+    g h and h* terms); reproduces the SPSS case-study
+    output (offer.sav) to the printed decimals."""
+    M = (a_j - a_i) / b
+    v11 = V[i, i] + V[j, j] - 2 * V[i, j]
+    v12 = V[i, islope] - V[j, islope]
+    v22 = V[islope, islope]
+    g = t * t * v22 / (b * b)
+    if g >= 1:
+        return M, float("nan"), float("nan")
+    centre = M + g / (1 - g) * (M - v12 / v22)
+    rad = v11 - 2 * M * v12 + M * M * v22 - g * (v11 - v12 * v12 / v22)
+    if rad < 0:
+        return M, float("nan"), float("nan")
+    half = t / (b * (1 - g)) * math.sqrt(rad)
+    return M, centre - half, centre + half
 
 
 def fieller(a: float, b: float, V: np.ndarray, z: float, t: float,
@@ -1529,25 +1630,35 @@ def loglinear_logit(ds: Dataset, dependents: list[str], factors: list[str],
          else ""],
         ["Pearson Chi-Square", fmt(x2), fmt_int(df), _sig(stats.chi2.sf(x2, df)) if df > 0
          else ""]], footnotes=["a. Model: Multinomial Logit", f"b. Design: {design}"]))
-    # Analysis of dispersion (entropy and concentration), per SPSS GENLOG
+    # Analysis of dispersion (IBM GENLOG Algorithms, "Analysis of Dispersion (Logit Models
+    # Only)", Haberman 1982): fitted counts m_ij, pi_i = sum_j m_ij / N,
+    # pi_i|j = m_ij / N_j; entropy S(B) = -N sum pi log pi, S(B|A) = -sum m log pi_i|j;
+    # concentration S(B) = N (1 - sum pi^2), S(B|A) = sum m (1 - pi_i|j) (no 1/2 factor);
+    # case-based df: Model f(r-1), Residual (N-f-1)(r-1), Total (N-1)(r-1).
     key = grid[factors].astype(str).agg("|".join, axis=1) if factors else \
         pd.Series("all", index=grid.index)
-    n_i = pd.Series(obs).groupby(key.values).transform("sum").to_numpy()
+    dkey = grid[dependents].astype(str).agg("|".join, axis=1).values
     N = obs.sum()
-    pj = pd.Series(obs).groupby(grid[dependents].astype(str).agg("|".join, axis=1).values
-                                ).sum().to_numpy() / N
+    m_fit = exp_ * (N / exp_.sum()) if exp_.sum() > 0 else exp_
+    n_j = pd.Series(m_fit).groupby(key.values).transform("sum").to_numpy()
+    pj = pd.Series(m_fit).groupby(dkey).sum().to_numpy() / N
     with np.errstate(divide="ignore", invalid="ignore"):
-        pi = exp_ / n_i
-        ent_tot = float(-N * np.sum(pj * np.log(pj)))
-        ent_res = float(-np.nansum(obs * np.log(pi)))
-        con_tot = float(N / 2 * (1 - np.sum(pj ** 2)))
-        con_res = float(0.5 * np.sum(obs * (1 - pi)))
+        pi = np.where(n_j > 0, m_fit / n_j, 0.0)
+        ent_tot = float(-N * np.sum(np.where(pj > 0, pj * np.log(pj), 0.0)))
+        ent_res = float(-np.sum(np.where(pi > 0, m_fit * np.log(pi), 0.0)))
+        con_tot = float(N * (1 - np.sum(pj ** 2)))
+        con_res = float(np.sum(m_fit * (1 - pi)))
+    dep_set = set(dependents)
+    n_dep_only = sum(len(keep) for t, keep, _ in tdum if set(t.split(" * ")) <= dep_set)
+    n_dep_all = sum(len(keep) for t, keep, _ in tdum if set(t.split(" * ")) & dep_set)
+    r1 = max(n_dep_only, 1)                       # r - 1 (response categories minus one)
+    df_model = n_dep_all - n_dep_only             # f (r - 1)
+    df_total = (int(round(ncases)) - 1) * r1      # (N - 1)(r - 1)
     section.table(Table("Analysis of Dispersionᵃ ᵇ", ["Source of Dispersion", "Entropy",
                                                       "Concentration", "df"], [
-        ["Model", fmt(ent_tot - ent_res), fmt(con_tot - con_res), fmt_int(X.shape[1]
-                                                                         - 1 - len(margin))],
-        ["Residual", fmt(ent_res), fmt(con_res), fmt_int(df)],
-        ["Total", fmt(ent_tot), fmt(con_tot), ""]],
+        ["Model", fmt(ent_tot - ent_res), fmt(con_tot - con_res), fmt_int(df_model)],
+        ["Residual", fmt(ent_res), fmt(con_res), fmt_int(df_total - df_model)],
+        ["Total", fmt(ent_tot), fmt(con_tot), fmt_int(df_total)]],
         footnotes=["a. Model: Multinomial Logit", f"b. Design: {design}"]))
     section.table(Table("Measures of Associationᵃ ᵇ", ["", ""], [
         ["Entropy", fmt((ent_tot - ent_res) / ent_tot) if ent_tot else ""],

@@ -38,6 +38,7 @@ class Template:
     summary: bool = False
     role_text: dict = field(default_factory=dict)
     hint: str = ""
+    options: dict = field(default_factory=dict)   # plot options the template presets
 
 
 _T = [
@@ -105,12 +106,83 @@ _T = [
              ("x", "y", "z", "labels", "group"), ("x", "y", "z"),
              role_text={"x": "Component A:", "y": "Component B:", "z": "Component C:"}),
 ]
+_Y = {"y": "Variable(s):"}
+_T += [
+    # ---- 2D line/scatter variants
+    Template("step", "Step (horizontal)", "Basic 2D", "cartesian", "line",
+             options={"connect": "step_h"}),
+    Template("spline", "Spline", "Basic 2D", "cartesian", "line",
+             options={"connect": "spline"}),
+    Template("lollipop", "Lollipop", "Basic 2D", "cartesian", "lollipop",
+             ("x", "y", "labels", "group")),
+    Template("error_band", "Error Band", "Basic 2D", "cartesian", "line",
+             ("x", "y", "yerr", "group"), options={"error_band": True},
+             hint="The Y Error column is drawn as a shaded band around the line."),
+    Template("fill_area", "Fill Area (between curves)", "Area", "cartesian", "line",
+             ("x", "y"), hint="Each curve is filled to the next one; the last to zero."),
+    Template("floating_column", "Floating Column", "Column / Bar", "cartesian",
+             "floating_column", ("x", "y", "z"), ("y", "z"),
+             role_text={"y": "Bottom:", "z": "Top:"}),
+    # ---- statistical
+    Template("violin", "Violin Plot", "Statistics", "cartesian", "violin",
+             ("x", "y", "group"), role_text=dict(_Y, x="Category axis (optional):")),
+    Template("box_half", "Half Box + Data Points", "Statistics", "cartesian", "box",
+             ("x", "y", "group"), role_text=dict(_Y, x="Category axis (optional):"),
+             options={"style": "half_points"}),
+    Template("meanbar", "Mean Bar (± SD)", "Statistics", "cartesian", "meanbar",
+             ("x", "y", "group"), role_text=_Y, options={"stat": "sd"}),
+    Template("interval", "Interval Plot (mean ± 95% CI)", "Statistics", "cartesian",
+             "meanbar", ("x", "y", "group"), role_text=_Y,
+             options={"stat": "ci", "style": "point"}),
+    Template("hist_kde", "Histogram + Kernel Density", "Statistics", "cartesian",
+             "histogram", ("y", "group"), role_text=_Y,
+             options={"dist_curve": "kde", "scale": "density"}),
+    Template("hist_rug", "Histogram + Rug", "Statistics", "cartesian", "histogram",
+             ("y", "group"), role_text=_Y, options={"rug": True}),
+    Template("kde", "Kernel Density", "Statistics", "cartesian", "kde", ("y", "group"),
+             role_text=_Y),
+    Template("ecdf", "Cumulative Distribution (ECDF)", "Statistics", "cartesian", "ecdf",
+             ("y", "group"), role_text=_Y),
+    Template("qq", "Q-Q Plot (normal)", "Statistics", "cartesian", "qq", ("y", "group"),
+             role_text=_Y),
+    Template("probability", "Probability Plot (normal)", "Statistics", "cartesian",
+             "probability", ("y", "group"), role_text=_Y),
+    Template("kde2d", "2D Kernel Density", "Statistics", "cartesian", "kde2d", ("x", "y"),
+             ("x", "y")),
+    Template("pareto", "Pareto Chart", "Statistics", "cartesian", "pareto", ("x", "y"),
+             ("x",), role_text={"x": "Categories:", "y": "Values (optional):"},
+             hint="Categories only → counts per category; with Values → sum per category."),
+    Template("bland_altman", "Bland-Altman Plot", "Statistics", "cartesian",
+             "bland_altman", ("x", "y"), ("x", "y"),
+             role_text={"x": "Method A:", "y": "Method B:"}),
+    Template("control_xbar", "QC Chart (X-bar R)", "Statistics", "cartesian", "control",
+             ("y",), role_text={"y": "Data:"}, options={"size": 5}),
+    Template("control_imr", "QC Chart (I-MR)", "Statistics", "cartesian", "control",
+             ("y",), role_text={"y": "Data:"}),
+    Template("scatter_matrix", "Scatter Matrix", "Statistics", "cartesian", "scatter",
+             ("x", "y"), role_text={"y": "Variables:"}),
+    Template("marginal", "Scatter + Marginal Histograms", "Statistics", "cartesian",
+             "scatter", ("x", "y"), ("x", "y")),
+    # ---- 3D and specialised
+    Template("bar3d", "3D Bars", "Contour / 3D", "3d", "bar3d", ("x", "y", "z"),
+             ("x", "y", "z")),
+    Template("line3d", "3D Line / Trajectory", "Contour / 3D", "3d", "line3d",
+             ("x", "y", "z"), ("x", "y", "z")),
+    Template("waterfall3d", "3D Waterfall", "Contour / 3D", "3d", "waterfall3d", ("x", "y")),
+    Template("vector", "Vector XYAM", "Specialized", "cartesian", "vector", ("x", "y", "z"),
+             ("x", "y", "z"), role_text={"z": "Angle (°):"}),
+    Template("radar", "Radar / Spider", "Specialized", "polar", "radar", ("x", "y"),
+             role_text={"x": "Categories:"}),
+    Template("windrose", "Wind Rose", "Specialized", "polar", "windrose", ("x", "y"),
+             ("x", "y"), role_text={"x": "Direction (°):", "y": "Speed:"}),
+]
 TEMPLATES: dict[str, Template] = {t.key: t for t in _T}
 SUMMARIES = {"none": "None (plot the data rows)", "mean": "Mean", "mean_sd": "Mean ± SD",
              "mean_se": "Mean ± SE", "mean_ci": "Mean ± 95% CI", "median": "Median",
              "sum": "Sum", "count": "Count (N)"}
 SINGLE_Y = ("contour", "heatmap", "surface3d", "scatter3d", "ternary", "bubble",
-            "color_scatter", "bubble_color")
+            "color_scatter", "bubble_color", "kde2d", "pareto", "bland_altman", "bar3d",
+            "line3d", "vector", "windrose", "floating_column", "marginal")
 
 
 @dataclass
@@ -290,13 +362,15 @@ def build_graph(ds: Dataset, spec: PlotSpec, title: str | None = None) -> Graph:
         ys = ys[:1]
     builder = {"pie": _build_pie, "doughnut": _build_pie, "histogram": _build_hist,
                "box": _build_box, "multi_panel": _build_multi}.get(spec.kind, _build_xy)
+    from rsstatchem.core.graph import stat_build
+    builder = stat_build.BUILDERS.get(spec.kind, builder)
     builder(snap, spec, t, graph, layer, ys)
     for lay in graph.layers:
         for plot in lay.plots:
             _style(plot, lay.kind)
         lay.legend.visible = len(lay.plots) > 1 and lay.kind != "pie" and \
-            not (spec.kind == "box" and not any("group_label" in p.options
-                                                 for p in lay.plots))
+            not (spec.kind in ("box", "violin", "box_half", "meanbar", "interval") and
+                 not any("group_label" in p.options for p in lay.plots))
         if lay.kind == "ternary":
             for axis in (lay.x, lay.y, lay.z):
                 axis.grid_major = True
@@ -328,10 +402,13 @@ def _series_name(snap: _Snap, y: str, ys: list[str], glabel: str) -> str:
 
 def _plot(t: Template, spec: PlotSpec, **kw) -> Plot:
     p = Plot(type=t.plot, **kw)
+    p.options.update(t.options)
     for key, value in spec.options.items():
         if key in ("bins", "bin_width", "normal_curve", "scale", "show_values", "levels",
                    "grid", "connect", "show_mean", "outliers", "points", "notch", "cmap",
-                   "wireframe", "hole", "show_percent", "show_labels"):
+                   "wireframe", "hole", "show_percent", "show_labels", "dist_curve", "rug",
+                   "stat", "style", "size", "chart", "bw", "positions", "dist", "inner",
+                   "side", "fill_to", "error_band", "data_labels"):
             p.options[key] = value
     return p
 

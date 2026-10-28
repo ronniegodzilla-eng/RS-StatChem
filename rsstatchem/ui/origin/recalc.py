@@ -60,6 +60,9 @@ def fingerprint(books: dict, op: dict) -> str:
         values = (c.values + [None] * ws.n_rows)[lo:hi]
         h.update("\x1f".join(format_cell(v) for v in values).encode("utf-8"))
         h.update(b"\x1e")
+        masked = [r for r in sorted(c.mask) if lo <= r < hi]
+        if masked:   # masking / unmasking points changes the result (no-op without masks)
+            h.update(("mask " + ",".join(map(str, masked))).encode())
         if op.get("kind") == "fit":   # weights come from the Y Error column
             e = ws.yerr_of(ws.find(col))
             if e is not None:

@@ -89,7 +89,12 @@ def run() -> int:
     window_modules = ["rsstatchem.ui.launcher", "rsstatchem.ui.dx.window",
                       "rsstatchem.ui.origin.window", "rsstatchem.ui.chemdraw.window",
                       "rsstatchem.ui.imagej.bar", "rsstatchem.ui.imagej.image_window",
-                      "rsstatchem.ui.imagej.dialogs.generic"]
+                      "rsstatchem.ui.imagej.dialogs.generic",
+                      # menu packages loaded by name from the Origin / ChemDraw windows
+                      "rsstatchem.ui.origin.fitting_menus", "rsstatchem.ui.origin.data_menus",
+                      "rsstatchem.ui.origin.stats_menus", "rsstatchem.ui.origin.graph_menus",
+                      "rsstatchem.ui.chemdraw.intel_actions",
+                      "rsstatchem.ui.chemdraw.objects_actions"]
     for name in [m.opener.split(":")[0] for m in MODULES] + window_modules:
         try:
             importlib.import_module(name)
@@ -97,6 +102,14 @@ def run() -> int:
         except Exception:  # noqa: BLE001
             failures += 1
             print(f"selftest FAILED: {name}\n{traceback.format_exc()}")
+    try:  # Origin fitting cores (NLFit, peaks, ODR) without Qt windows
+        from rsstatchem.ui.origin import fitting_menus
+
+        fitting_menus.selftest()
+        print("selftest ok: Origin fitting cores")
+    except Exception:  # noqa: BLE001
+        failures += 1
+        print(f"selftest FAILED: Origin fitting cores\n{traceback.format_exc()}")
     try:  # Image Analysis: core contracts, bundled readers, the area modules' selftests
         from rsstatchem.ui.imagej import selftest as imagej_selftest
 

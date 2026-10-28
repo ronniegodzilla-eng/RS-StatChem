@@ -5,6 +5,9 @@
 | `exp_props.tsv.xz` (0.56 MB) | experimental values for 38 839 structures (InChIKey → value, sources) | `scripts/build_property_db.py` |
 | `ml_models.npz` (2.3 MB) | gradient-boosted tree models (melting point, boiling point, logP) as numpy arrays, plus training fingerprints for the applicability domain | `scripts/train_property_models.py` |
 | `benchmarks.json` (9 kB) | error of every estimation method against the experimental data | `scripts/benchmark_properties.py` |
+| `pka_model.npz` (0.6 MB) | pKa models (strongest acidic / basic group), training fingerprints and the measured values of the training data | `scripts/train_pka_model.py` |
+| `henry_model.npz` (0.2 MB) | Henry's law constant model, fingerprints and measured values | `scripts/train_pka_model.py` |
+| `henry_vpws_benchmark.json` | benchmark of HLC = P_vap / S_w with the window's own vapour pressure and solubility | `scripts/train_pka_model.py --only vpws` |
 
 Rebuild (raw downloads, ~100 MB, go to the git-ignored `build/propdb-raw`):
 
@@ -27,6 +30,8 @@ Only openly licensed or public-domain data are used. Every value in the app name
 | I | ILO-WHO International Chemical Safety Cards via PubChem | CC BY 4.0 (attribution: ILO/WHO ICSC) | 1 193 mp, 857 bp, 844 logP, 192 vapour pressure |
 | N | NIOSH Pocket Guide (US CDC/NIOSH) via PubChem | public domain (US government work) | 487 mp, 412 bp |
 | D | PAC database, US Department of Energy, via PubChem | public domain (energy.gov web policy) | 1 292 mp, 1 134 bp, 392 vapour pressure |
+| M | Mansouri et al., "Open-source QSAR models for pKa prediction using multiple machine learning approaches", J. Cheminform. 11 (2019) 60: the curated DataWarrior pKa set (`pKa_QR.sdf` in OPERA_Data.zip) | CC0 (BMC data waiver); OPERA repository MIT | 2 641 acidic, 3 457 basic pKa values (after the consistency filter below) |
+| O | PHYSPROP Henry's law constants curated for OPERA (`HL_QR.sdf`, same archive as source O) | MIT (OPERA repository) | 697 log HLC (atm m³/mol, 25 °C) |
 
 Left out because the licence restricts reuse or is not stated: PubChem annotations from HMDB
 (commercial use needs permission), DrugBank (CC BY-NC), CAMEO Chemicals (part of the data is
@@ -179,3 +184,48 @@ https://github.com/cdk/cdk/tree/cdk-2.13 and the ``-sources.jar`` files on Maven
 beam-core 1.3.10 (BSD 2-Clause) and vecmath 1.5.2 (GPL-2.0 with Classpath exception). 1.9 MB
 instead of the 24.1 MB ``cdk-2.13.jar`` bundle; the helper gives byte-identical answers for all
 52 895 benchmark and database SMILES with both (``fetch_cdk.py --compare-bundle FILE``).
+
+## pKa (`pka_model.npz`, `core/chem_draw/pka.py`)
+
+Open replacement for ChemDraw's licensed MOSES pKa. Two gradient-boosted tree models (500
+trees, 31 leaves, learning rate 0.06; same features as the other ML models) for the strongest
+acidic pKa and the strongest basic pKa (pKa of BH+). Before training, a value was dropped when
+the structure has no group of that kind among the SMARTS in `pka.ACIDIC_GROUPS` /
+`BASIC_GROUPS` (605 acidic, 219 basic values - mostly entries filed under the wrong kind, such
+as phenol with a "basic" pKa of 9.9, or groups the app never predicts, such as amide N-H); the
+app shows neither a measured nor a predicted value without such a group. The data file has no
+train/test flag, so the hold-out split is our own (seeded random 75/25, the proportion
+Mansouri et al. used):
+
+| Model | n | 5-fold CV RMSE / MAE | scaffold split RMSE / MAE | 75/25 hold-out RMSE / MAE |
+|---|---|---|---|---|
+| pKa (acidic) | 2 557 | 1.53 / 0.93 | 1.43 / 0.87 | 1.51 / 0.91 (n 640) |
+| pKa (basic) | 3 422 | 1.38 / 0.88 | 1.35 / 0.89 | 1.27 / 0.86 (n 882) |
+
+Expected error by similarity to the training set (CV RMSE, < 0.3 / 0.3–0.5 / 0.5–0.7 / ≥ 0.7):
+acidic 2.62 / 1.94 / 1.35 / 1.17, basic 2.11 / 1.86 / 1.31 / 0.91. Literature checks (tests):
+acetic acid 4.70 (handbook 4.76), benzoic acid 4.18 (4.20), phenol 9.97 (9.99), pyridine 5.26
+(5.23), aniline 4.60 (4.60), methylamine 10.76 (10.62), imidazole 7.07 (6.95) - measured values
+of the data set; 4-chlorobutanoic acid (not in the data) is predicted 4.49 (literature 4.52).
+Values are aqueous, 25 °C, macroscopic; no microstates or site assignment.
+
+Rejected: the IUPAC Digitized pKa Dataset (CC BY-NC 4.0), MolGpKa (trained on ACD/pKa
+predictions), torch-based models (pkasolver, Uni-pKa).
+
+## Henry's law constant (`henry_model.npz`, `core/chem_draw/henry.py`)
+
+Shown in Pa m³/mol at 25 °C: the measured PHYSPROP value when there is one, otherwise the
+estimate with the lower expected error:
+
+| Method | n | RMSE / MAE (log10 units) |
+|---|---|---|
+| ML, 5-fold CV | 697 | 0.86 / 0.46 |
+| ML, OPERA's own test set (trained on OPERA's training set) | 147 | 0.91 / 0.54 |
+| ML, scaffold split | 139 | 1.38 / 0.99 |
+| P_vap / S_w, both inputs experimental | 553 | 0.62 / 0.31 (bias +0.11) |
+| P_vap / S_w, an input estimated (Nannoolal / ESOL) | 138 | 1.21 / 0.96 (bias +0.61) |
+
+The P_vap / S_w numbers are not cross-validated and PHYSPROP derived some of its HLC values
+from the same vapour pressure and solubility data, so the "both experimental" row is
+optimistic. For a gas at 25 °C (P_vap above 1 atm) the solubility refers to 1 atm partial
+pressure, so 1 atm / S_w is used. ML expected error by similarity: 2.25 / 0.94 / 0.68 / 0.31 log units.

@@ -148,8 +148,30 @@ def stem_and_leaf(x: np.ndarray) -> dict:
         10.0 ** math.floor(math.log10(abs(body[0]))) if len(body) and body[0] != 0 else 1.0
     lines_per = 1
     if spread > 0:
-        stems = spread / width
-        lines_per = 5 if stems < 2 else 2 if stems < 5 else 1
+        # Velleman & Hoaglin (1981) rule, as SPSS EXAMINE prints it: at most
+        # L = floor(10 log10 n) lines; the line width is the smallest "nice" value
+        # {1, 2, 5} x 10^k that covers the non-extreme range in L lines or fewer.
+        # (UCLA hsb2 write, n = 200: range 36, L = 23 -> line width 2 -> 5 lines per stem.)
+        max_lines = max(1, int(math.floor(10 * math.log10(n)))) if n > 1 else 1
+        k = math.floor(math.log10(spread / max_lines))
+        lo_b, hi_b = float(body.min()), float(body.max())
+        chosen = None
+        for kk in (k - 1, k, k + 1, k + 2):
+            for mult in (1, 2, 5):
+                w = mult * 10.0 ** kk
+                if w * max_lines < spread * (1 - 1e-12):
+                    continue
+                n_lines = math.floor(round(hi_b / w, 8)) - math.floor(round(lo_b / w, 8)) + 1
+                if n_lines <= max_lines:
+                    chosen = (mult, kk)
+                    break
+            if chosen:
+                break
+        if chosen is None:
+            chosen = (1, k + 3)
+        mult, kk = chosen
+        width = 10.0 ** (kk + 1)
+        lines_per = {1: 1, 2: 5, 5: 2}[mult]
     per_leaf = max(1, int(math.ceil(n / 300)))
     leaf_unit = width / 10
     scaled = np.floor(np.round(body / leaf_unit, 8)).astype(int)
@@ -335,7 +357,7 @@ def explore(ds: Dataset, dependents: list[str], factors: list[str] | None = None
             th = tukey_hinges(g.data)
             head = [var.title if gi == 0 else ""] + (
                 [f"{fvar.title} = {g.label}"] if has_factor else [])
-            d = var.decimals + 4
+            d = var.decimals + 2   # SPSS EXAMINE percentiles: d+2 (hsb2 write 35.0500)
             prows.append(["Weighted Average(Definition 1)" if gi == 0 and dep == dependents[0]
                           else ""] + head + [fmt(v, d) for v in wa])
             prows.append(["Tukey's Hinges" if gi == 0 and dep == dependents[0] else ""] +
@@ -537,12 +559,12 @@ def _descriptive_rows(x: np.ndarray, decimals: int, level: float) -> list[tuple[
         (f"{pct(level)} Confidence Interval for Mean: Upper Bound", fmt(hi, d + 2), ""),
         ("5% Trimmed Mean", fmt(trimmed_mean(x), d + 2), ""),
         ("Median", fmt(r["median"], d + 2), ""),
-        ("Variance", fmt(r["var"], d + 3), ""),
+        ("Variance", fmt(r["var"], 3), ""),          # SPSS: 3 decimals (hsb2 write 89.844)
         ("Std. Deviation", fmt(r["std"], d + 3), ""),
         ("Minimum", fmt(r["min"], d), ""),
         ("Maximum", fmt(r["max"], d), ""),
         ("Range", fmt(r["range"], d), ""),
-        ("Interquartile Range", fmt(q3 - q1, d + 2), ""),
+        ("Interquartile Range", fmt(q3 - q1, d), ""),  # SPSS: variable format (14.75)
         ("Skewness", fmt(r["skew"]), fmt(r["se_skew"])),
         ("Kurtosis", fmt(r["kurt"]), fmt(r["se_kurt"])),
     ]

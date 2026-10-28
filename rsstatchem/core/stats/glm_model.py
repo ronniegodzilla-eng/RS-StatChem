@@ -12,7 +12,13 @@ factors, and saved predicted values / residuals / diagnostics.
 Design conventions follow SPSS:
 
 * Type III tests use sum-to-zero (effect) coding; nested effects are coded within each cell of
-  the nesting factors. Without empty cells this equals SPSS's Type III (and Type IV).
+  the nesting factors. Without empty cells this equals SPSS's Type III (and Type IV). When a
+  crossed effect has empty cells, Types III and IV are computed from IBM's hypothesis matrices
+  (IBM SPSS Statistics Algorithms, appendix "Sums of Squares"): H = (X'WX)^- X'WX on the
+  overparameterized design ordered [effects not containing F, F, effects containing F], pivoting
+  out the non-containing effects, Gauss-eliminating on F, then (Type III) orthogonalising the
+  F rows to the rows that only involve containing effects, or (Type IV) distributing each
+  F-level coefficient equitably over the non-empty cells of the containing effects.
 * Types I and II compare residual SSCP matrices of nested models built from overparameterized
   indicator columns (Type II: adjusted for every effect that does not contain the effect).
 * Parameter estimates use the overparameterized design with later aliased columns set to 0
@@ -368,6 +374,19 @@ def aliased_columns(X: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     return redundant
 
 
+def _qr_rows(H: np.ndarray, tol: float = 1e-9):
+    """Indices of a maximal set of linearly independent rows of H (in order)."""
+    piv = []
+    Q = np.zeros((H.shape[1], 0))
+    for i, row in enumerate(H):
+        v = row - Q @ (Q.T @ row)
+        nv = np.linalg.norm(v)
+        if nv > tol * max(np.linalg.norm(row), 1.0):
+            Q = np.column_stack([Q, v / nv])
+            piv.append(i)
+    return Q, None, np.array(piv, int)
+
+
 # ------------------------------------------------------------------ the fitted model
 @dataclass
 class Term:
@@ -429,6 +448,12 @@ class GLMFit:
         self.redundant = aliased_columns(Xo * self.sw[:, None]) if Xo.shape[1] else \
             np.zeros(0, bool)
         self._sscp_cache: dict[tuple, np.ndarray] = {}
+        # empty cells in a crossed factor effect -> IBM hypothesis-matrix Types III / IV
+        self.empty_cells = any(
+            self.specs[o - 1].factors and not self.specs[o - 1].within
+            and not np.any(Xo[:, j]) for j, o in enumerate(self.param_owner) if o > 0)
+        self._L_cache: dict[int, tuple] = {}
+        self.type4_not_unique: set[int] = set()
 
     @property
     def design_text(self) -> str:
@@ -477,8 +502,165 @@ class GLMFit:
                 others.append(j)
         return tuple(others), tuple(others) + (k,)
 
+    # ---------------------------------------------------------------- IBM Type III / IV
+    def _spec_of(self, k: int) -> TermSpec:
+        return INTERCEPT if k == 0 else self.specs[k - 1]
+
+    def _contains(self, j: int, k: int) -> bool:
+        """Effect j contains effect k (IBM: the intercept is contained in every pure factor
+        effect; nothing is contained in the intercept)."""
+        if j == k or j == 0:
+            return False
+        sj = self.specs[j - 1]
+        if k == 0:
+            return sj.is_pure_factor
+        return sj.contains(self.specs[k - 1])
+
+    def hypothesis_matrix(self, term: Term) -> tuple[np.ndarray, np.ndarray]:
+        """IBM Type III / IV hypothesis matrix L for ``term`` on the overparameterized design
+        (columns in ``self.Xo`` order) and the column order used. Returns (L, cols)."""
+        k = self.term_number(term)
+        if k in self._L_cache:
+            return self._L_cache[k]
+        owner = np.asarray(self.param_owner)
+        terms_all = sorted(set(owner.tolist()))
+        part1 = [j for j in terms_all if j != k and not self._contains(j, k)]
+        part3 = [j for j in terms_all if self._contains(j, k)]
+        c1 = [c for j in part1 for c in np.flatnonzero(owner == j)]
+        c2 = list(np.flatnonzero(owner == k))
+        c3 = [c for j in part3 for c in np.flatnonzero(owner == j)]
+        cols = np.array(c1 + c2 + c3, int)
+        Xr = self.Xo[:, cols] * self.sw[:, None]
+        A = Xr.T @ Xr
+        alias = aliased_columns(Xr)
+        keep = np.flatnonzero(~alias)
+        G = np.zeros_like(A)
+        if len(keep):
+            G[np.ix_(keep, keep)] = np.linalg.pinv(A[np.ix_(keep, keep)])
+        H = G @ A
+        scale = max(np.abs(H).max(), 1.0)
+        tol = 1e-8 * scale
+        H[np.abs(H) < tol] = 0.0
+        n1, n2 = len(c1), len(c2)
+
+        def pivot(Hm, c, kill_row):
+            nz = np.flatnonzero(np.abs(Hm[:, c]) > tol)
+            if not len(nz):
+                return Hm
+            # the diagonal element (H = G A has H[c, c] = 1 for a non-aliased column) as in
+            # the sweep, otherwise the first nonzero element
+            r = c if (c < len(Hm) and abs(Hm[c, c]) > tol) else nz[0]
+            Hm[r] = Hm[r] / Hm[r, c]
+            for i in nz:
+                if i != r:
+                    Hm[i] = Hm[i] - Hm[i, c] * Hm[r]
+            if kill_row:
+                Hm[r] = 0.0
+            Hm[np.abs(Hm) < tol] = 0.0
+            return Hm
+        for c in range(n1):                      # step 2: remove non-containing effects
+            H = pivot(H, c, True)
+        for c in range(n1, n1 + n2):             # step 3: eliminate on F
+            H = pivot(H, c, False)
+        H = H[np.any(np.abs(H) > tol, axis=1)]
+        if c3 and len(H):
+            fpart = np.any(np.abs(H[:, n1:n1 + n2]) > tol, axis=1)
+            G0, G1 = H[~fpart], H[fpart]
+            if self.ss_type == 4:
+                G1 = self._type4_distribute(G1, k, cols, n1, n2, part3, tol)
+            elif len(G0):                        # step 4 (Type III): G1 orthogonal to G0
+                G1 = G1 - G1 @ G0.T @ np.linalg.pinv(G0 @ G0.T) @ G0
+            H = G1
+        # independent rows only
+        if len(H):
+            q, r_, piv = _qr_rows(H)
+            H = H[piv]
+        Lfull = np.zeros((len(H), self.Xo.shape[1]))
+        if len(H):
+            Lfull[:, cols] = H
+        self._L_cache[k] = (Lfull, cols)
+        return Lfull, cols
+
+    def _type4_distribute(self, G1, k, cols, n1, n2, part3, tol):
+        """IBM Type IV step 3: spread each F-level coefficient over the non-empty cells of the
+        effects containing F, using only the levels of the other factors that are common to
+        all F levels with a nonzero coefficient."""
+        spec_f = self._spec_of(k)
+        owner = np.asarray(self.param_owner)
+        nonempty = np.any(self.Xo != 0, axis=0)
+        fcols = cols[n1:n1 + n2]
+        # level tuple of F for each of its columns
+        flevels = [self._column_levels(c, spec_f) for c in fcols]
+        out = G1.copy()
+        pos = {c: i for i, c in enumerate(cols)}
+        for row in out:
+            coef = {flevels[i]: row[n1 + i] for i in range(n2)}
+            active = {lv for lv, v in coef.items() if abs(v) > tol}
+            for j in part3:
+                spec_j = self.specs[j - 1]
+                jcols = [c for c in np.flatnonzero(owner == j)]
+                cells = {}
+                for c in jcols:
+                    full = self._column_levels(c, spec_j)
+                    names = list(spec_j.factors) + list(spec_j.within)
+                    fl = tuple(full[names.index(f)] for f in
+                               list(spec_f.factors) + list(spec_f.within))
+                    other = tuple(v for f, v in zip(names, full)
+                                  if f not in spec_f.all_factors)
+                    cells[c] = (fl, other)
+                common = None
+                for lv in active:
+                    have = {o for c, (fl, o) in cells.items() if fl == lv and nonempty[c]}
+                    common = have if common is None else common & have
+                common = common or set()
+                if active and not common:
+                    self.type4_not_unique.add(k)
+                for c, (fl, o) in cells.items():
+                    i = pos[c]
+                    if fl in active and o in common and nonempty[c]:
+                        row[i] = coef[fl] / len(common)
+                    else:
+                        row[i] = 0.0
+        return out
+
+    def _column_levels(self, c: int, spec: TermSpec) -> tuple:
+        """Level indices (in the order factors + within of ``spec``) of indicator column c."""
+        if spec == INTERCEPT or not (spec.factors or spec.within):
+            return ()
+        rows = np.flatnonzero(self.Xo[:, c] != 0)
+        names = list(spec.factors) + list(spec.within)
+        fidx = [self.design.fidx[f] for f in names]
+        if len(rows):
+            return tuple(int(self.factors[i].codes[rows[0]]) for i in fidx)
+        # empty cell: recover the levels from the column position within the term
+        owner = np.asarray(self.param_owner)
+        first = int(np.flatnonzero(owner == owner[c])[0])
+        if spec.within:
+            return ()
+        sizes = [len(self.factors[i].levels) for i in fidx]
+        return tuple(int(v) for v in np.unravel_index(c - first, sizes))
+
+    def _ibm_hyp(self, term: Term, M: np.ndarray | None):
+        L, _ = self.hypothesis_matrix(term)
+        if not len(L):
+            q = self.Y.shape[1] if M is None else M.shape[1]
+            return np.zeros((q, q)), 0
+        Xw = self.Xo * self.sw[:, None]
+        A = Xw.T @ Xw
+        keep = np.flatnonzero(~self.redundant)
+        G = np.zeros_like(A)
+        G[np.ix_(keep, keep)] = np.linalg.pinv(A[np.ix_(keep, keep)])
+        Bo = G @ Xw.T @ self.Yw
+        if M is not None:
+            Bo = Bo @ M
+        LB = L @ Bo
+        V = L @ G @ L.T
+        return LB.T @ np.linalg.pinv(V) @ LB, int(np.linalg.matrix_rank(L))
+
     def hypothesis(self, term: Term, M: np.ndarray | None = None) -> np.ndarray:
         """Hypothesis SSCP for ``term`` (in the model's SS type) on ``Y M``."""
+        if self.ss_type in (3, 4) and self.empty_cells:
+            return self._ibm_hyp(term, M)[0]
         if self.ss_type in (1, 2):
             k = self.term_number(term)
             a, b = self._reduced_sets(k)
@@ -492,6 +674,8 @@ class GLMFit:
         return bt.T @ np.linalg.pinv(V) @ bt
 
     def term_df(self, term: Term) -> int:
+        if self.ss_type in (3, 4) and self.empty_cells:
+            return self._ibm_hyp(term, None)[1]
         if self.ss_type in (1, 2):
             k = self.term_number(term)
             a, b = self._reduced_sets(k)

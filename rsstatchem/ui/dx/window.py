@@ -4,10 +4,18 @@ Menu bar (File, Edit, View, Display Options, Design Tools, Analysis, Optimizatio
 Help), a toolbar, the navigation pane on the left and the selected node on the right:
 
     Design (Actual)        the design layout
-        Summary / Graph Columns / Evaluation / Notes
-    Analysis               one node per response (R1:Yield ...)
+        Summary / Graph Columns / Evaluation / Constraints / Notes
+    Analysis               one node per response (R1:Yield ...) [+ Analysis Summary]
     Optimization           Numerical, Graphical
     Post Analysis          Point Prediction, Confirmation, Coefficients Table
+
+Design Tools > Augment Design: foldover, centre points, axial points (factorial -> CCD),
+replicates, optimal augmentation for a new model, Modify Design Space and the constraints;
+Design Tools > Edit Layout: insert / delete runs, add a response, round factor values, rename
+blocks (all undoable). File > Import Data Set builds a historical-data design from a table.
+
+Views published by the analysis and optimisation packages are wired in through
+:data:`EXTENSION_NODES` when their classes exist (Analysis Summary, Propagation of Error).
 
 A window holds at most one design; New Design / Open in a window that already has one opens a
 new window. Without a design the window shows a start page and (from the launcher) the New
@@ -17,13 +25,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QActionGroup, QKeySequence, QUndoStack
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QLabel, QLineEdit, QMainWindow, QMessageBox, QSplitter,
-                               QStackedWidget, QTextBrowser, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QMainWindow, QMessageBox, QPushButton, QSpinBox,
+                               QSplitter, QStackedWidget, QTextBrowser, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from rsstatchem import APP_NAME
 from rsstatchem.ui.dx import icons, style
@@ -52,6 +62,11 @@ TIPS = {
                   "and the leverage of each run. The FDS graph shows the prediction precision "
                   "over the design space.</p>",
     "notes": "<h3>Notes</h3><p>Free text saved with the design.</p>",
+    "constraints": "<h3>Constraints</h3><p>Multiple linear constraints of the design region "
+                   "in actual units, e.g. <b>A + B &lt;= 15</b> or <b>0.2 &lt;= A + 2B &lt;= "
+                   "1</b>, with the vertices of the region and the runs that fall outside it. "
+                   "Edit the constraints, then augment the design to place runs in the new "
+                   "region.</p>",
     "analysis": "<h3>Analysis</h3><p>Work through the tabs from left to right:</p><ol>"
                 "<li><b>Transform</b>: keep None unless the Box-Cox plot or a max/min ratio "
                 "&gt; 10 suggests otherwise.</li><li><b>Fit Summary</b>: the suggested model "
@@ -93,8 +108,29 @@ TIPS = {
 }
 
 
+# Views from the analysis (WP-B) and optimisation (WP-C) packages, shown when the class exists:
+# (node key, parent folder, text, module, class name, icon)
+EXTENSION_NODES = [
+    ("analysis_summary", "analysis", "Analysis Summary", "rsstatchem.ui.dx.analysis",
+     "AnalysisSummaryView", "analysis_summary"),
+    ("poe", "optimization", "Propagation of Error", "rsstatchem.ui.dx.optimization",
+     "POEGraphView", "poe"),
+]
+
+
+def extension_class(module: str, name: str):
+    import importlib
+
+    try:
+        return getattr(importlib.import_module(module), name, None)
+    except ImportError:
+        return None
+
+
 class InfoDialog(QDialog):
-    """Design Tools > Edit Factor and Response Info: names and units."""
+    """Design Tools > Edit Factor and Response Info (column info sheet): names and units;
+    for numeric factors the standard deviation used by propagation of error and the allowed
+    discrete levels used by the numerical optimisation."""
 
     def __init__(self, doc, parent=None):
         super().__init__(parent)
@@ -102,12 +138,29 @@ class InfoDialog(QDialog):
         self.doc = doc
         form = QFormLayout()
         self.edits = []
+        self.extra = []
+        sds = doc.optimization.get("poe_sd", {}) or {}
+        disc = doc.optimization.get("discrete", {}) or {}
         for j, f in enumerate(doc.factors):
             n, u = QLineEdit(f["name"]), QLineEdit(f.get("units", ""))
             self.edits.append(("f", j, n, u))
             form.addRow(QLabel(f"<b>Factor {j + 1}</b>"))
             form.addRow("Name:", n)
             form.addRow("Units:", u)
+            if f.get("type") == "numeric":
+                sd = sds.get(f["column"])
+                sd_edit = QLineEdit("" if not sd else f"{sd:g}")
+                sd_edit.setPlaceholderText("0 = no variation")
+                sd_edit.setToolTip("Standard deviation of the factor setting in actual units "
+                                   "(propagation of error).")
+                levels = disc.get(f["column"]) or f.get("discrete_levels") or []
+                lv_edit = QLineEdit(", ".join(f"{v:g}" for v in levels))
+                lv_edit.setPlaceholderText("continuous")
+                lv_edit.setToolTip("Allowed settings, separated by commas (optimisation only "
+                                   "searches these levels).")
+                form.addRow("Std. Dev. (POE):", sd_edit)
+                form.addRow("Discrete levels:", lv_edit)
+                self.extra.append((j, sd_edit, lv_edit))
         for i, r in enumerate(doc.responses):
             n, u = QLineEdit(r["name"]), QLineEdit(r.get("units", ""))
             self.edits.append(("r", i, n, u))
@@ -123,6 +176,14 @@ class InfoDialog(QDialog):
         lay.addWidget(buttons)
 
     def apply(self) -> None:
+        for j, sd_edit, lv_edit in self.extra:
+            try:
+                sd = float(sd_edit.text().replace(",", ".")) if sd_edit.text().strip() else 0.0
+                levels = [float(v) for v in lv_edit.text().replace(";", ",").split(",")
+                          if v.strip()]
+            except ValueError:
+                return
+            self.doc.set_factor_variation(j, sd, levels)
         for kind, i, n, u in self.edits:
             if kind == "f":
                 f = self.doc.factors[i]
@@ -203,6 +264,421 @@ class FoldoverDialog(QDialog):
         self.accept()
 
 
+class _FormDialog(QDialog):
+    """Small Design Tools dialog: a form, an info line and OK / Cancel; ``action()`` does
+    the edit and returns a status message (errors are shown in the dialog)."""
+
+    title = "Design Tools"
+
+    def __init__(self, win, parent=None):
+        super().__init__(parent or win)
+        self.win = win
+        self.doc = win.doc
+        self.setWindowTitle(self.title)
+        self.setStyleSheet(style.STYLESHEET)
+        self.form = QFormLayout()
+        self.info = QLabel()
+        self.info.setWordWrap(True)
+        self.message = ""
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.apply)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(self.form)
+        lay.addWidget(self.info)
+        lay.addWidget(buttons)
+
+    def spin(self, label, lo, hi, value, tip=""):
+        w = QSpinBox()
+        w.setRange(lo, hi)
+        w.setValue(value)
+        if tip:
+            w.setToolTip(tip)
+        self.form.addRow(label, w)
+        return w
+
+    def dspin(self, label, lo, hi, value, decimals=4):
+        w = QDoubleSpinBox()
+        w.setRange(lo, hi)
+        w.setDecimals(decimals)
+        w.setValue(value)
+        self.form.addRow(label, w)
+        return w
+
+    def check(self, text, value=True):
+        w = QCheckBox(text)
+        w.setChecked(value)
+        self.form.addRow("", w)
+        return w
+
+    def action(self) -> str:  # pragma: no cover - overridden
+        return ""
+
+    def apply(self) -> None:
+        try:
+            self.message = self.action() or ""
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.info.setText(f"<span style='color:#B00020'>{exc}</span>")
+            return
+        self.accept()
+
+
+class CenterPointsDialog(_FormDialog):
+    title = "Augment Design: Add Center Points"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.n = self.spin("Center points:", 1, 50, 3)
+        self.new_block = self.check("Put them in a new block", False)
+        self.info.setText("Centre points estimate pure error and test for curvature "
+                          "(numeric factors at the middle of their ranges; one set per "
+                          "categoric level combination; the centroid of a mixture).")
+
+    def action(self) -> str:
+        n = self.win.augment_center(self.n.value(), self.new_block.isChecked())
+        return f"Added {n} centre point(s)."
+
+
+class AxialDialog(_FormDialog):
+    title = "Augment Design: Add Axial Points"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.alpha = self.dspin("Alpha (coded distance):", 0.1, 10, self.doc.default_alpha())
+        self.centers = self.spin("Center points in the axial block:", 0, 20, 2)
+        self.info.setText("Turns a two-level factorial into a central composite design: 2 "
+                          "axial (star) points per numeric factor at ±alpha plus centre "
+                          "points, in a new block. Alpha 1 keeps the axial points at the "
+                          "factor limits (face centred); the default is rotatable "
+                          "(nF^¼).")
+
+    def action(self) -> str:
+        n = self.win.augment_axial(self.alpha.value(), self.centers.value())
+        return f"Added {n} axial and centre runs (block {self.doc.n_blocks})."
+
+
+class ReplicatesDialog(_FormDialog):
+    title = "Augment Design: Add Replicates"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.times = self.spin("Extra replicates of every run:", 1, 10, 1)
+        self.new_block = self.check("One new block per replicate", True)
+        self.info.setText("Repeats every run of the design (empty responses).")
+
+    def action(self) -> str:
+        total = 0
+        for _ in range(self.times.value()):
+            total += self.win.augment_replicates(self.new_block.isChecked())
+        return f"Added {total} replicate run(s)."
+
+
+class OptimalAugmentDialog(_FormDialog):
+    title = "Augment Design: Optimal"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        from rsstatchem.ui.dx.info import model_choices
+
+        self.terms = None
+        self.order = QComboBox()
+        for name, key in model_choices(self.doc):
+            self.order.addItem(name, key)
+        bigger = {"linear": "2fi", "2fi": "quadratic", "quadratic": "cubic",
+                  "special_cubic": "cubic"}
+        cur = self.doc.meta.get("model") or "linear"
+        i = self.order.findData(bigger.get(cur, "quadratic"))
+        self.order.setCurrentIndex(i if i >= 0 else self.order.count() - 1)
+        self.form.addRow("New model:", self.order)
+        self.edit_btn = QPushButton("Edit Model...")
+        self.edit_btn.clicked.connect(self.edit_model)
+        self.form.addRow("", self.edit_btn)
+        self.runs = self.spin("Runs to add:", 1, 500, 4)
+        self.lof = self.spin("Lack-of-fit points:", 0, 50, 0)
+        self.criterion = QComboBox()
+        for key, text in (("I", "I-optimal"), ("D", "D-optimal"), ("A", "A-optimal")):
+            self.criterion.addItem(text, key)
+        self.form.addRow("Optimality:", self.criterion)
+        self.exchange = QComboBox()
+        for key, text in (("point", "Point exchange"), ("coordinate", "Coordinate exchange"),
+                          ("best", "Best")):
+            self.exchange.addItem(text, key)
+        self.form.addRow("Exchange:", self.exchange)
+        self.new_block = self.check("Add the runs as a new block (phase)", True)
+        self.order.currentIndexChanged.connect(lambda _: self._suggest())
+        self._suggest()
+
+    def current_terms(self):
+        return self.terms if self.terms is not None else \
+            self.doc.model_terms(self.order.currentData())
+
+    def _suggest(self) -> None:
+        self.terms = None
+        try:
+            n = self.doc.augment_default_runs(self.current_terms())
+        except (ValueError, np.linalg.LinAlgError):
+            n = 4
+        self.runs.setValue(n)
+        self.info.setText(f"The existing {self.doc.n_runs} runs are kept; {n} new runs (the "
+                          "default) let the new model be estimated with some error degrees "
+                          "of freedom.")
+
+    def edit_model(self):
+        from rsstatchem.core.doe import model as mdl
+        from rsstatchem.ui.dx.wizard import TermsDialog
+
+        sp = self.doc.space()
+        if self.doc.combined:
+            from rsstatchem.core.doe import terms_combined as tc
+
+            cands, n_mix = tc.candidate_terms(sp), sp.n_mix
+        else:
+            cands, n_mix = mdl.candidate_terms(sp), None
+        dlg = TermsDialog(cands, self.current_terms(), self, n_mix=n_mix)
+
+        def done(result):
+            if result:
+                self.terms = dlg.selected()
+                self.runs.setValue(self.doc.augment_default_runs(self.terms))
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
+
+    def action(self) -> str:
+        n = self.win.augment_optimal(self.current_terms(), self.runs.value(),
+                                     self.criterion.currentData(),
+                                     self.exchange.currentData(), self.lof.value(),
+                                     self.new_block.isChecked())
+        return f"Optimal augmentation: {n} run(s) added."
+
+
+class ModifySpaceDialog(_FormDialog):
+    title = "Modify Design Space"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.rows = []
+        for j, f in enumerate(self.doc.factors):
+            if f.get("type") == "categoric":
+                continue
+            lo, hi = QLineEdit(f"{f['low']:g}"), QLineEdit(f"{f['high']:g}")
+            box = QHBoxLayout()
+            box.addWidget(QLabel("Low"))
+            box.addWidget(lo)
+            box.addWidget(QLabel("High"))
+            box.addWidget(hi)
+            self.form.addRow(self.doc.factor_title(j) + ":", box)
+            self.rows.append((j, lo, hi))
+        self.info.setText("New limits move, grow or shrink the design region. The runs keep "
+                          "their actual settings; their coded values change. Augment the "
+                          "design afterwards to add runs in the new region.")
+
+    def action(self) -> str:
+        changes = {}
+        for j, lo, hi in self.rows:
+            f = self.doc.factors[j]
+            try:
+                a, b = float(lo.text().replace(",", ".")), float(hi.text().replace(",", "."))
+            except ValueError:
+                raise ValueError(f"{f['name']}: enter numbers.") from None
+            if (a, b) != (f["low"], f["high"]):
+                changes[j] = (a, b)
+        if not changes:
+            return "Design space unchanged."
+        self.win.modify_design_space(changes)
+        return f"Design space changed for {len(changes)} factor(s)."
+
+
+class RoundDialog(_FormDialog):
+    title = "Round Factor Values"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.mode = QComboBox()
+        self.mode.addItem("Decimal places", "decimals")
+        self.mode.addItem("Significant digits", "sig")
+        self.form.addRow("Round to:", self.mode)
+        self.digits = self.spin("Digits:", 0, 10, 2)
+        self.info.setText("Rounds the numeric factor settings; mixture runs are adjusted so "
+                          "the components still add up to the total.")
+
+    def action(self) -> str:
+        d = self.digits.value()
+        if self.mode.currentData() == "sig":
+            n = self.win.round_factors(sig=max(d, 1))
+        else:
+            n = self.win.round_factors(decimals=d)
+        return f"Rounded {n} value(s)."
+
+
+class AddResponseDialog(_FormDialog):
+    title = "Add Response"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.name = QLineEdit(f"R{len(self.doc.responses) + 1}")
+        self.units = QLineEdit("")
+        self.form.addRow("Name:", self.name)
+        self.form.addRow("Units:", self.units)
+
+    def action(self) -> str:
+        col = self.win.add_response(self.name.text().strip(), self.units.text().strip())
+        return f"Added response {col}."
+
+
+class RenameBlocksDialog(_FormDialog):
+    title = "Rename Blocks"
+
+    def __init__(self, win, parent=None):
+        super().__init__(win, parent)
+        self.edits = []
+        for b in self.doc.block_values():
+            e = QLineEdit(self.doc.block_name(b))
+            self.form.addRow(f"Block {b:g}:", e)
+            self.edits.append((b, e))
+
+    def action(self) -> str:
+        n = 0
+        for b, e in self.edits:
+            if e.text().strip() and e.text().strip() != self.doc.block_name(b):
+                self.win.rename_block(b, e.text().strip())
+                n += 1
+        return f"Renamed {n} block(s)."
+
+
+class PreferencesDialog(QDialog):
+    """Edit > Preferences: significance level, confidence level of intervals and the
+    tolerance-interval settings, shared by analysis, optimisation and post analysis."""
+
+    FIELDS = [("alpha", "Significance level (alpha):", 0.001, 0.5),
+              ("ci_level", "Confidence level of intervals:", 0.5, 0.999),
+              ("ti_proportion", "Tolerance interval: proportion of population:", 0.5, 0.9999),
+              ("ti_confidence", "Tolerance interval: confidence:", 0.5, 0.999)]
+
+    def __init__(self, win):
+        super().__init__(win)
+        from rsstatchem.core.doe import model as mdl
+
+        self.win = win
+        self.setWindowTitle("Preferences")
+        self.setStyleSheet(style.STYLESHEET)
+        prefs = getattr(mdl, "PREFERENCES", None)
+        values = prefs.to_meta() if prefs is not None else {}
+        form = QFormLayout()
+        self.spins = {}
+        for key, label, lo, hi in self.FIELDS:
+            w = QDoubleSpinBox()
+            w.setRange(lo, hi)
+            w.setDecimals(4)
+            w.setSingleStep(0.01)
+            w.setValue(float(values.get(key, {"alpha": 0.05, "ci_level": 0.95,
+                                               "ti_proportion": 0.99,
+                                               "ti_confidence": 0.95}[key])))
+            form.addRow(label, w)
+            self.spins[key] = w
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.apply)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Used by the ANOVA, the confidence / prediction / tolerance "
+                             "intervals and the optimisation."))
+        lay.addLayout(form)
+        lay.addWidget(buttons)
+
+    def apply(self) -> None:
+        self.win.set_preferences({k: w.value() for k, w in self.spins.items()})
+        self.accept()
+
+
+class ImportDataDialog(QDialog):
+    """File > Import Data Set: choose which columns of a table are factors (numeric or
+    categoric) and which are responses; builds a historical-data design."""
+
+    ROLES = [("ignore", "Ignore"), ("factor", "Factor (numeric)"),
+             ("categoric", "Factor (categoric)"), ("response", "Response")]
+
+    def __init__(self, frame: pd.DataFrame, name: str = "Imported data", parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+        self.setWindowTitle("Import Data Set")
+        self.setStyleSheet(style.STYLESHEET)
+        self.frame = frame
+        self.document = None
+        self.kind = QComboBox()
+        self.kind.addItem("Process factors", "process")
+        self.kind.addItem("Mixture components", "mixture")
+        self.name = QLineEdit(name)
+        self.table = QTableWidget(len(frame.columns), 3)
+        self.table.setHorizontalHeaderLabels(["Column", "Role", "First values"])
+        self.table.verticalHeader().setVisible(False)
+        self.roles: dict[str, QComboBox] = {}
+        cols = list(frame.columns)
+        for i, c in enumerate(cols):
+            it = QTableWidgetItem(str(c))
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(i, 0, it)
+            box = QComboBox()
+            for key, text in self.ROLES:
+                box.addItem(text, key)
+            nums = pd.to_numeric(frame[c], errors="coerce")
+            guess = "response" if i == len(cols) - 1 else (
+                "categoric" if nums.isna().all() else "factor")
+            box.setCurrentIndex(box.findData(guess))
+            self.table.setCellWidget(i, 1, box)
+            self.roles[str(c)] = box
+            vals = ", ".join(str(v) for v in frame[c].head(4).tolist())
+            v = QTableWidgetItem(vals)
+            v.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(i, 2, v)
+        self.table.resizeColumnsToContents()
+        self.info = QLabel(f"{len(frame)} rows. Numeric factors are coded from their data "
+                           "range; review the Evaluation before analysing.")
+        self.info.setWordWrap(True)
+        form = QFormLayout()
+        form.addRow("Design name:", self.name)
+        form.addRow("Factors are:", self.kind)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                   | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.apply)
+        buttons.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(self.table, 1)
+        lay.addWidget(self.info)
+        lay.addWidget(buttons)
+        self.resize(560, 420)
+
+    def set_role(self, column: str, role: str) -> None:
+        box = self.roles[column]
+        box.setCurrentIndex(box.findData(role))
+
+    def build(self):
+        factors = [c for c in self.frame.columns
+                   if self.roles[str(c)].currentData() in ("factor", "categoric")]
+        responses = [c for c in self.frame.columns
+                     if self.roles[str(c)].currentData() == "response"]
+        if not factors:
+            raise ValueError("Mark at least one column as a factor.")
+        if not responses:
+            raise ValueError("Mark at least one column as a response.")
+        info = {c: {"type": "categoric"} for c in factors
+                if self.roles[str(c)].currentData() == "categoric"}
+        return DesignDocument.from_data(self.frame, factors, responses,
+                                        self.kind.currentData(), info,
+                                        name=self.name.text().strip() or "Imported data")
+
+    def apply(self) -> None:
+        try:
+            self.document = self.build()
+        except (ValueError, KeyError) as exc:
+            self.info.setText(f"<span style='color:#B00020'>{exc}</span>")
+            return
+        self.accept()
+
+
 class DXMainWindow(QMainWindow):
     def __init__(self, ctx, doc: DesignDocument | None = None):
         super().__init__()
@@ -222,6 +698,7 @@ class DXMainWindow(QMainWindow):
         self._build_toolbar()
         self._build_body()
         self.statusBar().showMessage("Ready")
+        self._load_preferences()
         if doc is not None:
             self.set_document(doc)
         else:
@@ -265,6 +742,8 @@ class DXMainWindow(QMainWindow):
         self.a_paste = A(self, "&Paste", self.paste, QKeySequence.StandardKey.Paste, "paste",
                          tip="Paste response data into the design layout")
         self.a_copy_graph = A(self, "Copy &Graph", self.copy_graph)
+        self.a_prefs = A(self, "&Preferences...", self.edit_preferences,
+                         tip="Significance level, confidence level and tolerance intervals")
         self.a_nav = A(self, "&Navigation Pane", None, checkable=True)
         self.a_nav.setChecked(True)
         self.a_nav.toggled.connect(lambda on: self.nav_frame.setVisible(on))
@@ -292,6 +771,25 @@ class DXMainWindow(QMainWindow):
                             icon_name="foldover",
                             tip="Add the foldover (full, single-factor or semifold) of a "
                                 "two-level design as a new block")
+        self.a_center = A(self, "Add &Center Points...", lambda: self._tool(CenterPointsDialog),
+                          tip="Add centre points (pure error, curvature test)")
+        self.a_axial = A(self, "Add &Axial Points (to CCD)...", lambda: self._tool(AxialDialog),
+                         tip="Augment a factorial to a central composite design")
+        self.a_reps = A(self, "Add &Replicates...", lambda: self._tool(ReplicatesDialog))
+        self.a_optaug = A(self, "&Optimal Augment...", lambda: self._tool(OptimalAugmentDialog),
+                          icon_name="augment",
+                          tip="Add optimal runs for a bigger model in a new block")
+        self.a_space = A(self, "&Modify Design Space...", lambda: self._tool(ModifySpaceDialog))
+        self.a_constraints = A(self, "Edit &Constraints...", self.edit_constraints,
+                               icon_name="constraints")
+        self.a_insert = A(self, "&Insert Run", self.insert_run)
+        self.a_delete = A(self, "&Delete Selected Runs", self.delete_selected_runs)
+        self.a_add_resp = A(self, "Add &Response...", lambda: self._tool(AddResponseDialog))
+        self.a_round = A(self, "R&ound Factor Values...", lambda: self._tool(RoundDialog))
+        self.a_blocks = A(self, "Rename &Blocks...", lambda: self._tool(RenameBlocksDialog))
+        self.a_import_data = A(self, "Import &Data Set (Historical)...", self.import_data_set,
+                               icon_name="import",
+                               tip="Build a design from existing data (CSV / Excel)")
         self.a_eval = A(self, "&Evaluate Design", lambda: self.show_node("evaluation"),
                         icon_name="evaluation")
         self.a_numerical = A(self, "&Numerical", lambda: self.show_node("numerical"),
@@ -314,6 +812,9 @@ class DXMainWindow(QMainWindow):
                                self.a_export_layout, self.a_copy, self.a_paste, self.a_coded,
                                self.a_actual, self.a_type, self.a_sort_std, self.a_sort_run,
                                self.a_randomize, self.a_info, self.a_foldover, self.a_eval,
+                               self.a_center, self.a_axial, self.a_reps, self.a_optaug,
+                               self.a_space, self.a_constraints, self.a_insert, self.a_delete,
+                               self.a_add_resp, self.a_round, self.a_blocks,
                                self.a_numerical,
                                self.a_graphical, self.a_prediction, self.a_confirmation,
                                self.a_coefficients, self.a_export_graph, self.a_copy_graph]
@@ -321,7 +822,7 @@ class DXMainWindow(QMainWindow):
     def _build_menus(self) -> None:
         mb = self.menuBar()
         m = mb.addMenu("&File")
-        m.addActions([self.a_new, self.a_open])
+        m.addActions([self.a_new, self.a_open, self.a_import_data])
         self.recent_menu = m.addMenu("Open &Recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         m.addSeparator()
@@ -334,6 +835,8 @@ class DXMainWindow(QMainWindow):
         m.addActions([self.a_undo, self.a_redo])
         m.addSeparator()
         m.addActions([self.a_copy, self.a_paste, self.a_copy_graph])
+        m.addSeparator()
+        m.addAction(self.a_prefs)
         m = mb.addMenu("&View")
         m.addActions([self.a_nav, self.a_toolbar])
         m.addSeparator()
@@ -348,15 +851,28 @@ class DXMainWindow(QMainWindow):
         m.addSeparator()
         m.addActions([self.a_info, self.a_eval])
         m.addSeparator()
-        m.addAction(self.a_foldover)
-        m.aboutToShow.connect(lambda: self.a_foldover.setEnabled(
-            self.doc is not None and self.doc.two_level()))
+        aug = m.addMenu(icons.icon("augment"), "&Augment Design")
+        aug.addActions([self.a_foldover, self.a_center, self.a_axial, self.a_reps,
+                        self.a_optaug])
+        aug.addSeparator()
+        aug.addActions([self.a_space, self.a_constraints])
+        lay = m.addMenu("Edit &Layout")
+        lay.addActions([self.a_insert, self.a_delete, self.a_add_resp, self.a_round,
+                        self.a_blocks])
+        m.aboutToShow.connect(self._update_tool_actions)
         m.addSeparator()
         m.addAction(self.a_import)
         self.analysis_menu = mb.addMenu("&Analysis")
         self.analysis_menu.aboutToShow.connect(self._fill_analysis_menu)
         m = mb.addMenu("&Optimization")
         m.addActions([self.a_numerical, self.a_graphical])
+        for key, folder, text, module, cls, icon_name in EXTENSION_NODES:
+            if folder == "optimization" and extension_class(module, cls) is not None:
+                a = make_action(self, f"&{text}", lambda _=False, k=key: self.show_node(k),
+                                icon_name=icon_name)
+                m.addAction(a)
+                self.design_actions.append(a)
+                setattr(self, f"a_{key}", a)
         m.addSeparator()
         sec = m.addAction("Post Analysis")
         sec.setEnabled(False)
@@ -426,6 +942,7 @@ class DXMainWindow(QMainWindow):
         page.open_design.connect(self.open_design)
         page.open_path.connect(self.open_path)
         page.open_example.connect(self.open_example)
+        page.import_data.connect(self.import_data_set)
         self.start_page = page
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
@@ -484,11 +1001,14 @@ class DXMainWindow(QMainWindow):
         add(design, "summary", "Summary", "summary")
         add(design, "graphcols", "Graph Columns", "graphcols")
         add(design, "evaluation", "Evaluation", "evaluation")
+        if self._has_constraints_node():
+            add(design, "constraints", "Constraints", "constraints")
         add(design, "notes", "Notes", "notes")
         analysis = add(None, "", "Analysis", "folder", True)
         analysis.setFlags(Qt.ItemFlag.ItemIsEnabled)
         for i, col in enumerate(doc.response_cols):
             add(analysis, f"analysis:{col}", self._response_label(i), "response")
+        folders = {"analysis": analysis}
         opt = add(None, "", "Optimization", "folder", True)
         opt.setFlags(Qt.ItemFlag.ItemIsEnabled)
         add(opt, "numerical", "Numerical", "numerical")
@@ -498,6 +1018,11 @@ class DXMainWindow(QMainWindow):
         add(post, "prediction", "Point Prediction", "prediction")
         add(post, "confirmation", "Confirmation", "confirmation")
         add(post, "coefficients", "Coefficients Table", "coefficients")
+        folders.update(optimization=opt, post=post)
+        for key, folder, text, module, cls, icon_name in EXTENSION_NODES:
+            if extension_class(module, cls) is not None:
+                add(folders[folder], key, text, icon_name)
+        self._nav_responses = list(doc.response_cols)
         self.nav.expandAll()
         self.nav.blockSignals(False)
         self._update_nav_labels()
@@ -552,6 +1077,8 @@ class DXMainWindow(QMainWindow):
             page = info.EvaluationPage(doc)
         elif key == "notes":
             page = info.NotesPage(doc)
+        elif key == "constraints":
+            page = info.ConstraintsPage(doc)
         elif key.startswith("analysis:"):
             page = AnalysisView(doc, key.split(":", 1)[1])
             page.set_annotate(self.a_annot.isChecked())
@@ -568,7 +1095,11 @@ class DXMainWindow(QMainWindow):
         elif key == "coefficients":
             page = optimization.CoefficientsView(doc)
         else:
-            raise KeyError(key)
+            ext = next((e for e in EXTENSION_NODES if e[0] == key), None)
+            cls = extension_class(ext[3], ext[4]) if ext else None
+            if cls is None:
+                raise KeyError(key)
+            page = cls(doc)
         return page
 
     def page(self, key: str) -> QWidget:
@@ -596,9 +1127,10 @@ class DXMainWindow(QMainWindow):
                 "numerical": "Set goals on Criteria, then look at Solutions and Graphs.",
                 "graphical": "Set response limits, then look at the overlay plot on Graphs."}
         if key.startswith("analysis:"):
-            self.statusBar().showMessage("Work through the tabs from left to right: Transform, "
-                                         "Fit Summary, Model, ANOVA, Diagnostics, Model "
-                                         "Graphs.  (F1: Screen Tips)")
+            names = page.strip.labels() if hasattr(page, "strip") else [
+                "Transform", "Fit Summary", "Model", "ANOVA", "Diagnostics", "Model Graphs"]
+            self.statusBar().showMessage("Work through the tabs from left to right: "
+                                         + ", ".join(names) + ".  (F1: Screen Tips)")
         else:
             self.statusBar().showMessage(tips.get(key, "F1: Screen Tips for this screen"))
         return page
@@ -621,7 +1153,8 @@ class DXMainWindow(QMainWindow):
                                                       key.split(":", 1)[1] in cols or not cols)
             elif kind == "analysis":
                 affected = key in ("summary", "numerical", "graphical", "prediction",
-                                   "confirmation", "coefficients") or key == f"analysis:{detail}"
+                                   "confirmation", "coefficients", "analysis_summary",
+                                   "poe") or key == f"analysis:{detail}"
             elif kind == "meta":
                 affected = key != "notes"
             if not affected:
@@ -634,9 +1167,28 @@ class DXMainWindow(QMainWindow):
                 self._refresh_page(key, page)
             else:
                 self.stale.add(key)
+        if kind == "meta" and self.doc is not None and (
+                list(self.doc.response_cols) != getattr(self, "_nav_responses", None)
+                or self._has_constraints_node() != ("constraints" in self.nav_items)):
+            current = self.current_key
+            for key in [k for k in self.pages if k.startswith("analysis:")
+                        and k.split(":", 1)[1] not in self.doc.response_cols]:
+                page = self.pages.pop(key)
+                self.stack.removeWidget(page)
+                page.deleteLater()
+            self._build_nav()
+            if current in self.nav_items:
+                self.nav.blockSignals(True)
+                self.nav.setCurrentItem(self.nav_items[current])
+                self.nav.blockSignals(False)
         if kind in ("data", "meta"):
             self._update_nav_labels()
         self._update_title()
+
+    def _has_constraints_node(self) -> bool:
+        doc = self.doc
+        return doc is not None and (bool(doc.constraints) or doc.meta.get("design") in (
+            "dopt", "mixdopt", "combined", "ev", "userdef", "distance", "lhs"))
 
     def _update_title(self) -> None:
         if self.doc is None:
@@ -917,6 +1469,175 @@ class DXMainWindow(QMainWindow):
         dlg.open()
         return dlg
 
+    # ------------------------------------------------------------------ preferences
+    def _load_preferences(self) -> None:
+        from rsstatchem.core.doe import model as mdl
+
+        prefs = getattr(mdl, "PREFERENCES", None)
+        if prefs is None:
+            return
+        stored = {}
+        for key in ("alpha", "ci_level", "ti_proportion", "ti_confidence"):
+            v = self.setting(f"pref_{key}")
+            try:
+                if v not in (None, ""):
+                    stored[key] = float(v)
+            except (TypeError, ValueError):
+                continue
+        prefs.update(stored)
+
+    def set_preferences(self, values: dict) -> None:
+        """Edit > Preferences: update the shared analysis preferences (saved in the
+        settings) and refresh every open RSM window."""
+        from rsstatchem.core.doe import model as mdl
+
+        prefs = getattr(mdl, "PREFERENCES", None)
+        if prefs is None:
+            return
+        prefs.update(values)
+        for key, v in prefs.to_meta().items():
+            self.set_setting(f"pref_{key}", v)
+        for w in [w for w in self.ctx.windows if isinstance(w, DXMainWindow)] or [self]:
+            if w.doc is not None:
+                w.doc._cache.clear()
+                w.doc.notify("meta")
+
+    def edit_preferences(self) -> "PreferencesDialog":
+        dlg = PreferencesDialog(self)
+        dlg.open()
+        return dlg
+
+    # ------------------------------------------------------------------ design tools
+    def _update_tool_actions(self) -> None:
+        doc = self.doc
+        ok = doc is not None
+        self.a_foldover.setEnabled(ok and doc.two_level())
+        process = ok and not doc.mixture and not doc.combined and not doc.split_plot
+        self.a_axial.setEnabled(process)
+        self.a_center.setEnabled(ok and not doc.split_plot)
+        self.a_reps.setEnabled(ok and not doc.split_plot)
+        self.a_optaug.setEnabled(ok and not doc.split_plot)
+        self.a_blocks.setEnabled(ok)
+
+    def _tool(self, cls):
+        """Open a Design Tools dialog (non-modal sheet); returns it (tests drive it)."""
+        if self.doc is None:
+            return None
+        dlg = cls(self)
+
+        def done(result):
+            if result and dlg.message:
+                self.statusBar().showMessage(dlg.message, 6000)
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
+
+    def _structural(self, text: str, fn):
+        from rsstatchem.ui.dx.layout import structural
+
+        return structural(self.undo, self.doc, text, fn)
+
+    def augment_center(self, n: int, new_block: bool = False) -> int:
+        added = self._structural("Add Center Points",
+                                 lambda: self.doc.add_center_points(n, new_block))
+        self.sort("std")
+        return added
+
+    def augment_axial(self, alpha: float | None = None, center_points: int = 2) -> int:
+        added = self._structural("Add Axial Points",
+                                 lambda: self.doc.add_axial_points(alpha, center_points))
+        self.sort("std")
+        return added
+
+    def augment_replicates(self, new_block: bool = True) -> int:
+        added = self._structural("Add Replicates",
+                                 lambda: self.doc.add_replicates(None, new_block))
+        self.sort("std")
+        return added
+
+    def augment_optimal(self, terms, n_add: int, criterion: str = "I",
+                        exchange: str = "point", lof_points: int = 0,
+                        new_block: bool = True) -> int:
+        import random
+
+        seed = random.randint(1, 99999)
+        added = self._structural("Optimal Augment", lambda: self.doc.optimal_augment(
+            terms, n_add, criterion, exchange, lof_points, new_block, seed))
+        self.sort("std")
+        return added
+
+    def modify_design_space(self, changes: dict) -> None:
+        def go():
+            for j, (lo, hi) in changes.items():
+                self.doc.modify_design_space(j, lo, hi)
+        self._structural("Modify Design Space", go)
+
+    def round_factors(self, decimals: int | None = None, sig: int | None = None) -> int:
+        return self._structural("Round Factor Values",
+                                lambda: self.doc.round_factors(decimals, sig))
+
+    def add_response(self, name: str, units: str = "") -> str:
+        return self._structural("Add Response", lambda: self.doc.add_response(name, units))
+
+    def rename_block(self, block: float, name: str) -> None:
+        self._structural("Rename Block", lambda: self.doc.rename_block(block, name))
+
+    def insert_run(self) -> int:
+        if self.doc is None:
+            return 0
+        n = self._structural("Insert Run", lambda: self.doc.insert_runs(n=1))
+        self.show_node("design")
+        return n
+
+    def delete_selected_runs(self) -> int:
+        if self.doc is None or "design" not in self.pages:
+            return 0
+        page = self.pages["design"]
+        rows = sorted({page.model.rows[i.row()] for i in page.view.selectedIndexes()})
+        if not rows:
+            self.statusBar().showMessage("Select the runs to delete in the design layout.",
+                                         5000)
+            return 0
+        return page.view.delete_runs(rows)
+
+    def edit_constraints(self):
+        if self.doc is None:
+            return None
+        page = self.show_node("constraints") if self._has_constraints_node() else None
+        if page is None:
+            from rsstatchem.ui.dx import info
+
+            page = info.ConstraintsPage(self.doc)
+            self.pages["constraints"] = page
+            self.stack.addWidget(page)
+            self.stack.setCurrentWidget(page)
+            self.current_key = "constraints"
+        return page.edit()
+
+    def import_data_set(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Data Set", self._last_dir(),
+                                              "Tables (*.csv *.txt *.xlsx *.xls)")
+        if path:
+            self.import_data_from(path)
+
+    def import_data_from(self, path: str) -> ImportDataDialog | None:
+        try:
+            if path.lower().endswith((".xlsx", ".xls")):
+                frame = pd.read_excel(path)
+            else:
+                frame = pd.read_csv(path, sep=None, engine="python")
+        except (OSError, ValueError, ImportError) as exc:
+            self.error(f"Could not read {Path(path).name}:\n{exc}")
+            return None
+        dlg = ImportDataDialog(frame, Path(path).stem, self)
+
+        def done(result):
+            if result and dlg.document is not None:
+                self.adopt(dlg.document)
+        dlg.finished.connect(done)
+        dlg.open()
+        return dlg
+
     def edit_info(self) -> None:
         if self.doc is None:
             return
@@ -947,8 +1668,9 @@ class DXMainWindow(QMainWindow):
         if self.current_key.startswith("analysis:"):
             m.addSeparator()
             view = self.pages[self.current_key]
-            for name in ("Transform", "Fit Summary", "Model", "ANOVA", "Diagnostics",
-                         "Model Graphs"):
+            names = view.strip.labels() if hasattr(view, "strip") else [
+                "Transform", "Fit Summary", "Model", "ANOVA", "Diagnostics", "Model Graphs"]
+            for name in names:
                 m.addAction(name, lambda _=False, n=name, v=view: v.set_tab(n))
 
     def _fill_window_menu(self) -> None:
