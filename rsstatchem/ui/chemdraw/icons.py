@@ -85,6 +85,12 @@ def _bond_icon(kind: str) -> str:
         if kind == "triple":
             s.append(_line(*a, *b, 1.5))
         return "".join(s)
+    if kind == "quadruple":
+        return "".join(_line(a[0] + d * 0.7, a[1] + d * 0.7, b[0] + d * 0.7, b[1] + d * 0.7, 1.2)
+                       for d in (-4.2, -1.4, 1.4, 4.2))
+    if kind == "bolddouble":
+        return (_line(a[0] - 1.6, a[1] - 1.6, b[0] - 1.6, b[1] - 1.6, 3.6) +
+                _line(a[0] + 2.4, a[1] + 2.4, b[0] + 2.4, b[1] + 2.4, 1.4))
     if kind == "dashed":
         return _line(*a, *b, 1.8, dash="2.4 2.2")
     if kind == "bold":
@@ -178,7 +184,88 @@ def _arrow_icon(kind: str) -> str:
                 + _arrow_head(20.5, 15.2, 0.45, 0.89, half=half))
     if kind == "line":
         return _line(3, y, 21, y, 1.5)
+    if kind == "nogo":
+        return (_line(3, y, 18, y, 1.5) + _arrow_head(21.5, y, 1, 0) +
+                _line(9, 8, 15, 16, 1.4) + _line(9, 16, 15, 8, 1.4))
+    if kind == "unbalanced":
+        return (_line(3, y - 2.2, 18, y - 2.2, 1.3) + _arrow_head(21.5, y - 2.2, 1, 0, half=-1) +
+                _line(10, y + 2.2, 15, y + 2.2, 1.3) + _arrow_head(7, y + 2.2, -1, 0, half=-1))
+    if kind == "block":
+        return _poly([(3, 9.5), (14, 9.5), (14, 6), (21.5, 12), (14, 18), (14, 14.5),
+                      (3, 14.5)], fill="#FFFFFF", stroke=K, w=1.2)
+    if kind == "double":
+        return (f'<path d="M5 16 Q12 4 19 16" fill="none" stroke="{K}" stroke-width="1.5"/>'
+                + _arrow_head(20.2, 17.6, 0.5, 0.86) + _arrow_head(3.8, 17.6, -0.5, 0.86))
+    if kind.startswith("arc"):
+        sweep = kind.partition(":")[2] or "180"
+        d = {"90": "M5 17 A10 10 0 0 1 17 5", "180": "M3.5 15 A8.5 8.5 0 0 1 20.5 15",
+             "270": "M8 19.5 A7.5 7.5 0 1 1 19.5 13"}.get(sweep, "M3.5 15 A8.5 8.5 0 0 1 20.5 15")
+        tip = {"90": (18.5, 5.2, 1, 0.1), "180": (20.5, 17, 0, 1),
+               "270": (19.4, 15.5, -0.2, 1)}.get(sweep, (20.5, 17, 0, 1))
+        return (f'<path d="{d}" fill="none" stroke="{K}" stroke-width="1.5"/>' +
+                _arrow_head(*tip))
+    if kind == "dipole":
+        return (_line(3, y, 18, y, 1.5) + _arrow_head(21.5, y, 1, 0) +
+                _line(6.5, y - 3.5, 6.5, y + 3.5, 1.5))
     return ""
+
+
+def _symbol_icon(kind: str) -> str:
+    dot = '<circle cx="{0}" cy="{1}" r="1.7" fill="#111"/>'
+    if kind == "lonepair":
+        return _text(12, 20, "O", 12, "normal") + dot.format(9.5, 5) + dot.format(14.5, 5)
+    if kind == "electron":
+        return dot.format(12, 12)
+    if kind in ("circleplus", "circleminus"):
+        s = (f'<circle cx="12" cy="12" r="7" fill="none" stroke="{K}" stroke-width="1.3"/>' +
+             _line(8.5, 12, 15.5, 12, 1.5))
+        return s + (_line(12, 8.5, 12, 15.5, 1.5) if kind == "circleplus" else "")
+    if kind in ("radicalcation", "radicalanion"):
+        s = dot.format(6.5, 12) + _line(11, 12, 19, 12, 1.6)
+        return s + (_line(15, 8, 15, 16, 1.6) if kind == "radicalcation" else "")
+    text = {"deltaplus": "δ+", "deltaminus": "δ−", "dagger": "†",
+            "ddagger": "‡"}.get(kind, "?")
+    return _text(12, 17, text, 12, "normal")
+
+
+def _shape_icon(arg: str) -> str:
+    kind, _, sweep = arg.partition(":")
+    st = f'fill="none" stroke="{K}" stroke-width="1.4"'
+    if kind == "circle":
+        return f'<circle cx="12" cy="12" r="8" {st}/>'
+    if kind == "ellipse":
+        return f'<ellipse cx="12" cy="12" rx="9" ry="6" {st}/>'
+    if kind == "roundrect":
+        return f'<rect x="3.5" y="5.5" width="17" height="13" rx="3.5" {st}/>'
+    if kind == "shadowrect":
+        return ('<rect x="5.5" y="7.5" width="16" height="12" fill="#333"/>'
+                f'<rect x="3" y="5" width="16" height="12" fill="#fff" stroke="{K}" '
+                'stroke-width="1.4"/>')
+    if kind == "arc":
+        d = {"90": "M4 18 A12 12 0 0 1 16 6", "120": "M3.5 16 A10 10 0 0 1 20.5 13",
+             "270": "M8 19.5 A7.5 7.5 0 1 1 19.5 13"}.get(sweep,
+                                                          "M3.5 16 A8.5 8.5 0 0 1 20.5 16")
+        return f'<path d="{d}" {st}/>'
+    return f'<rect x="3.5" y="5.5" width="17" height="13" {st}/>'
+
+
+def _clipart_icon(name: str) -> str:
+    from rsstatchem.core.chem_draw.clipart import CLIPART
+    item = CLIPART.get(name)
+    if item is None:
+        return _text(12, 16, "?", 12)
+    paths, details, _inner = item[1]()
+    w, h = item[2]
+    k = 19.0 / max(w, h)
+    bw, bh = w * k, h * k
+    ox, oy = (24 - bw) / 2, (24 - bh) / 2
+    out = []
+    for pts, closed in paths + details:
+        p = " ".join(f"{ox + x * bw:.2f},{oy + y * bh:.2f}" for x, y in pts)
+        tag = "polygon" if closed else "polyline"
+        out.append(f'<{tag} points="{p}" fill="none" stroke="{K}" stroke-width="1.1" '
+                   'stroke-linejoin="round"/>')
+    return "".join(out)
 
 
 def _tool_svg(tool: str) -> str:
@@ -230,8 +317,32 @@ def _tool_svg(tool: str) -> str:
         return _text(12, 19, "A", 18, family="Times New Roman")
     if kind == "arrow":
         return _arrow_icon(arg)
+    if kind == "symbol":
+        return _symbol_icon(arg)
+    if kind == "shape":
+        return _shape_icon(arg)
+    if kind == "clipart":
+        return _clipart_icon(arg)
+    if tool == "tlc":
+        return (f'<rect x="5" y="2.5" width="14" height="19" fill="#fff" stroke="{K}" '
+                'stroke-width="1.2"/>' + _line(5, 18.5, 19, 18.5, 0.9) +
+                _line(5, 5.5, 19, 5.5, 0.9, dash="1.5 1.2") +
+                '<ellipse cx="9" cy="13" rx="1.8" ry="1.3" fill="#111"/>'
+                '<ellipse cx="15" cy="9" rx="1.8" ry="1.3" fill="#111"/>')
+    if tool == "gel":
+        return (f'<rect x="3.5" y="3" width="17" height="18" fill="#EEF1F4" stroke="{K}" '
+                'stroke-width="1.2"/>' + _line(6, 8, 10.5, 8, 1.6) + _line(6, 12, 10.5, 12, 1.6)
+                + _line(6, 17, 10.5, 17, 1.6) + _line(13.5, 10, 18, 10, 1.6) +
+                _line(13.5, 15, 18, 15, 1.6))
     if tool == "plus":
         return _line(12, 5, 12, 19, 1.8) + _line(5, 12, 19, 12, 1.8)
+    if kind == "bracket" and ":" in arg:
+        shape, _, side = arg.partition(":")
+        full = _tool_svg("bracket:" + shape)
+        clip = ('<clipPath id="c"><rect x="0" y="0" width="12" height="24"/></clipPath>'
+                if side == "left" else
+                '<clipPath id="c"><rect x="12" y="0" width="12" height="24"/></clipPath>')
+        return f'<defs>{clip}</defs><g clip-path="url(#c)">{full}</g>'
     if kind == "bracket":
         if arg == "round":
             return (f'<path d="M8 3.5 Q3 12 8 20.5 M16 3.5 Q21 12 16 20.5" fill="none" '

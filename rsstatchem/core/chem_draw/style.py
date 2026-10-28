@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, replace
 
-__all__ = ["Style", "ACS_1996", "NEW_DOCUMENT", "PRESETS", "preset", "ELEMENT_COLORS",
-           "element_color"]
+__all__ = ["Style", "ACS_1996", "NEW_DOCUMENT", "NEW_SLIDE", "RSC", "WILEY", "PRESETS",
+           "preset", "ELEMENT_COLORS", "element_color", "CM", "AUTONUMBER_STYLES",
+           "autonumber_text"]
+
+CM = 72.0 / 2.54                # points per centimetre
+AUTONUMBER_STYLES = ("arabic", "roman", "alpha")
 
 
 @dataclass
@@ -26,6 +30,13 @@ class Style:
     font_size: float = 10.0         # pt, atom labels
     caption_size: float = 10.0      # pt, free text and arrow conditions
     color_by_element: bool = True
+    chain_angle: float = 120.0      # deg (all ChemDraw style sheets use 120)
+    page_width: float = 540.0       # pt, drawing area of the style sheet
+    page_height: float = 720.0
+    show_stereo: bool = False       # Object > Show Stereochemistry (R/S, E/Z indicators)
+    stereo_parens: bool = True      # Preferences: "Include parentheses" around the labels
+    autonumber_style: str = "arabic"    # Reaction Display: Arabic, Roman or Alphabetic
+    autonumber_start: int = 1
 
     @property
     def spacing(self) -> float:
@@ -49,17 +60,69 @@ class Style:
         return replace(self, **kw)
 
 
-ACS_1996 = Style("ACS Document 1996", bond_length=14.4, line_width=0.6, bold_width=2.0,
-                 bond_spacing=18.0, hash_spacing=2.5, margin=1.6, font_family="Arial",
-                 font_size=10.0, caption_size=10.0, color_by_element=False)
-NEW_DOCUMENT = Style("New Document", bond_length=30.0, line_width=1.0, bold_width=4.0,
-                     bond_spacing=18.0, hash_spacing=2.7, margin=2.0, font_family="Arial",
-                     font_size=14.0, caption_size=12.0, color_by_element=True)
-PRESETS = {s.name: s for s in (NEW_DOCUMENT, ACS_1996)}
+def _sheet(name, length, bold, line, margin, hash_, spacing, label, caption, width, height,
+           font="Arial") -> Style:
+    return Style(name, bond_length=length, line_width=line, bold_width=bold,
+                 bond_spacing=spacing, hash_spacing=hash_, margin=margin, font_family=font,
+                 font_size=label, caption_size=caption, color_by_element=False,
+                 page_width=width, page_height=height)
+
+
+# The style sheets shipped with ChemDraw, with the values listed in the ChemDraw 17.1 User
+# Guide, "Document Settings" (pp. 48-53): fixed length, bold width, line width, margin
+# width, hash spacing, bond spacing (% of length), label / caption size and drawing area.
+# Every sheet uses a 120 deg chain angle. Values given in cm (RSC, page sizes) are converted
+# to points. The guide does not list the values of the newer "Nature Research" sheet.
+ACS_1996 = _sheet("ACS Document 1996", 14.4, 2.0, 0.6, 1.6, 2.5, 18, 10, 10, 540, 720)
+ADV_SYNTH = _sheet("Adv. Synth. Catal.", 17.0, 2.0, 1.0, 1.6, 2.5, 18, 10, 12, 540, 720)
+J_CHIN = _sheet("J. Chin. Chem. Soc.", 18.0, 2.5, 1.0, 2.0, 2.5, 20, 12, 12, 693, 918)
+J_MOL_MOD = _sheet("J. Mol. Mod. (1 column)", 14.4, 2.0, 0.6, 1.6, 2.5, 18, 10, 10,
+                   8.5 * CM, 25.4 * CM, font="Times New Roman")
+NEW_DOCUMENT = _sheet("New Document", 30.0, 2.0, 1.0, 2.0, 2.7, 12, 10, 12, 540, 720)
+NEW_DOCUMENT.color_by_element = True
+NEW_SLIDE = _sheet("New Slide", 30.0, 4.0, 1.6, 2.0, 2.7, 15, 12, 16, 540, 720)
+PHYTOMEDICINE = _sheet("Phytomedicine", 20.0, 1.33, 1.0, 1.25, 3.0, 8, 12, 12, 540, 720)
+RSC = _sheet("RSC", 0.43 * CM, 0.056 * CM, 0.016 * CM, 0.044 * CM, 0.062 * CM, 20, 9, 9,
+             8.9 * CM, 25.4 * CM)
+SCIENCE_OF_SYNTHESIS = _sheet("Science of Synthesis", 17.0, 2.0, 0.8, 2.25, 2.5, 18, 10, 10,
+                              19.79 * CM, 27.15 * CM)
+SYNTHESIS = _sheet("Synthesis, Synlett", 17.0, 2.0, 0.8, 1.3, 2.5, 18, 10, 10, 12 * CM,
+                   26.7 * CM)
+HELV_CHIM = _sheet("Verlag Helvetica Chimica Acta", 17.0, 2.9, 0.54, 2.0, 2.0, 14, 10, 12,
+                   368, 720)
+WILEY = _sheet("Wiley Document", 17.0, 2.6, 0.75, 2.0, 2.6, 18, 12, 12, 19.79 * CM,
+               27.15 * CM)
+PRESETS = {s.name: s for s in (NEW_DOCUMENT, ACS_1996, ADV_SYNTH, J_CHIN, J_MOL_MOD, NEW_SLIDE,
+                               PHYTOMEDICINE, RSC, SCIENCE_OF_SYNTHESIS, SYNTHESIS, HELV_CHIM,
+                               WILEY)}
 
 
 def preset(name: str) -> Style:
     return replace(PRESETS[name])
+
+
+def _roman(n: int) -> str:
+    vals = ((1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
+            (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i"))
+    out = ""
+    for v, s in vals:
+        while n >= v:
+            out += s
+            n -= v
+    return out.upper()
+
+
+def autonumber_text(n: int, style: str = "arabic") -> str:
+    """Compound number ``n`` (1-based) in the Reaction Display numeric style."""
+    if style == "roman":
+        return _roman(max(1, n))
+    if style == "alpha":
+        s, k = "", max(1, n)
+        while k:
+            k, r = divmod(k - 1, 26)
+            s = chr(97 + r) + s
+        return s
+    return str(n)
 
 
 # ChemDraw-like "Color by element" palette (labels only; carbon stays black).

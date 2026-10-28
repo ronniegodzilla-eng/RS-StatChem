@@ -1686,9 +1686,7 @@ class OriginMainWindow(QMainWindow):
             keys = ws.columns[key_col].numeric(n)
             order = sorted(range(n), key=lambda r: (math.isnan(keys[r]),
                                                     -keys[r] if descending else keys[r]))
-            for c in ws.columns:
-                vals = (c.values + [None] * n)[:n]
-                c.values[:n] = [vals[r] for r in order]
+            ws.permute_rows(order, n)  # moves masks with their values
         bw.change("Sort Worksheet", fn)
 
     def transpose_worksheet(self) -> None:

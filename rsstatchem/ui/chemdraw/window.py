@@ -6,21 +6,39 @@ the status bar.
 
 The drawing itself (canvas, tools, undo, file formats, exports) is the structure editor of
 :mod:`rsstatchem.ui.chem_editor`; this module is the ChemDraw shell around it.
+
+Menus and shortcuts follow the ChemDraw 17.1 User Guide (menu paths throughout the guide,
+shortcut tables pp. 60-64): F5 / F6 / F7 / F8 actual size / fit / magnify / reduce, F11
+rulers, F2 / F3 bring to front / send to back, Ctrl+L / Ctrl+E fixed lengths / angles,
+Ctrl+J join, Ctrl+K scale, Ctrl+R rotate, Ctrl+Y repeat, Ctrl+D copy as CDXML,
+Alt+Ctrl+C / Alt+Ctrl+P copy / paste SMILES, Alt+Ctrl+N structure to name ... Commands the
+app cannot back are left out rather than shown disabled; the automatic reaction mapping (needs
+the optional Indigo toolkit) is greyed out with an explanation when Indigo is missing.
+
+Other work packages extend the menus without editing this file: if
+``rsstatchem.ui.chemdraw.intel_actions`` or ``rsstatchem.ui.chemdraw.objects_actions`` exists,
+its ``install(window)`` is called once the menus and windows are built (``window.menus`` maps
+menu titles to the menus).
 """
 from __future__ import annotations
 
+import importlib
 import math
 import os
+import sys
+import traceback
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QFont, QKeySequence
-from PySide6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog, QFontComboBox,
-                               QInputDialog, QLabel, QMessageBox, QTextBrowser, QToolBar,
-                               QVBoxLayout)
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QKeySequence, QPainter,
+                           QPen)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
+                               QDockWidget, QFileDialog, QFontComboBox, QInputDialog, QLabel,
+                               QMessageBox, QTableWidget, QTableWidgetItem, QTextBrowser,
+                               QToolBar, QVBoxLayout)
 
 from rsstatchem.core.chem import molecule as mo
-from rsstatchem.core.chem_draw import cdxml, convert, names
-from rsstatchem.core.chem_draw.model import Document, load_rsc, save_rsc
+from rsstatchem.core.chem_draw import cdx, cdxml, convert, mapping, names
+from rsstatchem.core.chem_draw.model import Document, save_rsc
 from rsstatchem.core.chem_draw.style import PRESETS, preset
 from rsstatchem.ui.chem_editor.panels import TemplatePanel
 from rsstatchem.ui.chem_editor.window import ChemEditorWindow
@@ -31,20 +49,33 @@ from rsstatchem.ui.chemdraw.lookup import NameLookup
 from rsstatchem.ui.chemdraw.palette import TOOL_TIPS, MainToolbar
 from rsstatchem.ui.chemdraw.style import STYLESHEET
 
-__all__ = ["ChemDrawWindow", "OPEN_FILTER", "DEFAULT_STYLE", "COLORS", "HOTKEYS_HTML"]
+__all__ = ["ChemDrawWindow", "OPEN_FILTER", "DEFAULT_STYLE", "COLORS", "HOTKEYS_HTML",
+           "MENU_SHORTCUTS", "ShellCanvas", "INSTALL_MODULES"]
 
 DEFAULT_STYLE = "ACS Document 1996"
-OPEN_FILTER = ("Chemical documents (*.rsc *.cdxml *.mol *.sdf *.sd *.rxn *.smi);;"
-               "RS-StatChem drawing (*.rsc);;ChemDraw XML (*.cdxml);;MDL Molfile (*.mol);;"
-               "SD file (*.sdf *.sd);;MDL Rxnfile (*.rxn);;SMILES (*.smi *.txt);;All files (*)")
-SAVE_FILTERS = {"RS-StatChem drawing (*.rsc)": ".rsc", "ChemDraw XML (*.cdxml)": ".cdxml"}
+OPEN_FILTER = ("Chemical documents (*.rsc *.cdx *.cdxml *.mol *.sdf *.sd *.rxn *.smi *.helm "
+               "*.fasta *.fa);;RS-StatChem drawing (*.rsc);;ChemDraw document (*.cdx);;"
+               "ChemDraw XML (*.cdxml);;MDL Molfile (*.mol);;SD file (*.sdf *.sd);;"
+               "MDL Rxnfile (*.rxn);;SMILES (*.smi *.txt);;HELM / FASTA (*.helm *.fasta *.fa);;"
+               "All files (*)")
+SAVE_FILTERS = {"RS-StatChem drawing (*.rsc)": ".rsc", "ChemDraw document (*.cdx)": ".cdx",
+                "ChemDraw XML (*.cdxml)": ".cdxml"}
+_DOC_EXT = (".rsc", ".cdx", ".cdxml")
+# modules of other work packages that add their own menu items (see the module docstring)
+INSTALL_MODULES = ("rsstatchem.ui.chemdraw.intel_actions",
+                   "rsstatchem.ui.chemdraw.objects_actions")
+# reaction interpretation colours (ChemDraw 17.1 p. 173: reactants red, products magenta,
+# conditions cyan / blue)
+INTERPRETATION_COLORS = {"reactants": "#E00000", "products": "#D000A0", "agents": "#00A8C8",
+                         "arrow": "#0000E0"}
 COLORS = [("Black", "#000000"), ("Red", "#E00000"), ("Orange", "#F07800"),
           ("Yellow", "#E8C800"), ("Green", "#009A00"), ("Cyan", "#00A8C8"),
           ("Blue", "#0000E0"), ("Violet", "#8000C0"), ("Magenta", "#D000A0"),
           ("Brown", "#8B4513"), ("Gray", "#808080")]
 FONTS = ["Arial", "Helvetica", "Times New Roman", "Courier New", "Calibri", "Symbol"]
 SIZES = [6, 7, 8, 9, 10, 11, 12, 14, 18, 24, 36]
-_CHEM_EXT = (".rsc", ".cdxml", ".mol", ".sdf", ".sd", ".rxn", ".smi")
+_CHEM_EXT = (".rsc", ".cdx", ".cdxml", ".mol", ".sdf", ".sd", ".rxn", ".smi", ".helm",
+             ".fasta", ".fa")
 
 HOTKEYS_HTML = """
 <h3>Hotkeys (point at an atom or bond and type)</h3>
@@ -70,7 +101,7 @@ HOTKEYS_HTML = """
 <tr><td>Delete</td><td>delete the selection or the object under the pointer</td></tr>
 <tr><td>Arrow keys</td><td>nudge the selection (Shift: 10 pt)</td></tr>
 <tr><td>Shift while dragging</td><td>free angle</td></tr>
-<tr><td>Ctrl+wheel, Ctrl+] / Ctrl+[</td><td>magnify / reduce</td></tr>
+<tr><td>Ctrl+wheel, F7 / F8</td><td>magnify / reduce</td></tr>
 <tr><td colspan='2'><b>Pen tool</b></td></tr>
 <tr><td>click / drag</td><td>corner point / smooth point (drag sets the handles)</td></tr>
 <tr><td>click the first point</td><td>close the curve</td></tr>
@@ -79,6 +110,205 @@ HOTKEYS_HTML = """
 smooth point)</td></tr>
 </table>
 """
+
+# (menu, command, keys) - the ChemDraw 17.1 shortcut tables (User Guide pp. 60-64) as backed
+# by this window; shown under Help > Shortcuts and Hotkeys and checked by the tests
+MENU_SHORTCUTS = [
+    ("File", "New Document", "Ctrl+N"), ("File", "Open", "Ctrl+O"),
+    ("File", "Save", "Ctrl+S"), ("File", "Save As", "Shift+Ctrl+S"),
+    ("File", "Page Setup", "Shift+Ctrl+P"), ("File", "Print", "Ctrl+P"),
+    ("File", "Close", "Ctrl+W"),
+    ("Edit", "Undo", "Ctrl+Z"), ("Edit", "Redo", "Shift+Ctrl+Z"),
+    ("Edit", "Repeat", "Ctrl+Y"), ("Edit", "Copy As CDXML Text", "Ctrl+D"),
+    ("Edit", "Copy As SMILES", "Alt+Ctrl+C"), ("Edit", "Copy As MOL Text", "Alt+Shift+Ctrl+O"),
+    ("Edit", "Paste Special SMILES", "Alt+Ctrl+P"),
+    ("Edit", "Paste Special MOL / CDXML", "Alt+Shift+Ctrl+P"),
+    ("View", "Actual Size", "F5"), ("View", "Fit to Window", "F6"),
+    ("View", "Magnify", "F7"), ("View", "Reduce", "F8"), ("View", "Show Rulers", "F11"),
+    ("Object", "Fixed Lengths", "Ctrl+L"), ("Object", "Fixed Angles", "Ctrl+E"),
+    ("Object", "Group", "Ctrl+G"), ("Object", "Ungroup", "Shift+Ctrl+G"),
+    ("Object", "Join", "Ctrl+J"), ("Object", "Bring to Front", "F2"),
+    ("Object", "Send to Back", "F3"), ("Object", "Flip Horizontal", "Shift+Ctrl+H"),
+    ("Object", "Flip Vertical", "Shift+Ctrl+V"),
+    ("Object", "Rotate 180° Horizontal", "Alt+Shift+Ctrl+H"),
+    ("Object", "Rotate 180° Vertical", "Alt+Shift+Ctrl+V"),
+    ("Object", "Rotate...", "Ctrl+R"), ("Object", "Scale...", "Ctrl+K"),
+    ("Object", "Align Lefts", "Alt+Shift+Ctrl+L"),
+    ("Object", "Align Horizontal Centers", "Alt+Shift+Ctrl+C"),
+    ("Object", "Align Rights", "Alt+Shift+Ctrl+R"), ("Object", "Align Tops", "Alt+Shift+Ctrl+T"),
+    ("Object", "Align Vertical Centers", "Alt+Shift+Ctrl+M"),
+    ("Object", "Align Bottoms", "Alt+Shift+Ctrl+B"),
+    ("Structure", "Clean Up Structure", "Shift+Ctrl+K"),
+    ("Structure", "Convert Name to Structure", "Shift+Ctrl+N"),
+    ("Structure", "Convert Structure to Name", "Alt+Ctrl+N"),
+    ("Text", "Plain", "Ctrl+T"), ("Text", "Bold", "Ctrl+B"), ("Text", "Italic", "Ctrl+I"),
+    ("Text", "Underline", "Ctrl+U"), ("Text", "Formula", "Ctrl+F"),
+    ("Text", "Subscript", "F9"), ("Text", "Superscript", "F10"),
+]
+
+
+def _shortcuts_html() -> str:
+    rows, last = [], None
+    for menu, cmd, keys in MENU_SHORTCUTS:
+        if menu != last:
+            rows.append(f"<tr><td colspan='2'><b>{menu}</b></td></tr>")
+            last = menu
+        shown = QKeySequence(keys).toString(QKeySequence.SequenceFormat.NativeText)
+        rows.append(f"<tr><td>{shown}</td><td>{cmd}</td></tr>")
+    return ("<h3>Menu shortcuts (as in ChemDraw)</h3><table cellpadding='3'>" +
+            "".join(rows) + "</table>")
+
+
+class ShellCanvas(PageCanvas):
+    """The page canvas plus the View menu's overlays: rulers (F11), the crosshair and the
+    reaction interpretation (reactants red, products magenta, conditions cyan, arrow blue),
+    painted over the drawing so the document itself is never changed."""
+    show_rulers = False
+    show_crosshair = False
+    show_interpretation = False
+    _cursor_pos = None
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        super().mouseMoveEvent(e)
+        if self.show_rulers or self.show_crosshair:
+            self._cursor_pos = self.mapToScene(e.position().toPoint())
+            self.viewport().update()
+
+    def interpretation_boxes(self) -> list[tuple[str, QRectF]]:
+        """[(role, scene rectangle)] of the interpreted reaction (empty when there is none)."""
+        if not self.doc.arrows:
+            return []
+        try:
+            split = convert.split_reaction(self.doc)
+            comps = convert.reaction_components(self.doc, split)
+        except Exception:  # noqa: BLE001 - interpretation is only a display aid
+            return []
+        if not split.ok:
+            return []
+        pad = self.bl * 0.35
+        out = []
+        for role in ("reactants", "agents", "products"):
+            for keys in comps[role]:
+                bb = self.doc.bbox(keys)
+                if bb is None:
+                    continue
+                r = QRectF(bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1])
+                for k, i in keys:                       # include the atom labels
+                    box = self.info.label_boxes.get(i) if k == "atom" else None
+                    if box is not None:
+                        r = r.united(box)
+                out.append((role, r.adjusted(-pad, -pad, pad, pad)))
+        ar = split.arrow
+        out.append(("arrow", QRectF(min(ar.x1, ar.x2) - pad, min(ar.y1, ar.y2) - pad,
+                                    abs(ar.x2 - ar.x1) + 2 * pad,
+                                    abs(ar.y2 - ar.y1) + 2 * pad)))
+        return out
+
+    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
+        super().drawForeground(painter, rect)
+        z = max(self.zoom(), 1e-6)
+        if self.show_interpretation:
+            for role, r in self.interpretation_boxes():
+                c = QColor(INTERPRETATION_COLORS[role])
+                painter.setPen(QPen(c, 1.2 / z, Qt.PenStyle.DashLine))
+                c.setAlpha(28)
+                painter.setBrush(c)
+                painter.drawRoundedRect(r, 3 / z, 3 / z)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+        pos = self._cursor_pos
+        if self.show_crosshair and pos is not None:
+            painter.setPen(QPen(QColor(0, 120, 215, 150), 0, Qt.PenStyle.DashLine))
+            page = self.page
+            painter.drawLine(QPointF(page.left(), pos.y()), QPointF(page.right(), pos.y()))
+            painter.drawLine(QPointF(pos.x(), page.top()), QPointF(pos.x(), page.bottom()))
+        if self.show_rulers:
+            self._draw_rulers(painter)
+
+    def _draw_rulers(self, painter: QPainter) -> None:
+        """Rulers along the top and left edges in centimetres from the page corner, with the
+        pointer position and the selection extent marked."""
+        painter.save()
+        painter.resetTransform()
+        vp = self.viewport().rect()
+        t = 18
+        painter.fillRect(QRectF(0, 0, vp.width(), t), QColor("#F4F4F4"))
+        painter.fillRect(QRectF(0, 0, t, vp.height()), QColor("#F4F4F4"))
+        painter.setPen(QPen(QColor("#707070"), 1))
+        painter.drawLine(0, t, vp.width(), t)
+        painter.drawLine(t, 0, t, vp.height())
+        origin = self.mapFromScene(self.page.topLeft())
+        cm = 72 / 2.54 * self.zoom()                     # one centimetre in pixels
+        step = 1 if cm >= 25 else 2 if cm >= 12 else 5
+        font = painter.font()
+        font.setPointSizeF(7)
+        painter.setFont(font)
+        for axis in (0, 1):
+            length = vp.width() if axis == 0 else vp.height()
+            o = origin.x() if axis == 0 else origin.y()
+            k0 = int(math.floor((t - o) / cm)) - 1
+            k1 = int(math.ceil((length - o) / cm)) + 1
+            for k in range(k0, k1):
+                for sub in range(10 if cm >= 40 else 2):
+                    v = o + (k + sub / (10 if cm >= 40 else 2)) * cm
+                    if v < t or v > length:
+                        continue
+                    h = 8 if sub == 0 else 4
+                    if axis == 0:
+                        painter.drawLine(QPointF(v, t - h), QPointF(v, t))
+                    else:
+                        painter.drawLine(QPointF(t - h, v), QPointF(t, v))
+                    if sub == 0 and k % step == 0:
+                        if axis == 0:
+                            painter.drawText(QPointF(v + 2, 9), str(k))
+                        else:
+                            painter.drawText(QPointF(2, v - 2), str(k))
+        painter.setPen(QPen(QColor("#0078D7"), 1))
+        marks = []
+        if self._cursor_pos is not None:
+            marks.append(self.mapFromScene(self._cursor_pos))
+        r = self._selection_rect() if self.selection else None
+        if r is not None:
+            marks += [self.mapFromScene(r.topLeft()), self.mapFromScene(r.bottomRight())]
+        for m in marks:
+            painter.drawLine(QPointF(m.x(), 0), QPointF(m.x(), t))
+            painter.drawLine(QPointF(0, m.y()), QPointF(t, m.y()))
+        painter.restore()
+
+
+class _KeyValueDialog(QDialog):
+    """File > Document Annotations: keywords (Name, Description, Type, Other Info and
+    your own) with their contents (ChemDraw 17.1 p. 6)."""
+    DEFAULT_KEYS = ("Name", "Description", "Type", "Other Info")
+
+    def __init__(self, values: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Document Annotations")
+        keys = list(self.DEFAULT_KEYS) + [k for k in values if k not in self.DEFAULT_KEYS]
+        self.table = QTableWidget(len(keys) + 3, 2)
+        self.table.setHorizontalHeaderLabels(["Keyword", "Content"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for r, k in enumerate(keys):
+            self.table.setItem(r, 0, QTableWidgetItem(k))
+            self.table.setItem(r, 1, QTableWidgetItem(str(values.get(k, ""))))
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                              QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Keywords and notes stored with the document (.rsc):"))
+        lay.addWidget(self.table)
+        lay.addWidget(bb)
+        self.resize(460, 320)
+
+    def values(self) -> dict:
+        out = {}
+        for r in range(self.table.rowCount()):
+            k, v = self.table.item(r, 0), self.table.item(r, 1)
+            key = k.text().strip() if k else ""
+            val = v.text().strip() if v else ""
+            if key and val:
+                out[key] = val
+        return out
 
 
 def _calculators():
@@ -94,14 +324,18 @@ def _calculators():
 
 
 class ChemDrawWindow(ChemEditorWindow):
-    canvas_class = PageCanvas
+    canvas_class = ShellCanvas
     _counter = 0
 
     def __init__(self, ctx, doc: Document | None = None):
         ChemDrawWindow._counter += 1
         self._number = ChemDrawWindow._counter
         self.ctx = ctx
-        super().__init__(None, doc or Document(preset(DEFAULT_STYLE)))
+        self.menus: dict = {}
+        self.installed: dict = {}         # install() module name -> None or error text
+        self._last_command = None         # (name, callable) for Edit > Repeat
+        style = self._default_style_name(ctx)
+        super().__init__(None, doc or Document(preset(style)))
         self.setObjectName("chemdraw_window")
         self.setStyleSheet(STYLESHEET)
         self.display_name = ""
@@ -129,6 +363,14 @@ class ChemDrawWindow(ChemEditorWindow):
         self._update_title()
 
     # --- settings ------------------------------------------------------------------------
+    @staticmethod
+    def _default_style_name(ctx) -> str:
+        """File > Open Style Sheets remembers the style sheet for new documents."""
+        s = getattr(ctx, "settings", None)
+        name = str(s.value("chemdraw/default_style", DEFAULT_STYLE)) if s is not None else \
+            DEFAULT_STYLE
+        return name if name in PRESETS else DEFAULT_STYLE
+
     def _settings(self):
         return getattr(self.ctx, "settings", None)
 
@@ -189,19 +431,22 @@ class ChemDrawWindow(ChemEditorWindow):
                           (self.act_fit, lambda: self.canvas.fit())):
             act.triggered.disconnect()
             act.triggered.connect(slot)
+        # ChemDraw 17.1 keys first (User Guide p. 61), the app's earlier keys kept as alternates
         self.act_zoom_in.setText("&Magnify")
-        self.act_zoom_in.setShortcuts([QKeySequence("Ctrl+]"),
+        self.act_zoom_in.setShortcuts([QKeySequence("F7"), QKeySequence("Ctrl+]"),
                                        QKeySequence(QKeySequence.StandardKey.ZoomIn)])
         self.act_zoom_in.setIcon(cd_icon("zoom_in"))
         self.act_zoom_out.setText("&Reduce")
-        self.act_zoom_out.setShortcuts([QKeySequence("Ctrl+["),
-                                        QKeySequence(QKeySequence.StandardKey.ZoomOut)])
+        # (Ctrl+- is Subscript, so the platform's Zoom Out key is not added)
+        self.act_zoom_out.setShortcuts([QKeySequence("F8"), QKeySequence("Ctrl+[")])
         self.act_zoom_out.setIcon(cd_icon("zoom_out"))
         self.act_actual.setText("&Actual Size")
-        self.act_actual.setShortcut(QKeySequence("Ctrl+0"))
+        self.act_actual.setShortcuts([QKeySequence("F5"), QKeySequence("Ctrl+0")])
         self.act_actual.setIcon(cd_icon("actual"))
         self.act_fit.setText("&Fit to Window")
-        self.act_fit.setShortcut(QKeySequence("Ctrl+9"))
+        self.act_fit.setShortcuts([QKeySequence("F6"), QKeySequence("Ctrl+9")])
+        self.act_check.setShortcut(QKeySequence())          # F5 is Actual Size in ChemDraw
+        self.act_redo.setShortcut(QKeySequence("Ctrl+Shift+Z"))  # Ctrl+Y is Repeat
         A = self._act
         self.act_print = A("&Print...", self.print_document, QKeySequence.StandardKey.Print)
         self.act_print.setIcon(cd_icon("print"))
@@ -209,22 +454,70 @@ class ChemDrawWindow(ChemEditorWindow):
                                  lambda: self.convert_name_to_structure(), "Ctrl+Shift+N")
         self.act_name2struct.setIcon(cd_icon("name2struct"))
         self.act_struct2name = A("Convert Structure to N&ame", self.convert_structure_to_name,
-                                 "Ctrl+Alt+Shift+N")
+                                 "Ctrl+Alt+N")
         self.act_struct2name.setIcon(cd_icon("struct2name"))
         self.act_pubchem = A("Use PubChem for Names (online)", self._toggle_pubchem,
                              checkable=True,
                              tip="Look up names and structures not in the offline list at "
                                  "PubChem (sends the InChIKey or the name)")
-        self.act_fixed_lengths = A("Fixed &Lengths", self._toggle_fixed, checkable=True)
+        self.act_fixed_lengths = A("Fixed &Lengths", self._toggle_fixed, "Ctrl+L",
+                                   checkable=True)
         self.act_fixed_lengths.setChecked(True)
-        self.act_fixed_angles = A("Fixed An&gles", self._toggle_fixed, checkable=True)
+        self.act_fixed_angles = A("Fixed An&gles", self._toggle_fixed, "Ctrl+E",
+                                  checkable=True)
         self.act_fixed_angles.setChecked(True)
+        self.act_repeat = A("Repeat", self.repeat_last, "Ctrl+Y",
+                            tip="Repeat the last Object command on the selection")
+        self.act_repeat.setEnabled(False)
+        self.act_join = A("&Join", self.join_selection, "Ctrl+J",
+                          tip="Fuse two selected atoms, or two selected bonds, of different "
+                              "structures")
+        self.act_page_setup = A("Page Set&up...", self.page_setup, "Ctrl+Shift+P")
+        self.act_revert = A("Re&vert", self.revert)
+        self.act_map = A("&Map Reaction Atoms", self.map_reaction_atoms,
+                         tip="Automatic atom-to-atom mapping of the reaction (Indigo)")
+        self.act_clear_map = A("Clear Reaction Ma&p", self.clear_reaction_map)
+        self.act_clean_rxn = A("Clean Up &Reaction", self.clean_up_reaction,
+                               tip="Even spacing, plus signs and arrow length of a "
+                                   "single-step reaction")
+        self.act_interpret = A("Show Reaction &Interpretation", self._toggle_interpretation,
+                               checkable=True,
+                               tip="Color the reactants (red), products (magenta) and "
+                                   "conditions (cyan) as the reaction is read")
+        self.act_rulers = A("Show &Rulers", self._toggle_rulers, "F11", checkable=True)
+        self.act_crosshair = A("Show Cross&hair", self._toggle_crosshair, checkable=True)
+        self._update_mapping_action()
+
+    def _repeatable(self, name: str, fn):
+        """A menu slot that also becomes Edit > Repeat <name> (ChemDraw's Ctrl+Y)."""
+        def run(*_args):
+            result = fn()
+            if result is not False:
+                self._remember(name, fn)
+            return result
+        return run
+
+    def _remember(self, name: str, fn) -> None:
+        self._last_command = (name, fn)
+        self.act_repeat.setText(f"Repeat {name}")
+        self.act_repeat.setEnabled(True)
+
+    def repeat_last(self) -> bool:
+        if self._last_command is None:
+            return False
+        self._last_command[1]()
+        return True
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
+        R = self._repeatable
         # File
         m = mb.addMenu("&File")
+        self.menus["File"] = m
         m.addAction(self.act_new)
+        ss = m.addMenu("Open St&yle Sheets")
+        for name in PRESETS:
+            ss.addAction(name, lambda n=name: self.open_style_sheet(n))
         m.addAction(self.act_open)
         self.recent_menu = m.addMenu("Open &Recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent)
@@ -232,82 +525,130 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addAction(self.act_close)
         m.addAction(self.act_save)
         m.addAction(self.act_save_as)
+        m.addAction(self.act_revert)
         m.addSeparator()
         imp = m.addMenu("&Import")
         imp.addAction(self.act_import)
-        imp.addAction("Structure &File (MOL, SDF, RXN, CDXML)...", lambda: self.open_file())
+        imp.addAction("Structure &File (CDX, CDXML, MOL, SDF, RXN, HELM, FASTA)...",
+                      lambda: self.open_file())
         ex = m.addMenu("&Export")
-        for text, fmt in (("MDL Molfile (.mol)...", "mol"), ("SD File (.sdf)...", "sdf"),
-                          ("MDL Rxnfile (.rxn)...", "rxn"), ("ChemDraw XML (.cdxml)...", "cdxml"),
+        for text, fmt in (("ChemDraw Document (.cdx)...", "cdx"),
+                          ("ChemDraw XML (.cdxml)...", "cdxml"), (None, None),
+                          ("MDL Molfile (.mol)...", "mol"), ("MDL Molfile V3000 (.mol)...", "mol3"),
+                          ("SD File (.sdf)...", "sdf"), ("MDL Rxnfile (.rxn)...", "rxn"),
+                          ("MDL Rxnfile V3000 (.rxn)...", "rxn3"),
                           ("SMILES...", "smi"), ("Reaction SMILES...", "rsmi"),
-                          ("InChI / InChIKey...", "inchi"), (None, None),
-                          ("PNG Image...", "png"), ("SVG Image...", "svg"), ("PDF...", "pdf")):
+                          ("InChI / InChIKey...", "inchi"), ("HELM...", "helm"),
+                          ("FASTA...", "fasta"), (None, None),
+                          ("PNG Image...", "png"), ("TIFF Image...", "tiff"),
+                          ("JPEG Image...", "jpg"), ("BMP Image...", "bmp"),
+                          ("SVG Image...", "svg"), ("PDF...", "pdf")):
             if text is None:
                 ex.addSeparator()
             else:
                 ex.addAction(text, lambda f=fmt: self.export_as(f))
         m.addSeparator()
+        m.addAction("Document &Annotations...", lambda: self.document_annotations())
         m.addAction(self.act_settings)
         ap = m.addMenu("Apply Document Settings &from")
         for name in PRESETS:
             ap.addAction(name, lambda n=name: self.apply_style(preset(n)))
+        m.addAction("List &Nicknames...", self.list_nicknames)
         m.addSeparator()
+        m.addAction(self.act_page_setup)
         m.addAction(self.act_print)
         m.addSeparator()
         m.addAction(self.act_output)
         # Edit
         m = mb.addMenu("&Edit")
+        self.menus["Edit"] = m
         m.addAction(self.act_undo)
         m.addAction(self.act_redo)
+        m.addAction(self.act_repeat)
         m.addSeparator()
         m.addAction(self.act_cut)
         m.addAction(self.act_copy)
         ca = m.addMenu("Copy &As")
-        for text, what in (("MOL Text", "mol"), ("SMILES", "smiles"), ("InChI", "inchi"),
-                           ("InChIKey", "inchikey"), ("Reaction SMILES", "rsmi"),
-                           ("CDXML Text", "cdxml"), ("Picture (PNG, 300 dpi)", "image"),
-                           ("SVG", "svg")):
-            ca.addAction(text, lambda w=what: self.copy_as(w))
+        for text, what, sc in (("MOL Text", "mol", "Ctrl+Alt+Shift+O"),
+                               ("MOL V3000 Text", "mol3", None),
+                               ("SMILES", "smiles", "Ctrl+Alt+C"), ("InChI", "inchi", None),
+                               ("InChIKey", "inchikey", None), ("HELM", "helm", None),
+                               ("FASTA", "fasta", None),
+                               ("Reaction SMILES", "rsmi", None),
+                               ("CDXML Text", "cdxml", "Ctrl+D"),
+                               ("Picture (PNG, 300 dpi)", "image", None), ("SVG", "svg", None)):
+            act = ca.addAction(text, lambda w=what: self.copy_as(w))
+            if sc:
+                act.setShortcut(QKeySequence(sc))
         m.addAction(self.act_paste)
         ps = m.addMenu("Paste &Special")
+        for text, kind, sc in (("SMILES", "smiles", "Ctrl+Alt+P"),
+                               ("MOL / CDXML", "molcdxml", "Ctrl+Alt+Shift+P"),
+                               ("InChI", "inchi", None), ("HELM", "helm", None),
+                               ("FASTA Peptide", "fasta_peptide", None),
+                               ("FASTA DNA", "fasta_dna", None),
+                               ("FASTA RNA", "fasta_rna", None),
+                               ("Name as Structure", "name", None)):
+            act = ps.addAction(text, lambda k=kind: self.paste_special(k))
+            if sc:
+                act.setShortcut(QKeySequence(sc))
+        ps.addSeparator()
         ps.addAction(self.act_import)
         m.addAction(self.act_delete)
         m.addSeparator()
         m.addAction(self.act_select_all)
+        m.addSeparator()
+        m.addAction("Insert &File...", lambda: self.insert_file())
         # View (filled once the toolbars and windows exist, see _build_docks)
         self.view_menu = mb.addMenu("&View")
+        self.menus["View"] = self.view_menu
         # Object
         m = mb.addMenu("&Object")
+        self.menus["Object"] = m
         m.addAction(self.act_fixed_lengths)
         m.addAction(self.act_fixed_angles)
         m.addSeparator()
-        m.addAction("Bring to &Front", lambda: self.z_order(True), "Ctrl+Shift+]")
-        m.addAction("Send to &Back", lambda: self.z_order(False), "Ctrl+Shift+[")
+        act = m.addAction("Bring to &Front", R("Bring to Front", lambda: self.z_order(True)))
+        act.setShortcuts([QKeySequence("F2"), QKeySequence("Ctrl+Shift+]")])
+        act = m.addAction("Send to &Back", R("Send to Back", lambda: self.z_order(False)))
+        act.setShortcuts([QKeySequence("F3"), QKeySequence("Ctrl+Shift+[")])
         m.addSeparator()
         m.addAction("&Group", self.group, "Ctrl+G")
         m.addAction("&Ungroup", self.ungroup, "Ctrl+Shift+G")
+        m.addAction(self.act_join)
         m.addSeparator()
         al = m.addMenu("&Align")
-        for text, how in (("Lefts", "left"), ("Horizontal Centers", "hcenter"),
-                          ("Rights", "right"), ("Tops", "top"), ("Vertical Centers", "vcenter"),
-                          ("Bottoms", "bottom")):
-            al.addAction(text, lambda h=how: self.align(h))
+        for text, how, key in (("Lefts", "left", "L"), ("Horizontal Centers", "hcenter", "C"),
+                               ("Rights", "right", "R"), ("Tops", "top", "T"),
+                               ("Vertical Centers", "vcenter", "M"),
+                               ("Bottoms", "bottom", "B")):
+            al.addAction(text, R(f"Align {text}", lambda h=how: self.align(h)),
+                         f"Ctrl+Alt+Shift+{key}")
         di = m.addMenu("&Distribute")
-        di.addAction("Horizontally", lambda: self.distribute(True))
-        di.addAction("Vertically", lambda: self.distribute(False))
+        di.addAction("Horizontally", R("Distribute", lambda: self.distribute(True)))
+        di.addAction("Vertically", R("Distribute", lambda: self.distribute(False)))
         m.addSeparator()
-        m.addAction("Flip &Horizontal", lambda: self.transform("flip_h"), "Ctrl+Shift+H")
-        m.addAction("Flip &Vertical", lambda: self.transform("flip_v"), "Ctrl+Shift+V")
-        m.addAction("Rotate 90° Clockwise", lambda: self.transform("rot_cw"), "Ctrl+R")
-        m.addAction("Rotate 90° Counterclockwise", lambda: self.transform("rot_ccw"),
-                    "Ctrl+Shift+R")
-        m.addAction("Rotate 180°", self.rotate_180)
-        m.addAction("Rotate...", self.rotate_dialog)
-        m.addAction("&Scale...", self.scale_dialog)
+        m.addAction("Flip &Horizontal", R("Flip Horizontal", lambda: self.transform("flip_h")),
+                    "Ctrl+Shift+H")
+        m.addAction("Flip &Vertical", R("Flip Vertical", lambda: self.transform("flip_v")),
+                    "Ctrl+Shift+V")
+        m.addAction("Rotate 180° Horizontal",
+                    R("Rotate 180° Horizontal", lambda: self.rotate_180_3d(True)),
+                    "Ctrl+Alt+Shift+H")
+        m.addAction("Rotate 180° Vertical",
+                    R("Rotate 180° Vertical", lambda: self.rotate_180_3d(False)),
+                    "Ctrl+Alt+Shift+V")
+        m.addAction("Rotate 90° Clockwise", R("Rotate 90°", lambda: self.transform("rot_cw")))
+        m.addAction("Rotate 90° Counterclockwise",
+                    R("Rotate -90°", lambda: self.transform("rot_ccw")))
+        m.addAction("Rotate 180°", R("Rotate 180°", self.rotate_180))
+        m.addAction("&Rotate...", lambda: self.rotate_dialog(), "Ctrl+R")
+        m.addAction("&Scale...", lambda: self.scale_dialog(), "Ctrl+K")
         m.addSeparator()
-        m.addAction("&Center on Page", self.center_on_page)
+        m.addAction("&Center on Page", R("Center on Page", self.center_on_page))
         # Structure
         m = mb.addMenu("&Structure")
+        self.menus["Structure"] = m
         m.addAction("&Atom Properties...", self._atom_properties_of_selection)
         m.addAction(self.act_expand)
         m.addSeparator()
@@ -316,6 +657,7 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addSeparator()
         m.addAction(self.act_check)
         m.addAction(self.act_clean)
+        m.addAction(self.act_clean_rxn)
         m.addSeparator()
         m.addAction("Structure &Perspective (3D)...", self.structure_perspective)
         m.addAction("&Mass Fragmentation Tool", lambda: self.set_tool("fragment"))
@@ -324,6 +666,8 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addAction(self.act_struct2name)
         m.addAction(self.act_pubchem)
         m.addSeparator()
+        m.addAction(self.act_map)
+        m.addAction(self.act_clear_map)
         m.addAction(self.act_balance)
         m.addAction(self.act_stoich)
         m.addSeparator()
@@ -336,12 +680,15 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addAction(self.act_import)
         # Text
         self.text_menu = mb.addMenu("&Text")
+        self.menus["Text"] = self.text_menu
         # Curves (ChemDraw: style of the selected curves and of new Pen curves)
         self.curves_menu = mb.addMenu("C&urves")
+        self.menus["Curves"] = self.curves_menu
         self.curves_menu.aboutToShow.connect(self._fill_curves_menu)
         self._fill_curves_menu()
         # Colors
         m = mb.addMenu("&Colors")
+        self.menus["Colors"] = m
         for name, value in COLORS:
             m.addAction(color_icon(value), name, lambda v=value: self.apply_color(
                 "" if v == "#000000" else v))
@@ -350,10 +697,12 @@ class ChemDrawWindow(ChemEditorWindow):
         m.addAction(self.act_color)
         # Window
         self.windows_menu = mb.addMenu("&Window")
+        self.menus["Window"] = self.windows_menu
         self.windows_menu.aboutToShow.connect(self._fill_window_menu)
         self._fill_window_menu()
         # Help
         m = mb.addMenu("&Help")
+        self.menus["Help"] = m
         m.addAction("Shortcuts and &Hotkeys", self.show_hotkeys)
         m.addSeparator()
         m.addAction("Check for &Updates...", self._check_updates)
@@ -404,12 +753,14 @@ class ChemDrawWindow(ChemEditorWindow):
         self.style_actions: dict[str, QAction] = {}
         for key, text, sc in (("bold", "&Bold", "Ctrl+B"), ("italic", "&Italic", "Ctrl+I"),
                               ("underline", "&Underline", "Ctrl+U"),
-                              ("formula", "&Formula", "Ctrl+Alt+F"),
-                              ("subscript", "Su&bscript", "Ctrl+-"),
-                              ("superscript", "Su&perscript", "Ctrl+="),
+                              ("formula", "&Formula", "Ctrl+F"),
+                              ("subscript", "Su&bscript", "F9"),
+                              ("superscript", "Su&perscript", "F10"),
                               ("plain", "&Plain", "Ctrl+T")):
             act = QAction(cd_icon(key), text, self)
-            act.setShortcut(QKeySequence(sc))
+            act.setShortcuts([QKeySequence(sc)] + {
+                "subscript": [QKeySequence("Ctrl+-")],
+                "superscript": [QKeySequence("Ctrl+=")]}.get(key, []))
             act.setCheckable(key in ("bold", "italic", "underline", "formula"))
             act.triggered.connect(lambda checked=False, k=key: self._style_action(k, checked))
             self.style_actions[key] = act
@@ -467,6 +818,9 @@ class ChemDrawWindow(ChemEditorWindow):
             v.addAction(act)
         v.addAction("Show &Periodic Table Window...", self.periodic_table)
         v.addSeparator()
+        v.addAction(self.act_interpret)
+        v.addAction(self.act_rulers)
+        v.addAction(self.act_crosshair)
         v.addAction(self.act_grid)
         self.act_grid.setText("Show &Grid")
         v.addSeparator()
@@ -479,6 +833,33 @@ class ChemDrawWindow(ChemEditorWindow):
             act.setCheckable(True)
             act.setChecked(name == "Letter")
             group.addAction(act)
+        self.page_size_actions = {a.text(): a for a in group.actions()}
+        self._install_extensions()
+
+    def _install_extensions(self) -> None:
+        """Call ``install(window)`` of the other work packages' action modules when they
+        exist; a missing module is skipped, a failing one is reported and skipped."""
+        for name in INSTALL_MODULES:
+            try:
+                module = importlib.import_module(name)
+            except ModuleNotFoundError as exc:
+                if exc.name == name:
+                    continue                    # not part of this build
+                self.installed[name] = traceback.format_exc()
+            except Exception:  # noqa: BLE001 - keep the window usable
+                self.installed[name] = traceback.format_exc()
+            else:
+                install = getattr(module, "install", None)
+                if install is None:
+                    continue
+                try:
+                    install(self)
+                    self.installed[name] = None
+                except Exception:  # noqa: BLE001
+                    self.installed[name] = traceback.format_exc()
+            if self.installed.get(name):
+                print(f"[RS-StatChem] {name}.install failed:\n{self.installed[name]}",
+                      file=sys.stderr)
 
     def _dock(self, title: str, name: str, widget) -> QDockWidget:
         d = QDockWidget(title, self)
@@ -618,10 +999,18 @@ class ChemDrawWindow(ChemEditorWindow):
             from rsstatchem.ui.modules import open_module
             return open_module(self.ctx, "chem", path) is not None
         try:
-            if ext in (".rsc", ".cdxml"):
-                doc = load_rsc(path) if ext == ".rsc" else cdxml.load_cdxml(path)
+            if ext in _DOC_EXT:
+                doc = self._load_document(path)
                 self.canvas.set_state(doc.to_dict())
                 self.path = path
+            elif ext in (".helm", ".fasta", ".fa"):
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+                c = self.canvas.page_center()
+                self._insert_sequence_text(text, "helm" if ext == ".helm" else "fasta_peptide",
+                                           c.x(), self.canvas.page.top() + 200)
+                self.canvas.rebuild()
+                self.display_name = os.path.basename(path)
             else:
                 with open(path, encoding="utf-8", errors="replace") as fh:
                     text = fh.read()
@@ -676,11 +1065,13 @@ class ChemDrawWindow(ChemEditorWindow):
         return keys
 
     def save(self) -> bool:
-        if not self.path or os.path.splitext(self.path)[1].lower() not in (".rsc", ".cdxml"):
+        if not self.path or os.path.splitext(self.path)[1].lower() not in _DOC_EXT:
             return self.save_as()
         try:
             if self.path.lower().endswith(".cdxml"):
                 cdxml.save_cdxml(self.doc, self.path)
+            elif self.path.lower().endswith(".cdx"):
+                cdx.save_cdx(self.doc, self.path)
             else:
                 save_rsc(self.doc, self.path)
         except OSError as exc:
@@ -700,7 +1091,7 @@ class ChemDrawWindow(ChemEditorWindow):
                                                        ";;".join(SAVE_FILTERS))
             if not path:
                 return False
-            if os.path.splitext(path)[1].lower() not in (".rsc", ".cdxml"):
+            if os.path.splitext(path)[1].lower() not in _DOC_EXT:
                 path += SAVE_FILTERS.get(chosen, ".rsc")
         self.path = path
         self.display_name = ""
@@ -846,7 +1237,8 @@ class ChemDrawWindow(ChemEditorWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Shortcuts and Hotkeys")
         view = QTextBrowser()
-        view.setHtml(HOTKEYS_HTML)
+        # objects_actions.install() may set window.hotkeys_html (the drawing hotkeys)
+        view.setHtml(getattr(self, "hotkeys_html", HOTKEYS_HTML) + _shortcuts_html())
         lay = QVBoxLayout(dlg)
         lay.addWidget(view)
         dlg.resize(480, 560)
@@ -858,17 +1250,103 @@ class ChemDrawWindow(ChemEditorWindow):
         keys = self.canvas.target_keys()
         self.canvas.edit("Rotate", lambda: self.doc.rotate(keys, math.pi))
 
-    def rotate_dialog(self) -> None:
-        ang, ok = QInputDialog.getDouble(self, "Rotate", "Angle (degrees, clockwise):", 15.0,
-                                         -360.0, 360.0, 1)
-        if ok:
-            keys = self.canvas.target_keys()
-            self.canvas.edit("Rotate", lambda: self.doc.rotate(keys, math.radians(ang)))
+    def rotate_by(self, degrees: float) -> None:
+        keys = self.canvas.target_keys()
+        self.canvas.edit("Rotate", lambda: self.doc.rotate(keys, math.radians(degrees)))
 
-    def scale_dialog(self) -> None:
-        pct, ok = QInputDialog.getDouble(self, "Scale", "Scale (%):", 100.0, 5.0, 2000.0, 1)
-        if ok and abs(pct - 100.0) > 1e-9:
+    def rotate_dialog(self, degrees: float | None = None) -> None:
+        if degrees is None:
+            degrees, ok = QInputDialog.getDouble(self, "Rotate Objects",
+                                                 "Angle (degrees, clockwise):", 15.0,
+                                                 -360.0, 360.0, 1)
+            if not ok:
+                return
+        self.rotate_by(degrees)
+        self._remember(f"Rotate {degrees:g}°", lambda d=degrees: self.rotate_by(d))
+
+    def scale_dialog(self, pct: float | None = None) -> None:
+        if pct is None:
+            pct, ok = QInputDialog.getDouble(self, "Scale Objects", "Scale (%):", 100.0, 5.0,
+                                             2000.0, 1)
+            if not ok:
+                return
+        if abs(pct - 100.0) > 1e-9:
             self.scale_selection(pct)
+            self._remember(f"Scale {pct:g}%", lambda p=pct: self.scale_selection(p))
+
+    def rotate_180_3d(self, horizontal: bool) -> None:
+        """Object > Rotate 180° Horizontal / Vertical: turn the selection over about the
+        vertical (horizontal) axis in 3D - the mirror image in the plane, with wedges and
+        hashes exchanged so every stereocentre keeps its configuration."""
+        keys = self.canvas.target_keys()
+        if not keys:
+            return
+
+        def fn():
+            self.doc.flip(keys, horizontal)
+            for k, i in self.doc.with_bonds(keys):
+                if k == "bond" and i in self.doc.bonds:
+                    b = self.doc.bonds[i]
+                    if b.style in ("wedge", "hollow"):
+                        b.style = "hash"
+                    elif b.style == "hash":
+                        b.style = "wedge"
+        self.canvas.edit("Rotate 180°", fn)
+
+    def join_selection(self) -> bool:
+        """Object > Join (ChemDraw 17.1 p. 100): two selected atoms of different structures
+        are fused into one (the second structure moves onto the first); two selected bonds are
+        fused so that the structures share that bond."""
+        sel = self.canvas.selection
+        atoms = sorted(a for k, a in sel if k == "atom" and a in self.doc.atoms)
+        bonds = sorted(b for k, b in sel if k == "bond" and b in self.doc.bonds)
+        if len(bonds) == 2:
+            b1, b2 = self.doc.bonds[bonds[0]], self.doc.bonds[bonds[1]]
+            pair1, pair2 = (b1.a, b1.b), (b2.a, b2.b)
+        elif len(atoms) == 2:
+            pair1, pair2 = (atoms[0],), (atoms[1],)
+        else:
+            self.statusBar().showMessage("Select two atoms or two bonds to join", 5000)
+            return False
+        frag1 = set(self.doc.fragment_of(pair1[0]))
+        if any(a in frag1 for a in pair2):
+            self.statusBar().showMessage("Join works on two separate structures", 5000)
+            return False
+        moving = set(self.doc.fragment_of(pair2[0]))
+        P = self.doc.atoms
+
+        def fn():
+            keys = self.doc.with_bonds({("atom", a) for a in moving})
+            if len(pair1) == 1:
+                k, d = pair1[0], pair2[0]
+                self.doc.move(keys, P[k].x - P[d].x, P[k].y - P[d].y)
+                self.doc.merge_atoms(d, k)
+                return
+            # rotate + move bond 2 onto bond 1, choosing the orientation that keeps the second
+            # structure on the far side of the shared bond
+            best = None
+            for d1, d2 in (pair2, pair2[::-1]):
+                ang = math.atan2(P[pair1[1]].y - P[pair1[0]].y, P[pair1[1]].x - P[pair1[0]].x) - \
+                    math.atan2(P[d2].y - P[d1].y, P[d2].x - P[d1].x)
+                c, s_ = math.cos(ang), math.sin(ang)
+                pts = {}
+                for a in moving:
+                    x, y = P[a].x - P[d1].x, P[a].y - P[d1].y
+                    pts[a] = (P[pair1[0]].x + c * x - s_ * y, P[pair1[0]].y + s_ * x + c * y)
+                cx = sum(P[a].x for a in frag1) / len(frag1)
+                cy = sum(P[a].y for a in frag1) / len(frag1)
+                mx = sum(p[0] for p in pts.values()) / len(pts)
+                my = sum(p[1] for p in pts.values()) / len(pts)
+                dist = math.hypot(mx - cx, my - cy)
+                if best is None or dist > best[0]:
+                    best = (dist, pts, (d1, d2))
+            _, pts, (d1, d2) = best
+            for a, (x, y) in pts.items():
+                P[a].x, P[a].y = x, y
+            self.doc.merge_atoms(d1, pair1[0])
+            self.doc.merge_atoms(d2, pair1[1])
+        self.canvas.edit("Join", fn)
+        return True
 
     def scale_selection(self, pct: float) -> None:
         keys = self.canvas.target_keys()
@@ -903,6 +1381,195 @@ class ChemDrawWindow(ChemEditorWindow):
         c = self.canvas.page_center()
         dx, dy = c.x() - (bb[0] + bb[2]) / 2, c.y() - (bb[1] + bb[3]) / 2
         self.canvas.edit("Center on Page", lambda: self.doc.move(keys, dx, dy))
+
+    # --- Structure menu: reactions -------------------------------------------------------
+    def _update_mapping_action(self) -> None:
+        ok = mapping.available()
+        self.act_map.setEnabled(ok)
+        tip = "Automatic atom-to-atom mapping of the reaction (Indigo " + \
+            mapping.indigo_version() + ")" if ok else mapping.why_unavailable()
+        self.act_map.setToolTip(tip)
+        self.act_map.setStatusTip(tip)
+
+    def map_reaction_atoms(self) -> dict:
+        """Structure > Map Reaction Atoms: automatic mapping (Indigo); map numbers appear on
+        the mapped atoms."""
+        if not mapping.available():
+            self._notify("Map Reaction Atoms", mapping.why_unavailable())
+            return {}
+        try:
+            result = self.canvas.edit("Map Reaction Atoms",
+                                      lambda: mapping.map_reaction(self.doc))
+        except mapping.MappingError as exc:
+            self._notify("Map Reaction Atoms", str(exc))
+            return {}
+        self.statusBar().showMessage(f"{len(set(result.values()))} atom(s) mapped", 6000)
+        return result
+
+    def clear_reaction_map(self) -> int:
+        atoms = self.canvas.selected_atoms() or None
+        return self.canvas.edit("Clear Reaction Map",
+                                lambda: mapping.clear_map(self.doc, atoms)) or 0
+
+    def clean_up_reaction(self) -> bool:
+        ok = self.canvas.edit("Clean Up Reaction", lambda: convert.clean_up_reaction(self.doc))
+        if not ok:
+            self._notify("Clean Up Reaction",
+                         "Clean Up Reaction needs a single-step reaction with reactants, a "
+                         "straight reaction arrow and products.")
+        return bool(ok)
+
+    def _toggle_interpretation(self, on: bool) -> None:
+        self.canvas.show_interpretation = bool(on)
+        self.canvas.viewport().update()
+
+    def _toggle_rulers(self, on: bool) -> None:
+        self.canvas.show_rulers = bool(on)
+        self.canvas.viewport().update()
+
+    def _toggle_crosshair(self, on: bool) -> None:
+        self.canvas.show_crosshair = bool(on)
+        self.canvas.viewport().update()
+
+    # --- File / Edit extras ---------------------------------------------------------------
+    def open_style_sheet(self, name: str):
+        """File > Open Style Sheets: a new document with that style sheet, which also
+        becomes the style of later new documents."""
+        s = self._settings()
+        if s is not None:
+            s.setValue("chemdraw/default_style", name)
+        if self.is_pristine():
+            self.apply_style(preset(name))
+            self.undo_stack.clear()
+            return self
+        win = ChemDrawWindow(self.ctx, Document(preset(name)))
+        from rsstatchem.ui.chem_editor import _WINDOWS
+        _WINDOWS.append(win)
+        if self.ctx is not None and hasattr(self.ctx, "windows") and \
+                isinstance(self.ctx.windows, list):
+            self.ctx.windows.append(win)
+        win.show()
+        return win
+
+    def revert(self) -> bool:
+        """File > Revert: reload the last saved version."""
+        if not self.path or not os.path.exists(self.path):
+            self.statusBar().showMessage("The document has not been saved yet", 5000)
+            return False
+        if not self.undo_stack.isClean() and self.confirm_close:
+            r = QMessageBox.question(self, "Revert",
+                                     f"Discard the changes to '{self.document_name()}'?")
+            if r != QMessageBox.StandardButton.Yes:
+                return False
+        try:
+            doc = self._load_document(self.path)
+        except (ValueError, OSError, KeyError) as exc:
+            self._report("Revert", str(exc))
+            return False
+        self.canvas.set_state(doc.to_dict())
+        self.undo_stack.clear()
+        self._update_title()
+        return True
+
+    def page_setup(self) -> bool:
+        """File > Page Setup: paper size (Letter / A4) of the document page."""
+        from PySide6.QtGui import QPageSize
+        from PySide6.QtPrintSupport import QPageSetupDialog, QPrinter
+        printer = QPrinter()
+        size = QPageSize(QPageSize.PageSizeId.A4 if self.canvas.page.width() < 600 else
+                         QPageSize.PageSizeId.Letter)
+        printer.setPageSize(size)
+        dlg = QPageSetupDialog(printer, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+        pid = printer.pageLayout().pageSize().id()
+        name = "A4" if pid == QPageSize.PageSizeId.A4 else "Letter"
+        self.set_page_size(name)
+        return True
+
+    def set_page_size(self, name: str) -> None:
+        self.canvas.set_page_size(name)
+        act = getattr(self, "page_size_actions", {}).get(name)
+        if act is not None:
+            act.setChecked(True)
+
+    def document_annotations(self, values: dict | None = None) -> dict:
+        """File > Document Annotations: keyword / content notes kept in the document."""
+        if values is None:
+            dlg = _KeyValueDialog(dict(self.doc.meta.get("annotations") or {}), self)
+            if not dlg.exec():
+                return dict(self.doc.meta.get("annotations") or {})
+            values = dlg.values()
+        self.canvas.edit("Document Annotations",
+                         lambda: self.doc.meta.__setitem__("annotations", dict(values)))
+        return dict(values)
+
+    def list_nicknames(self) -> QDialog:
+        """File > List Nicknames: the nicknames (abbreviations) the labels understand."""
+        from rsstatchem.core.chem_draw import abbrev
+        dlg = QDialog(self)
+        dlg.setWindowTitle("List Nicknames")
+        rows = sorted(abbrev.ABBREVIATIONS.values(), key=lambda a: a.name.lower())
+        table = QTableWidget(len(rows), 3)
+        table.setHorizontalHeaderLabels(["Nickname", "Name", "Structure (SMILES)"])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for r, ab in enumerate(rows):
+            for c, text in enumerate((ab.name, ab.title, ab.smiles.replace("*", "-", 1)
+                                      if ab.smiles.startswith("*") else ab.smiles)):
+                table.setItem(r, c, QTableWidgetItem(text))
+        table.horizontalHeader().setStretchLastSection(True)
+        table.resizeColumnsToContents()
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(table)
+        dlg.resize(520, 560)
+        dlg.show()
+        self.nicknames_dialog = dlg
+        return dlg
+
+    def insert_file(self, path: str | None = None) -> list:
+        """Edit > Insert File: add the contents of a drawing or structure file to this
+        document (File > Open makes a new document)."""
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Insert File", self._start_dir(),
+                                                  OPEN_FILTER)
+            if not path:
+                return []
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext in _DOC_EXT:
+                keys = self.canvas.paste_document(self._load_document(path))
+            else:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+                x, y = self._free_spot()
+                if ext in (".helm", ".fasta", ".fa"):
+                    kind = "helm" if ext == ".helm" else "fasta_peptide"
+                    keys = self.canvas.edit("Insert File", lambda: self._insert_sequence_text(
+                        text, kind, x, y))
+                else:
+                    keys = self.canvas.insert_text(text, x, y, "Insert File")
+        except (mo.ChemError, ValueError, OSError, KeyError) as exc:
+            self._report("Insert File", f"Could not read {os.path.basename(path)}:\n{exc}")
+            return []
+        self._remember_dir(path)
+        return keys or []
+
+    def paste_special(self, kind: str, text: str | None = None) -> list:
+        """Edit > Paste Special, plus ChemDraw's "MOL / CDXML" (Alt+Shift+Ctrl+P) and
+        "Name as Structure" (the clipboard name converted like Convert Name to Structure)."""
+        from PySide6.QtGui import QGuiApplication
+        if text is None:
+            text = QGuiApplication.clipboard().text()
+        if kind == "molcdxml":
+            kind = "cdxml" if "<CDXML" in (text or "") else "mol"
+        if kind == "name":
+            name = " ".join((text or "").split())
+            if not name:
+                self.statusBar().showMessage("The clipboard holds no name", 4000)
+                return []
+            self.convert_name_to_structure(name)
+            return []
+        return super().paste_special(kind, text)
 
     # --- Structure menu ------------------------------------------------------------------
     def _atom_properties_of_selection(self) -> None:

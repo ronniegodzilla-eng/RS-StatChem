@@ -19,11 +19,28 @@ from rsstatchem.ui.chem_editor.canvas import ChemCanvas
 from rsstatchem.ui.chem_editor.icons import tool_icon
 from rsstatchem.ui.chem_editor.panels import AnalysisPanel, TemplatePanel
 
-__all__ = ["ChemEditorWindow", "TOOL_GROUPS", "OPEN_FILTER"]
+__all__ = ["ChemEditorWindow", "TOOL_GROUPS", "OPEN_FILTER", "EXPORT_FORMATS",
+           "PASTE_KINDS"]
 
-OPEN_FILTER = ("Chemical drawings and structures (*.rsc *.mol *.sdf *.sd *.rxn *.smi *.txt "
-               "*.inchi *.mol2 *.pdb);;RS-StatChem drawing (*.rsc);;MOL / SDF (*.mol *.sdf "
-               "*.sd);;Reaction (*.rxn);;SMILES (*.smi *.txt);;All files (*)")
+OPEN_FILTER = ("Chemical drawings and structures (*.rsc *.cdx *.cdxml *.mol *.sdf *.sd *.rxn "
+               "*.smi *.txt *.inchi *.mol2 *.pdb *.helm *.fasta *.fa);;RS-StatChem drawing "
+               "(*.rsc);;ChemDraw (*.cdx *.cdxml);;MOL / SDF (*.mol *.sdf *.sd);;Reaction "
+               "(*.rxn);;SMILES (*.smi *.txt);;HELM / FASTA (*.helm *.fasta *.fa);;"
+               "All files (*)")
+# export format -> (file filter, extension)
+EXPORT_FORMATS = {
+    "smi": ("SMILES (*.smi)", "smi"), "mol": ("MOL file (*.mol)", "mol"),
+    "mol3": ("MOL file V3000 (*.mol)", "mol"), "sdf": ("SDF (*.sdf)", "sdf"),
+    "inchi": ("InChI (*.txt)", "txt"), "rxn": ("RXN (*.rxn)", "rxn"),
+    "rxn3": ("RXN V3000 (*.rxn)", "rxn"), "rsmi": ("Reaction SMILES (*.smi)", "smi"),
+    "helm": ("HELM (*.helm)", "helm"), "fasta": ("FASTA (*.fasta)", "fasta"),
+    "cdx": ("ChemDraw binary (*.cdx)", "cdx"), "cdxml": ("ChemDraw XML (*.cdxml)", "cdxml"),
+    "svg": ("SVG image (*.svg)", "svg"), "png": ("PNG image (*.png)", "png"),
+    "tiff": ("TIFF image (*.tif *.tiff)", "tif"), "jpg": ("JPEG image (*.jpg)", "jpg"),
+    "bmp": ("BMP image (*.bmp)", "bmp"), "pdf": ("PDF (*.pdf)", "pdf")}
+# Paste Special kinds -> how the clipboard text is read
+PASTE_KINDS = ("smiles", "mol", "inchi", "cdxml", "helm", "fasta_peptide", "fasta_dna",
+               "fasta_rna")
 
 TOOL_GROUPS = [
     ("Select", [("select", "Marquee select / move (V)"), ("lasso", "Lasso select"),
@@ -144,10 +161,14 @@ class ChemEditorWindow(QMainWindow):
                   self.act_import):
             m.addSeparator() if a is None else m.addAction(a)
         ex = m.addMenu("&Export")
-        for text, fmt in (("SMILES...", "smi"), ("MOL File...", "mol"), ("SDF...", "sdf"),
+        for text, fmt in (("SMILES...", "smi"), ("MOL File...", "mol"),
+                          ("MOL File V3000...", "mol3"), ("SDF...", "sdf"),
                           ("InChI / InChIKey...", "inchi"), ("Reaction RXN...", "rxn"),
-                          ("Reaction SMILES...", "rsmi"), (None, None), ("SVG Image...", "svg"),
-                          ("PNG Image...", "png"), ("PDF...", "pdf")):
+                          ("Reaction RXN V3000...", "rxn3"), ("Reaction SMILES...", "rsmi"),
+                          ("ChemDraw CDX...", "cdx"), ("HELM...", "helm"),
+                          ("FASTA...", "fasta"), (None, None), ("SVG Image...", "svg"),
+                          ("PNG Image...", "png"), ("TIFF Image...", "tiff"),
+                          ("JPEG Image...", "jpg"), ("PDF...", "pdf")):
             if text is None:
                 ex.addSeparator()
                 continue
@@ -162,8 +183,10 @@ class ChemEditorWindow(QMainWindow):
         for a in (self.act_undo, self.act_redo, None, self.act_cut, self.act_copy):
             m.addSeparator() if a is None else m.addAction(a)
         ca = m.addMenu("Copy &As")
-        for text, what in (("SMILES", "smiles"), ("MOL File", "mol"), ("InChI", "inchi"),
-                           ("InChIKey", "inchikey"), ("Reaction SMILES", "rsmi"),
+        for text, what in (("SMILES", "smiles"), ("MOL File", "mol"),
+                           ("MOL File V3000", "mol3"), ("InChI", "inchi"),
+                           ("InChIKey", "inchikey"), ("HELM", "helm"),
+                           ("Reaction SMILES", "rsmi"),
                            ("Image (PNG, 300 dpi)", "image"), ("SVG", "svg")):
             ca.addAction(text, lambda w=what: self.copy_as(w))
         for a in (self.act_paste, self.act_import, None, self.act_delete, self.act_select_all):
@@ -425,11 +448,11 @@ class ChemEditorWindow(QMainWindow):
         self._remember_dir(path)
         ext = os.path.splitext(path)[1].lower()
         try:
-            if ext == ".rsc":
-                doc = load_rsc(path)
+            if ext in (".rsc", ".cdx", ".cdxml"):
+                doc = self._load_document(path)
                 if self.doc.is_empty() and self.undo_stack.count() == 0:
                     self.canvas.set_state(doc.to_dict())
-                    self.path = path
+                    self.path = path if ext == ".rsc" else None     # Save writes .rsc
                     self.undo_stack.clear()
                     self._update_title()
                     self.canvas.fit_later()
@@ -439,6 +462,11 @@ class ChemEditorWindow(QMainWindow):
                 return True
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
+            if ext in (".helm", ".fasta", ".fa"):
+                self.canvas.edit("Import", lambda: self._insert_sequence_text(
+                    text, "helm" if ext == ".helm" else "fasta_peptide", *self._free_spot()))
+                self.canvas.fit_later()
+                return True
             if ext in (".mol2", ".pdb"):
                 mols = mo.read_file(path)
                 self.canvas.edit("Import", lambda: [convert.insert_mol(
@@ -454,6 +482,30 @@ class ChemEditorWindow(QMainWindow):
         except (mo.ChemError, ValueError, OSError) as exc:
             QMessageBox.warning(self, "Open", f"Could not read {os.path.basename(path)}:\n{exc}")
             return False
+
+    @staticmethod
+    def _load_document(path: str) -> Document:
+        """A drawing file (.rsc, ChemDraw .cdx / .cdxml) as a document."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".cdx":
+            from rsstatchem.core.chem_draw import cdx
+            return cdx.load_cdx(path)
+        if ext == ".cdxml":
+            from rsstatchem.core.chem_draw import cdxml
+            return cdxml.load_cdxml(path)
+        return load_rsc(path)
+
+    def _insert_sequence_text(self, text: str, kind: str, x: float, y: float) -> list:
+        """Insert HELM (kind "helm") or FASTA records ("fasta_peptide" / "_dna" / "_rna")."""
+        from rsstatchem.core.chem_draw import sequence
+        if kind == "helm":
+            return convert.insert_mol(self.doc, sequence.mol_from_helm(text), x, y)
+        keys: list = []
+        for m in sequence.mols_from_fasta(text, kind.split("_", 1)[1]):
+            keys += convert.insert_mol(self.doc, m, x, y)
+            bb = self.doc.bbox(keys)
+            y = (bb[3] if bb else y) + self.doc.style.bond_length * 3
+        return keys
 
     def _free_spot(self) -> tuple[float, float]:
         bb = self.doc.bbox()
@@ -488,19 +540,15 @@ class ChemEditorWindow(QMainWindow):
 
     def export_as(self, fmt: str, path: str | None = None, dpi: int | None = None,
                   transparent: bool | None = None) -> bool:
-        filters = {"smi": "SMILES (*.smi)", "mol": "MOL file (*.mol)", "sdf": "SDF (*.sdf)",
-                   "inchi": "InChI (*.txt)", "rxn": "RXN (*.rxn)",
-                   "rsmi": "Reaction SMILES (*.smi)", "svg": "SVG image (*.svg)",
-                   "png": "PNG image (*.png)", "pdf": "PDF (*.pdf)"}
-        ext = {"inchi": "txt", "rsmi": "smi"}.get(fmt, fmt)
+        flt, ext = EXPORT_FORMATS[fmt]
         if path is None:
             base = os.path.splitext(os.path.basename(self.path or "drawing"))[0]
             path, _ = QFileDialog.getSaveFileName(self, "Export",
                                                   os.path.join(self._start_dir(),
-                                                               f"{base}.{ext}"), filters[fmt])
+                                                               f"{base}.{ext}"), flt)
             if not path:
                 return False
-            if fmt == "png" and dpi is None:
+            if fmt in export.IMAGE_FORMATS and dpi is None:
                 from rsstatchem.ui.chem_editor.dialogs import ImageOptionsDialog
                 dlg = ImageOptionsDialog(self)
                 if not dlg.exec():
@@ -513,11 +561,17 @@ class ChemEditorWindow(QMainWindow):
         try:
             if fmt == "svg":
                 export.export_svg(doc, path)
-            elif fmt == "png":
-                export.export_png(doc, path, dpi or 300,
-                                  True if transparent is None else transparent)
+            elif fmt in export.IMAGE_FORMATS:
+                export.export_image(doc, path, fmt, dpi or 300,
+                                    True if transparent is None else transparent)
             elif fmt == "pdf":
                 export.export_pdf(doc, path)
+            elif fmt == "cdx":
+                from rsstatchem.core.chem_draw import cdx
+                cdx.save_cdx(doc, path)
+            elif fmt == "cdxml":
+                from rsstatchem.core.chem_draw import cdxml
+                cdxml.save_cdxml(doc, path)
             else:
                 text = self._text_export(fmt, doc)
                 with open(path, "w", encoding="utf-8") as fh:
@@ -539,8 +593,16 @@ class ChemEditorWindow(QMainWindow):
             return convert.to_smiles(doc) + "\n"
         if fmt == "mol":
             return convert.to_molblock(doc)
+        if fmt == "mol3":
+            return convert.to_molblock(doc, v3000=True)
         if fmt == "sdf":
             return convert.to_sdf(doc)
+        if fmt == "rxn3":
+            return convert.reaction_rxn(doc, v3000=True)
+        if fmt == "helm":
+            return self._sequence_text(doc, "helm") + "\n"
+        if fmt == "fasta":
+            return self._sequence_text(doc, "fasta")
         if fmt == "inchi":
             return convert.to_inchi(doc) + "\n" + convert.to_inchikey(doc) + "\n"
         if fmt == "rxn":
@@ -548,6 +610,19 @@ class ChemEditorWindow(QMainWindow):
         if fmt == "rsmi":
             return convert.reaction_smiles(doc) + "\n"
         raise ValueError(fmt)
+
+    @staticmethod
+    def _sequence_text(doc: Document, kind: str) -> str:
+        """HELM or FASTA of the one molecule in ``doc`` (a linear peptide when drawn)."""
+        from rsstatchem.core.chem_draw import sequence
+        frags = doc.fragments()
+        if len(frags) != 1:
+            raise mo.ChemError("Select one biopolymer (peptide) first.")
+        mol = convert.to_mol(doc, frags[0])
+        try:
+            return sequence.to_helm(mol) if kind == "helm" else sequence.to_fasta(mol)
+        except sequence.SequenceError as exc:
+            raise mo.ChemError(str(exc)) from None
 
     def import_dialog(self) -> None:
         from rsstatchem.ui.chem_editor.dialogs import ImportDialog
@@ -585,6 +660,8 @@ class ChemEditorWindow(QMainWindow):
             if md is not None and md.hasFormat(export.NATIVE_MIME):
                 other = Document.from_json(bytes(md.data(export.NATIVE_MIME)).decode("utf-8"))
                 self.canvas.paste_document(other)
+            elif md is not None and self._clipboard_chemdraw(md) is not None:
+                self.canvas.paste_document(self._clipboard_chemdraw(md))
             elif md is not None and md.hasFormat(export.MOL_MIME):
                 self.canvas.insert_text(bytes(md.data(export.MOL_MIME)).decode(), title="Paste")
             elif md is not None and md.hasText() and md.text().strip():
@@ -594,6 +671,58 @@ class ChemEditorWindow(QMainWindow):
                                              "MOL text first)", 4000)
         except (mo.ChemError, ValueError) as exc:
             QMessageBox.warning(self, "Paste", f"The clipboard does not hold a structure:\n{exc}")
+
+    @staticmethod
+    def _clipboard_chemdraw(md):
+        """Document from ChemDraw's clipboard formats (CDX, CDXML), or None."""
+        from rsstatchem.core.chem_draw import cdx, cdxml
+        for mimes, read in ((export.CDX_MIMES, lambda b: cdx.from_cdx(b)),
+                            (export.CDXML_MIMES, lambda b: cdxml.from_cdxml(
+                                b.decode("utf-8", errors="replace")))):
+            for m in mimes:
+                if md.hasFormat(m):
+                    try:
+                        doc = read(bytes(md.data(m)))
+                    except (ValueError, mo.ChemError):
+                        continue
+                    if not doc.is_empty():
+                        return doc
+        return None
+
+    def paste_special(self, kind: str, text: str | None = None) -> list:
+        """Edit > Paste Special: read the clipboard text (or ``text``) as SMILES, MOL,
+        InChI, CDXML, HELM or FASTA (peptide / DNA / RNA) and insert it."""
+        if text is None:
+            text = QGuiApplication.clipboard().text()
+        title = "Paste Special"
+        if not (text or "").strip():
+            self.statusBar().showMessage("The clipboard holds no text to paste", 4000)
+            return []
+        try:
+            x, y = self._free_spot() if not self.doc.is_empty() else (None, None)
+            if kind == "cdxml":
+                from rsstatchem.core.chem_draw import cdxml
+                return self.canvas.paste_document(cdxml.from_cdxml(text))
+            if kind in ("helm",) or kind.startswith("fasta"):
+                if x is None:
+                    c = self.canvas.view_center()
+                    x, y = c.x(), c.y()
+                keys = self.canvas.edit(title, lambda: self._insert_sequence_text(
+                    text, kind, x, y))
+                self.canvas.select_keys(set(keys or []))
+                return keys
+            t = text.strip()
+            if kind == "smiles":
+                t = "\n".join(line.split()[0] for line in t.splitlines() if line.strip())
+            elif kind == "mol" and "V2000" not in t and "V3000" not in t and \
+                    not t.startswith("$RXN"):
+                raise mo.ChemError("The clipboard does not hold MOL text")
+            elif kind == "inchi" and not t.startswith("InChI="):
+                raise mo.ChemError("The clipboard does not hold an InChI")
+            return self.canvas.insert_text(t, x, y, title)
+        except (mo.ChemError, ValueError) as exc:
+            QMessageBox.warning(self, title, f"Could not paste:\n{exc}")
+            return []
 
     def copy_as(self, what: str) -> None:
         doc = self._export_doc()
@@ -612,6 +741,9 @@ class ChemEditorWindow(QMainWindow):
                 return
             text = {"smiles": lambda: convert.to_smiles(doc),
                     "mol": lambda: convert.to_molblock(doc),
+                    "mol3": lambda: convert.to_molblock(doc, v3000=True),
+                    "helm": lambda: self._sequence_text(doc, "helm"),
+                    "fasta": lambda: self._sequence_text(doc, "fasta"),
                     "inchi": lambda: convert.to_inchi(doc),
                     "inchikey": lambda: convert.to_inchikey(doc),
                     "rsmi": lambda: convert.reaction_smiles(doc)}[what]()
