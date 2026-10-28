@@ -98,7 +98,8 @@ def upsert(entry: dict) -> fl.FitFunction:
     entry["name"] = entry["name"].strip()
     if not entry["name"].replace("_", "").isalnum():
         raise ValueError("The function name may contain letters, digits and _ only.")
-    if fl.get_function(entry["name"]) is not None and not fl.get_function(entry["name"]).user_defined:
+    existing = fl.get_function(entry["name"])
+    if existing is not None and not existing.user_defined:
         raise ValueError(f"'{entry['name']}' is a built-in function; choose another name.")
     entry["category"] = (entry.get("category") or DEFAULT_CATEGORY).strip()
     f = make_function(entry)

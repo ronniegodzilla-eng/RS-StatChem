@@ -137,10 +137,12 @@ def test_integration_matches_analytic_areas():
 
     def gau(a, b):   # area of the Gaussian (centre 30, FWHM 4, area 10) between a and b
         s = 4 / (2 * math.sqrt(2 * math.log(2)))
-        return 5 * (math.erf((b - 30) / (s * math.sqrt(2))) - math.erf((a - 30) / (s * math.sqrt(2))))
+        r2 = s * math.sqrt(2)
+        return 5 * (math.erf((b - 30) / r2) - math.erf((a - 30) / r2))
     assert r[0]["area"] == pytest.approx(gau(10, 50) + lor(10, 50), rel=1e-6)
     assert r[1]["area"] == pytest.approx(gau(50, 99.9) + lor(50, 99.9), rel=1e-6)
-    assert r[0]["fwhm"] == pytest.approx(4, rel=1e-3) and r[0]["centroid"] == pytest.approx(30, abs=0.1)
+    assert r[0]["fwhm"] == pytest.approx(4, rel=1e-3)
+    assert r[0]["centroid"] == pytest.approx(30, abs=0.1)
     assert sum(q["area_pct"] for q in r) == pytest.approx(100)
     auto = pa.integrate_peaks(x, y + 0.0, peaks)
     assert auto[0]["area"] == pytest.approx(10, rel=1e-2)
