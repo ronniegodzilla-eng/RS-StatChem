@@ -51,6 +51,12 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.regression_ml",
     "rsstatchem.ui.dialogs.optscale",
     "rsstatchem.ui.dialogs.complex_samples",
+    "rsstatchem.ui.dialogs.dataprep",
+    "rsstatchem.ui.dialogs.matching",
+    "rsstatchem.ui.dialogs.conjoint",
+    "rsstatchem.ui.dialogs.qc",
+    "rsstatchem.ui.dialogs.marketing",
+    "rsstatchem.ui.dialogs.misc_ext",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
@@ -97,6 +103,7 @@ MENU_ORDER: dict[str, list] = {
         "Forecasting", "Survival", "Multiple Response", None,
         "Missing Value Analysis...", "Multiple Imputation", "Complex Samples", "Simulation...",
         "Quality Control", "Spatial and Temporal Modeling", "Direct Marketing",
+        "Conjoint Analysis...",
     ],
     "Analyze/Power Analysis": ["Means", "Proportions", "Correlations", "Regression"],
     "Analyze/Power Analysis/Means": [
@@ -126,7 +133,8 @@ MENU_ORDER: dict[str, list] = {
         "Means...", "One-Sample T Test...", "Independent-Samples T Test...",
         "Summary Independent-Samples T Test...", "Paired-Samples T Test...",
         "One-Way ANOVA...", None, "One-Sample Proportions...",
-        "Independent-Samples Proportions...", "Paired-Samples Proportions...",
+        "Independent-Samples Proportions...", "Paired-Samples Proportions...", None,
+        "Permutation Test...",
     ],
     "Analyze/General Linear Model": [
         "Univariate...", "Multivariate...", "Repeated Measures...", "Variance Components...",
@@ -137,13 +145,13 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Mixed Models": ["Linear...", "Generalized Linear..."],
     "Analyze/Correlate": ["Bivariate...", "Partial...", "Distances...",
-                          "Canonical Correlation..."],
+                          "Distance Correlation...", "Canonical Correlation..."],
     "Analyze/Regression": [
         "Automatic Linear Modeling...", "Linear...", "Curve Estimation...",
         "Partial Least Squares...", None, "Binary Logistic...", "Multinomial Logistic...",
         "Ordinal...", "Probit...", None, "Nonlinear...", "Weight Estimation...",
         "2-Stage Least Squares...", "Quantile...", None, "Optimal Scaling (CATREG)...",
-        "Kernel Ridge...", "Linear OLS Alternatives",
+        "Kernel Ridge...", "Linear OLS Alternatives", None, "Permutation Test...",
     ],
     "Analyze/Loglinear": ["General...", "Logit...", "Model Selection..."],
     "Analyze/Neural Networks": ["Multilayer Perceptron...", "Radial Basis Function..."],
@@ -170,6 +178,20 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Multiple Response": ["Define Variable Sets...", "Frequencies...",
                                   "Crosstabs..."],
+    "Analyze/Quality Control": ["Control Charts...", "Pareto Charts...",
+                                "Process Capability..."],
+    "Analyze/Direct Marketing": [
+        "Choose Technique...", None, "RFM Analysis...", "Cluster Analysis...",
+        "Prospect Profiles...", "Postal Code Response Rates...", "Propensity to Purchase...",
+        "Control Package Test...",
+    ],
+    "Analyze/Forecasting": [
+        "Create Traditional Models...", "Apply Traditional Models...",
+        "Vector Autoregression...", None, "Seasonal Decomposition...", "Spectral Analysis...",
+        None, "Sequence Charts...", "Autocorrelations...", "Cross-Correlations...",
+    ],
+    "Data/Validation": ["Load Predefined Rules...", "Define Rules...", "Validate Data..."],
+    "Data/Orthogonal Design": ["Generate...", "Display..."],
     "Analyze/Complex Samples": [
         "Prepare for Analysis...", "Select a Sample...", None, "Frequencies...",
         "Descriptives...", "Crosstabs...", "Ratios...", "General Linear Model...",

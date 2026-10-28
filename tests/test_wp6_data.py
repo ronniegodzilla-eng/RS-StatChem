@@ -245,7 +245,9 @@ def test_menu_order_follows_spss():
     assert transform.index("Create Dummy Variables...") < transform.index("Visual Binning...")
     assert [t for t in _labels(tree["Utilities"]) if t][0] == "Variables..."
     graphs = [t for t in _labels(tree["Graphs"]) if t]
-    assert graphs[:3] == ["Chart Builder...", "Regression Variable Plots...", "Legacy Dialogs"]
+    # Weibull Plot (WP11) sits after Chart Builder as in SPSS 28+
+    assert [g for g in graphs if g != "Weibull Plot..."][:3] == [
+        "Chart Builder...", "Regression Variable Plots...", "Legacy Dialogs"]
     assert "Graph Studio (Plot Setup)..." in graphs
     reports = _labels(_sub(tree["Analyze"], "Reports"))
     assert reports == ["Codebook...", "OLAP Cubes...", "Case Summaries...",
