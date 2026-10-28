@@ -163,7 +163,7 @@ class ChemicalPropertiesWindow(_ValueWindow):
 
     NAMES = ("Boiling Point", "Melting Point", "Critical Temp.", "Critical Pres.",
              "Critical Vol.", "Gibbs Energy", "Heat of Form.", "LogP", "MR", "tPSA", "LogS",
-             "Vapor Pres.")
+             "Vapor Pres.", "pKa (acidic)", "pKa (basic)", "Henry's Law")
     WARN = "#B05A00"
     GREY = "#7A7A7A"
 
@@ -312,7 +312,9 @@ class ChemicalPropertiesWindow(_ValueWindow):
             notes.append("Experimental values (open databases, sources in brackets) are shown "
                          "first; otherwise the estimate with the lowest error on open "
                          "experimental data. Hover a value or press Details for every method "
-                         "and its error. LogP/MR: " + NOT_BIOBYTE + ".")
+                         "and its error. LogP/MR: " + NOT_BIOBYTE + ". pKa: open model "
+                         "(Mansouri et al. 2019 data), not MOSES; pKa (basic) is the pKa of "
+                         "the conjugate acid.")
         for why, props in missing.items():
             notes.append(f"n/a ({', '.join(props)}): {why}.")
         self.note.setText("\n".join(notes))
