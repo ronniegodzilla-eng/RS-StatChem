@@ -44,6 +44,9 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.bayes",
     "rsstatchem.ui.dialogs.correspondence",
     "rsstatchem.ui.dialogs.mds",
+    "rsstatchem.ui.dialogs.classify_ml",
+    "rsstatchem.ui.dialogs.neural",
+    "rsstatchem.ui.dialogs.regression_ml",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
@@ -136,9 +139,10 @@ MENU_ORDER: dict[str, list] = {
         "Partial Least Squares...", None, "Binary Logistic...", "Multinomial Logistic...",
         "Ordinal...", "Probit...", None, "Nonlinear...", "Weight Estimation...",
         "2-Stage Least Squares...", "Quantile...", None, "Optimal Scaling (CATREG)...",
-        "Linear OLS Alternatives",
+        "Kernel Ridge...", "Linear OLS Alternatives",
     ],
     "Analyze/Loglinear": ["General...", "Logit...", "Model Selection..."],
+    "Analyze/Neural Networks": ["Multilayer Perceptron...", "Radial Basis Function..."],
     "Analyze/Classify": [
         "TwoStep Cluster...", "K-Means Cluster...", "Hierarchical Cluster...",
         "Cluster Silhouettes...", "Tree...", "Discriminant...", "Nearest Neighbor...", None,
