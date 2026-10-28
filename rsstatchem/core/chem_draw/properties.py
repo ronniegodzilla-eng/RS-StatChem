@@ -30,6 +30,11 @@ is labelled with the method that produced it:
 - Topological polar surface area (Ertl 2000, RDKit).
 - ESOL aqueous solubility LogS (Delaney 2004): 0.16 - 0.63 cLogP - 0.0062 MW + 0.066 RB
   - 0.74 AP (AP = aromatic heavy-atom proportion).
+- pKa of the strongest acidic and basic group (:mod:`pka`): measured values of the Mansouri
+  et al. 2019 data set, else gradient-boosted trees trained on it (open replacement for the
+  licensed MOSES pKa).
+- Henry's law constant (:mod:`henry`): PHYSPROP measured values, else the better of an ML
+  model and the ratio of vapour pressure to water solubility.
 
 These are not ChemDraw's licensed ChemProp / BioByte (CLogP, CMR) values.
 """
@@ -969,6 +974,9 @@ def chemical_properties(mol: Chem.Mol | None, cdk_values: dict | None = None,
     ]
     rows += _logp_rows(mol, exp, ml, cdk_values, cdk_state)
     rows[-1] = _vp_row(exp, bp, rows[2], nan_result())
+    by_key = {r.key: r for r in rows}
+    rows += _pka_rows(mol)
+    rows.append(_henry_row(mol, by_key.get("logvp"), by_key.get("logs")))
     return rows
 
 
@@ -1150,3 +1158,121 @@ def _sig(v: float) -> str:
         d = max(0, 2 - int(math.floor(math.log10(abs(v)))))
         return f"{v:,.{d}f}"
     return f"{v:.2e}"
+
+
+# --- pKa and Henry's law constant (WP-A) -------------------------------------------------------
+
+def _ml_bench(metrics: dict) -> str:
+    cv = metrics.get("random_cv") or {}
+    if not cv:
+        return ""
+    return f"RMSE {cv['rmse']:.2f}, MAE {cv['mae']:.2f}, n = {cv['n']} (5-fold CV)"
+
+
+def _pka_rows(mol) -> list[PropertyValue]:
+    """'pKa (acidic)' and 'pKa (basic)' (pKa of the conjugate acid BH+)."""
+    from rsstatchem.core.chem_draw import pka
+    names = {"acid": ("pKa (acidic)", "pka_a", "strongest acidic group"),
+             "base": ("pKa (basic)", "pka_b", "strongest basic group, pKa of BH+")}
+    try:
+        res = pka.predict(mol)
+    except Exception as exc:  # noqa: BLE001 - an estimate must never break drawing
+        return [PropertyValue(n, None, "", "pKa", 2, f"failed: {exc}", key=k)
+                for n, k, _d in names.values()]
+    rows = []
+    for kind in ("acid", "base"):
+        name, key, what = names[kind]
+        v = getattr(res, kind)
+        metrics = pka.pka_models.metrics(key)
+        bench = _ml_bench(metrics)
+        alts = []
+        if v.experimental:
+            alts.append(MethodValue("exp", "experimental", v.value, f"{v.value:.2f}",
+                                    note=v.note, default=True))
+        p = v.prediction
+        if v.source == "ML" and p is not None:
+            alts.append(MethodValue("ml", "ML", p.value, f"{p.value:.2f}", bench,
+                                    _ml_detail(p, "")[0], default=True))
+        if v.experimental:
+            rows.append(PropertyValue(name, v.value, "", f"experimental pKa ({what}): "
+                                      + pka.DATA_SOURCE, 2, short="experimental", key=key,
+                                      kind="experimental", detail="Mansouri 2019 data" +
+                                      (f"; {v.note}" if v.note != pka.DATA_SOURCE else ""),
+                                      alternatives=alts))
+        elif v.value is not None and p is not None:
+            detail, warn = _ml_detail(p, "")
+            rows.append(PropertyValue(name, v.value, "", f"ML estimate of the {what} "
+                                      f"(gradient-boosted trees on {pka.DATA_SOURCE}); "
+                                      f"groups found: {v.note}", 2, short="ML", key=key,
+                                      detail=detail, warn=warn, alternatives=alts))
+        else:
+            rows.append(PropertyValue(name, None, "", f"pKa ({what})", 2, v.note, key=key,
+                                      alternatives=alts))
+    return rows
+
+
+def _henry_row(mol, vp: PropertyValue | None, logs: PropertyValue | None) -> PropertyValue:
+    """Henry's law constant at 25 °C in Pa m3/mol: experimental, else the estimate (ML or
+    P_vap / S_w) with the lower expected error on the PHYSPROP data."""
+    from rsstatchem.core.chem_draw import henry
+    name, unit = "Henry's Law", "Pa·m³/mol"
+    try:
+        exp = henry.experimental(mol)
+        ml = henry.ml(mol)
+        if vp is not None and logs is not None and vp.value is not None and \
+                logs.value is not None:
+            ws = henry.vp_ws_estimate(mol, vp.value, logs.value,
+                                      vp.kind == "experimental" and logs.kind == "experimental")
+        else:
+            ws = henry.HenryEstimate(None, "vpws", "needs a vapour pressure and a water "
+                                     "solubility")
+    except Exception as exc:  # noqa: BLE001 - an estimate must never break drawing
+        return PropertyValue(name, None, unit, "Henry's law constant", 2, f"failed: {exc}",
+                             key="hlc")
+    vb = henry.vpws_benchmark()
+    ws_sub = vb.get("both_experimental" if ws.experimental_inputs else "estimated") or {}
+    ws_rmse = ws_sub.get("rmse")
+    ml_rmse = ml.prediction.expected_rmse if ml.prediction is not None and \
+        ml.value is not None else None
+    cands = [(r, e) for r, e in ((ml_rmse, ml), (ws_rmse, ws)) if e.value is not None]
+    cands.sort(key=lambda c: c[0] if c[0] is not None else 99.0)
+    best = cands[0][1] if cands else None
+
+    def txt(v):
+        return f"{_sig(v)} {unit}" if v else "n/a"
+    ml_bench = _ml_bench(henry.henry_models.metrics("loghl"))
+    ws_bench = (f"RMSE {ws_rmse:.2f}, MAE {ws_sub['mae']:.2f} log units, n = {ws_sub['n']}"
+                if ws_rmse is not None else "")
+    alts = []
+    if exp is not None:
+        alts.append(MethodValue("exp", "experimental", exp.value, txt(exp.value),
+                                note=exp.note, default=True))
+    ml_note = (_ml_detail(ml.prediction, "")[0].replace("expected", "log units expected")
+               if ml.value is not None else ml.note)
+    alts.append(MethodValue("ml", "ML", ml.value, txt(ml.value), ml_bench + " (log10)",
+                            ml_note, default=exp is None and best is ml))
+    alts.append(MethodValue("vpws", "P_vap / S_w", ws.value, txt(ws.value), ws_bench,
+                            ws.note, default=exp is None and best is ws))
+    if exp is not None:
+        return PropertyValue(name, exp.value, unit, "experimental Henry's law constant at "
+                             "25 °C: " + henry.DATA_SOURCE, 2, short="experimental",
+                             key="hlc", kind="experimental", detail="PHYSPROP" +
+                             (f"; {exp.note}" if exp.note != henry.DATA_SOURCE else ""),
+                             display=txt(exp.value), alternatives=alts)
+    if best is None:
+        return PropertyValue(name, None, unit, "Henry's law constant at 25 °C", 2,
+                             f"ML: {ml.note}; P_vap / S_w: {ws.note}", key="hlc",
+                             alternatives=alts)
+    if best is ml:
+        detail, warn = _ml_detail(ml.prediction, "")
+        detail = detail.replace("expected", "log units expected")
+        method = ("ML estimate of the Henry's law constant at 25 °C (gradient-boosted trees "
+                  "on " + henry.DATA_SOURCE + ")")
+        short = "ML"
+    else:
+        detail = f"{ws.note}; ±{ws_rmse:.1f} log units expected" if ws_rmse else ws.note
+        warn = bool(ws_rmse and ws_rmse > 1.0)
+        method = "Henry's law constant from vapour pressure / water solubility (25 °C)"
+        short = "P/S"
+    return PropertyValue(name, best.value, unit, method, 2, short=short, key="hlc",
+                         detail=detail, warn=warn, display=txt(best.value), alternatives=alts)
