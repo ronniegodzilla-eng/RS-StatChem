@@ -549,6 +549,9 @@ class FactorsTool(QFrame):
 
         self._point = report.default_point(space)
         numeric = [j for j, f in enumerate(space.factors) if not f.categoric]
+        if getattr(space, "combined", False):  # process factors first
+            mix = set(space.mix_idx)
+            numeric = [j for j in numeric if j not in mix] + [j for j in numeric if j in mix]
         default_axes = numeric[: n_axes] if not space.mixture else list(range(min(n_axes,
                                                                                   space.k)))
         self._timer = QTimer(self)
@@ -625,10 +628,17 @@ class FactorsTool(QFrame):
         self._update_enabled()
         self.changed.emit()
 
-    def set_active_axes(self, n: int) -> None:
+    def set_active_axes(self, n: int, prefer: list[int] | None = None) -> None:
         """Show only X1..Xn (a contour needs 2 axes, a cube 3, a perturbation plot none);
-        factors not on an axis get their slider back."""
+        factors not on an axis get their slider back. ``prefer``: the factors allowed on the
+        axes (combined designs: the components for a ternary plot, the process factors
+        otherwise); factors outside it are taken off their axis."""
         n = min(n, self.n_axes)
+        if prefer is not None:
+            allowed = set(prefer)
+            for j in range(len(self._axis_of)):
+                if j not in allowed:
+                    self._axis_of[j] = -1
         self._busy = True
         for j, box in enumerate(self.axis_boxes):
             cur = self._axis_of[j] if self._axis_of[j] is not None else -1
@@ -644,6 +654,8 @@ class FactorsTool(QFrame):
         used = {a for a in self._axis_of if a >= 0}
         # numeric factors first; categoric ones only when nothing else is left
         order = sorted(range(self.space.k), key=lambda j: self.space.factors[j].categoric)
+        if prefer is not None:
+            order = [j for j in order if j in set(prefer)]
         for a in range(n):
             if a in used:
                 continue
@@ -697,8 +709,10 @@ class FactorsTool(QFrame):
     def _set_value(self, j: int, v: float) -> None:
         self._point[j] = v
         sp = self.space
-        if sp.mixture:  # keep the blend on the mixture total: rescale the free components
-            others = [i for i in range(sp.k) if i != j]
+        mix = sp.mix_idx if hasattr(sp, "mix_idx") else (list(range(sp.k)) if sp.mixture
+                                                          else [])
+        if j in mix:  # keep the blend on the mixture total: rescale the free components
+            others = [i for i in mix if i != j]
             rest = sp.total - v
             cur = self._point[others]
             lo = sp.lower[others]
