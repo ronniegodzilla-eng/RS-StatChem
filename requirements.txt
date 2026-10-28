@@ -9,3 +9,6 @@ pyreadstat>=1.2.7
 python-docx>=1.1
 rdkit>=2024.3
 certifi>=2024.2
+# optional: automatic reaction atom mapping in Chemical Drawing (Apache-2.0); the app
+# works without it (Structure > Map Reaction Atoms is then greyed out)
+epam.indigo>=1.46

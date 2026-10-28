@@ -1,5 +1,9 @@
-"""Exports of a drawing: SVG, PNG (any dpi, transparent), PDF, clipboard (image + SMILES +
-MOL + SVG + native drawing) and the "Send to Output Viewer" section.
+"""Exports of a drawing: SVG, PNG (any dpi, transparent), TIFF / JPEG / BMP (Qt's image
+writers; JPEG and BMP on white), PDF, clipboard (image + SMILES + MOL + SVG + CDXML + CDX +
+native drawing) and the "Send to Output Viewer" section.
+
+EMF / WMF are not offered: Qt has no Windows-metafile writer, and current Office versions
+paste the SVG and PNG on the clipboard as editable or high-resolution pictures.
 
 Everything renders through :class:`~rsstatchem.ui.chem_editor.render.Builder` into a fresh
 scene without selection/hover marks, so exports match the canvas exactly.
@@ -16,11 +20,19 @@ from rsstatchem.core.chem_draw.model import Document
 from rsstatchem.ui.chem_editor.render import Builder
 
 __all__ = ["render_scene", "content_rect", "svg_text", "export_svg", "png_bytes",
-           "export_png", "export_pdf", "mime_data", "copy_to_clipboard", "output_section",
-           "NATIVE_MIME"]
+           "export_png", "export_image", "export_pdf", "mime_data", "copy_to_clipboard",
+           "output_section", "NATIVE_MIME", "CDX_MIMES", "CDXML_MIMES", "IMAGE_FORMATS"]
 
 NATIVE_MIME = "application/x-rsstatchem-drawing"
 MOL_MIME = "chemical/x-mdl-molfile"
+# ChemDraw's clipboard formats: the Windows clipboard names (Qt maps these mime types onto
+# the registered formats ChemDraw and Office use) and the plain mime types elsewhere
+CDX_MIMES = ('application/x-qt-windows-mime;value="ChemDraw Interchange Format"',
+             "chemical/x-cdx")
+CDXML_MIMES = ('application/x-qt-windows-mime;value="CDXML"', "chemical/x-cdxml")
+# format -> (Qt writer name, transparent background possible)
+IMAGE_FORMATS = {"png": ("PNG", True), "tiff": ("TIFF", True), "jpg": ("JPEG", False),
+                 "bmp": ("BMP", False)}
 
 
 def render_scene(doc: Document) -> tuple[QGraphicsScene, QRectF]:
@@ -101,6 +113,17 @@ def export_png(doc: Document, path: str, dpi: float = 300, transparent: bool = T
         raise OSError(f"Could not write {path}")
 
 
+def export_image(doc: Document, path: str, fmt: str = "png", dpi: float = 300,
+                 transparent: bool = True) -> None:
+    """Raster export in any of :data:`IMAGE_FORMATS` (JPEG / BMP are always on white)."""
+    writer, alpha = IMAGE_FORMATS[fmt]
+    img = image(doc, dpi, transparent and alpha)
+    if not alpha:
+        img = img.convertToFormat(QImage.Format.Format_RGB32)
+    if not img.save(path, writer, 95 if fmt == "jpg" else -1):
+        raise OSError(f"Could not write {path}")
+
+
 def export_pdf(doc: Document, path: str) -> None:
     scene, rect = render_scene(doc)
     writer = QPdfWriter(path)
@@ -122,6 +145,16 @@ def mime_data(doc: Document) -> QMimeData:
     md.setImageData(image(doc, 300, transparent=False))
     md.setData("image/svg+xml", QByteArray(svg_text(doc)))
     md.setData(NATIVE_MIME, QByteArray(doc.to_json().encode("utf-8")))
+    try:                                  # ChemDraw interchange (structures and graphics)
+        from rsstatchem.core.chem_draw import cdx, cdxml
+        xml = cdxml.to_cdxml(doc)
+        for m in CDXML_MIMES:
+            md.setData(m, QByteArray(xml.encode("utf-8")))
+        binary = cdx.to_cdx(doc)
+        for m in CDX_MIMES:
+            md.setData(m, QByteArray(binary))
+    except Exception:  # noqa: BLE001 - the picture and text formats are still copied
+        pass
     text = ""
     try:
         if doc.arrows and convert.split_reaction(doc).ok:
