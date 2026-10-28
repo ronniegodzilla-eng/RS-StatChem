@@ -90,6 +90,16 @@
    "java": "java version \"26.0.2\" 2026-07-21",
    "macro_sha256": "fdf245a5512797d4a388ccedfe770dd26ffaf0d696a031482d6d59b0323f51f5"
   },
+  "selection": {
+   "date": "2026-10-28",
+   "files": [
+    "profile_line.csv",
+    "profile_rect.csv",
+    "images.npz"
+   ],
+   "java": "java version \"26.0.2\" 2026-07-21",
+   "macro_sha256": "5cc30a795c0894b30ab1942c81c62e2c653e9c7f3bab74f583227c68fe125ddd"
+  },
   "thresholds": {
    "date": "2026-10-27",
    "files": [
