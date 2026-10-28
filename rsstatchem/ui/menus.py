@@ -44,6 +44,8 @@ EXTENSIONS = (
     "rsstatchem.ui.dialogs.bayes",
     "rsstatchem.ui.dialogs.correspondence",
     "rsstatchem.ui.dialogs.mds",
+    "rsstatchem.ui.dialogs.survival_param",
+    "rsstatchem.ui.dialogs.glmm",
 )
 # Cross-links: an entry of one module that should also appear in another menu.
 # (module, attribute, menu path, menu text)
@@ -157,7 +159,8 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Survival": [
         "Life Tables...", "Kaplan-Meier...", "Cox Regression...", "Cox w/ Time-Dep Cov...",
-        "Parametric Accelerated Failure Time (AFT)...", "Parametric Shared Frailty...",
+        "Parametric Accelerated Failure Time (AFT) Models...",
+        "Parametric Shared Frailty Models...",
     ],
     "Analyze/Multiple Response": ["Define Variable Sets...", "Frequencies...",
                                   "Crosstabs..."],
