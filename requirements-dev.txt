@@ -12,3 +12,5 @@ plspm>=0.5.7
 # declares pandas<3, so a plain pip install would downgrade pandas: install it separately with
 #   uv pip install --no-deps lifelines autograd autograd-gamma
 # lifelines>=0.30
+# the PDF user guide (docs/user_guide/build.py, run in CI for every release; BSD licence)
+reportlab==4.4.4

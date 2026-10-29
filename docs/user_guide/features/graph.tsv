@@ -1,0 +1,437 @@
+# Graph & Analysis (modul graph): penjelasan setiap perintah menu (mode workbook)
+File > New > Project	Menutup proyek yang sedang terbuka (dengan konfirmasi jika belum disimpan) dan memulai proyek kosong baru berisi Book1.
+File > New > Workbook	Membuat workbook baru (Book2, Book3, ...) dengan satu worksheet berkolom A(X) dan B(Y).
+File > New > Matrix	Membuat matrix book baru berisi satu matriks 32 × 32 untuk data Z pada kisi X–Y.
+File > New > Graph	Membuat jendela grafik kosong; data ditambahkan kemudian dengan Graph ▸ Add Plot to Layer.
+File > New > Notes	Membuat jendela Notes untuk catatan teks bebas yang ikut tersimpan di proyek.
+File > New > Folder	Membuat subfolder baru di Project Explorer untuk mengelompokkan jendela.
+File > New > Layout Page	Menyusun beberapa grafik proyek dalam satu halaman (misalnya A4) dengan jumlah kolom dan judul pilihan Anda, siap dicetak atau diekspor.
+File > Open	Membuka proyek RS-StatChem (.rsop) atau berkas grafik (.rsg).
+File > Recent Projects > *	Daftar proyek dan grafik yang terakhir dibuka; klik untuk membukanya lagi.
+File > Close Project	Menutup proyek aktif (ditanya dulu jika ada perubahan) dan menggantinya dengan proyek kosong.
+File > Save Project	Menyimpan seluruh proyek (workbook, matriks, grafik, catatan, folder) ke berkas .rsop.
+File > Save Project As	Menyimpan proyek dengan nama atau lokasi baru.
+File > Import > Single ASCII / CSV	Mengimpor satu berkas teks (CSV, TXT, DAT, TSV) dengan deteksi otomatis pemisah dan desimal; baris judul masuk ke Long Name.
+File > Import > Excel (XLS, XLSX)	Mengimpor satu sheet dari berkas Excel; jika ada beberapa sheet, Anda diminta memilih.
+File > Import > Import Wizard	Membuka Import Wizard: atur pemisah, baris judul (Long Name, Units, Comments), rentang baris dan kolom, pola designation, dengan pratinjau langsung.
+File > Import > Multiple ASCII	Mengimpor banyak berkas teks sekaligus, masing-masing ke workbook atau sheet tersendiri.
+File > Import > Excel (all sheets)	Mengimpor semua sheet dari satu atau beberapa berkas Excel.
+File > Import > JCAMP-DX	Mengimpor spektrum berformat JCAMP-DX (.jdx, .dx) dari instrumen spektroskopi.
+File > Import > Thermo Galactic SPC	Mengimpor spektrum berformat SPC (Thermo Galactic).
+File > Import > MATLAB	Mengimpor variabel dari berkas MATLAB (.mat).
+File > Import > HDF5 / NetCDF	Mengimpor dataset dari berkas HDF5 atau NetCDF.
+File > Import > Sound (WAV)	Mengimpor rekaman suara WAV sebagai kolom amplitudo terhadap waktu.
+File > Import > Image to Matrix	Mengimpor citra sebagai matriks nilai intensitas piksel.
+File > Export > ASCII / CSV	Menyimpan worksheet aktif sebagai CSV (koma) atau TXT (tab) dengan baris Long Name dan Units.
+File > Export > Graphs	Mengekspor grafik aktif ke PNG, TIFF, SVG, PDF, atau EPS dengan resolusi dan ukuran pilihan.
+File > Export > ASCII (options)	Mengekspor worksheet ke teks dengan pilihan pemisah, tanda desimal, baris judul yang disertakan, dan perlakuan sel yang di-mask.
+File > Export > Excel	Mengekspor worksheet aktif, seluruh workbook aktif, atau semua workbook proyek ke berkas Excel (satu sheet Excel per worksheet).
+File > Export > Report Sheet (HTML / Word)	Menyimpan report sheet aktif (hasil fit atau uji statistik) sebagai HTML atau dokumen Word, lengkap dengan tabel dan grafiknya.
+File > Export > All Graphs	Mengekspor semua grafik proyek sekaligus ke sebuah folder sebagai PNG 300 DPI.
+File > Export > All Graphs in Project	Mengekspor semua grafik proyek ke sebuah folder dengan format dan resolusi yang Anda pilih.
+File > Exit	Menutup jendela Graph & Analysis (ditanya dulu jika proyek belum disimpan).
+File > Print Graph	Mencetak halaman grafik aktif, diskalakan ke area cetak printer.
+Edit > Undo	Membatalkan perubahan terakhir pada jendela aktif (worksheet, matriks, grafik, atau catatan).
+Edit > Redo	Mengulang kembali perubahan yang dibatalkan.
+Edit > Cut	Menyalin sel terpilih ke clipboard lalu mengosongkannya.
+Edit > Copy	Menyalin sel terpilih ke clipboard; pada jendela grafik, menyalin halaman grafik sebagai gambar.
+Edit > Copy (include Long Name, Units, Comments)	Menyalin sel terpilih beserta baris Long Name, Units, dan Comments, misalnya untuk ditempel ke Excel.
+Edit > Paste	Menempel isi clipboard mulai dari sel aktif; tabel dari Excel dengan baris judul langsung terisi ke kolom.
+Edit > Clear	Mengosongkan isi sel terpilih tanpa menghapus kolomnya.
+Edit > Delete	Mengosongkan sel terpilih di worksheet, atau menghapus objek terpilih (teks, panah, plot) di grafik.
+Edit > Select All	Memilih semua sel worksheet aktif.
+Edit > Copy Page	Menyalin seluruh halaman grafik aktif ke clipboard sebagai gambar 300 DPI untuk ditempel ke Word atau PowerPoint.
+Edit > Duplicate	Membuat salinan jendela aktif (workbook, matriks, grafik, atau catatan) dengan nama baru.
+Edit > Rename Window	Mengganti nama jendela aktif; rujukan ke nama lama di grafik dan rumus ikut diperbarui.
+Edit > Refresh	Menghitung ulang semua rumus kolom F(x) dan menggambar ulang semua grafik.
+Edit > Paste Transpose	Menempel isi clipboard dengan baris dan kolom ditukar.
+View > Toolbars > Standard	Menampilkan atau menyembunyikan toolbar Standard (proyek, buka/simpan, impor, undo, panel).
+View > Toolbars > Column	Menampilkan atau menyembunyikan toolbar Column (designation, Set Column Values, statistik, fit).
+View > Toolbars > Format	Menampilkan atau menyembunyikan toolbar Format (jenis dan ukuran huruf, tebal, miring, subskrip, huruf Yunani).
+View > Toolbars > Tools	Menampilkan atau menyembunyikan toolbar Tools (pointer, zoom, pan, Data Reader, teks, panah, garis, persegi).
+View > Toolbars > 2D Graphs	Menampilkan atau menyembunyikan toolbar 2D Graphs di bagian bawah untuk membuat grafik dengan satu klik.
+View > Project Explorer	Menampilkan atau menyembunyikan panel Project Explorer (folder dan daftar jendela).
+View > Results Log	Menampilkan atau menyembunyikan Results Log berisi ringkasan teks setiap analisis.
+View > Messages Log	Menampilkan atau menyembunyikan Messages Log berisi catatan perintah, peringatan, dan galat.
+View > Object Manager - Book1	Menampilkan atau menyembunyikan Object Manager: sheet dan kolom workbook aktif, atau layer, sumbu, dan plot grafik aktif.
+View > Show Windows in Active Folder Only	Jika dicentang, hanya jendela di folder yang sedang dipilih di Project Explorer yang ditampilkan.
+View > Full Screen	Beralih antara tampilan layar penuh dan jendela biasa.
+View > Sparklines	Menambahkan baris Sparklines di header worksheet berisi grafik garis mini setiap kolom.
+View > Image Mode	Menampilkan matriks aktif sebagai citra berwarna, bukan angka (hanya aktif untuk matriks).
+View > Show X/Y	Menampilkan koordinat X dan Y di judul baris/kolom matriks, bukan nomor indeks (hanya aktif untuk matriks).
+View > Zoom In	Memperbesar tampilan halaman grafik aktif.
+View > Zoom Out	Memperkecil tampilan halaman grafik aktif.
+View > Whole Page	Menyesuaikan zoom agar seluruh halaman grafik terlihat di jendelanya.
+Plot > Basic 2D > Line	Grafik garis kolom Y terpilih terhadap kolom X di kirinya.
+Plot > Basic 2D > Scatter	Grafik titik (scatter); kolom yEr di kanan kolom Y otomatis menjadi error bar.
+Plot > Basic 2D > Line + Symbol	Grafik garis dengan simbol di setiap titik data.
+Plot > Basic 2D > Y Error	Scatter dengan error bar vertikal dari kolom yEr.
+Plot > Basic 2D > Bubble	Scatter dengan ukuran gelembung dari kolom Y berikutnya.
+Plot > Basic 2D > Color Mapped	Scatter dengan warna titik mengikuti nilai kolom lain (skala warna).
+Plot > Basic 2D > Horizontal Step	Grafik tangga: nilai Y bertahan hingga titik X berikutnya.
+Plot > Basic 2D > Spline	Garis halus (spline) yang melewati semua titik data.
+Plot > Basic 2D > Lollipop	Garis tegak dari sumbu ke setiap titik dengan simbol di ujungnya.
+Plot > Basic 2D > XY Error	Scatter dengan error bar horizontal (xEr) dan vertikal (yEr).
+Plot > Basic 2D > Error Band	Garis dengan pita berarsir selebar galat (yEr) di sekitarnya.
+Plot > Basic 2D > Bubble + Color Mapped	Scatter dengan ukuran dan warna titik dari dua kolom tambahan.
+Plot > Bar, Pie, Area > Column	Diagram batang tegak, satu seri per kolom Y.
+Plot > Bar, Pie, Area > Stacked Column	Batang tegak bertumpuk: seri-seri Y ditumpuk di atas satu sama lain.
+Plot > Bar, Pie, Area > 100% Stacked Column	Batang tegak bertumpuk yang dinormalkan menjadi 100% per kategori.
+Plot > Bar, Pie, Area > Bar	Diagram batang mendatar.
+Plot > Bar, Pie, Area > Stacked Bar	Batang mendatar bertumpuk.
+Plot > Bar, Pie, Area > 2D Pie	Diagram lingkaran dari satu kolom Y; label diambil dari kolom X atau L.
+Plot > Bar, Pie, Area > Doughnut	Diagram lingkaran berlubang di tengah (doughnut).
+Plot > Bar, Pie, Area > Area	Grafik area: daerah di bawah garis diarsir.
+Plot > Bar, Pie, Area > Stacked Area	Grafik area bertumpuk untuk beberapa seri.
+Plot > Bar, Pie, Area > 100% Stacked Bar	Batang mendatar bertumpuk yang dinormalkan menjadi 100%.
+Plot > Bar, Pie, Area > Floating Column	Batang yang mengambang dari nilai bawah ke nilai atas (dua kolom Y).
+Plot > Bar, Pie, Area > 100% Stacked Area	Area bertumpuk yang dinormalkan menjadi 100%.
+Plot > Bar, Pie, Area > Fill Area (between curves)	Mengarsir daerah di antara dua kurva.
+Plot > Multi-Panel/Axis > Double-Y	Dua seri dengan sumbu Y kiri dan kanan yang terpisah.
+Plot > Multi-Panel/Axis > Stack (multi-panel)	Setiap kolom Y di panel tersendiri yang ditumpuk vertikal dengan sumbu X bersama.
+Plot > Multi-Panel/Axis > Waterfall	Kurva-kurva yang digeser bertahap (waterfall), cocok untuk deret spektrum.
+Plot > Multi-Panel/Axis > Vertical 2 Panel	Dua panel atas-bawah untuk dua seri Y.
+Plot > Multi-Panel/Axis > Horizontal 2 Panel	Dua panel berdampingan untuk dua seri Y.
+Plot > Multi-Panel/Axis > 4 Panel	Empat panel (2 × 2), satu seri Y per panel.
+Plot > Multi-Panel/Axis > 9 Panel	Sembilan panel (3 × 3), satu seri Y per panel.
+Plot > Statistical > Box Chart	Diagram kotak (box plot) setiap kolom: median, kuartil, whisker, dan pencilan.
+Plot > Statistical > Histogram	Histogram distribusi nilai kolom terpilih.
+Plot > Statistical > Violin Plot	Plot biola: sebaran kepadatan (kernel density) setiap kolom.
+Plot > Statistical > Half Box + Data Points	Setengah box plot berdampingan dengan titik-titik data mentah.
+Plot > Statistical > Mean Bar (± SD)	Batang rata-rata setiap kolom dengan error bar ± simpangan baku.
+Plot > Statistical > Interval Plot (95% CI)	Rata-rata setiap kolom dengan selang kepercayaan 95%.
+Plot > Statistical > Histogram + Kernel Density	Histogram dengan kurva kernel density di atasnya.
+Plot > Statistical > Histogram + Rug	Histogram dengan garis-garis kecil (rug) di posisi setiap data.
+Plot > Statistical > Kernel Density	Kurva estimasi kepadatan kernel (KDE) setiap kolom.
+Plot > Statistical > Cumulative Distribution (ECDF)	Fungsi distribusi kumulatif empiris (ECDF) setiap kolom.
+Plot > Statistical > Q-Q Plot	Plot kuantil-kuantil terhadap distribusi normal untuk memeriksa normalitas.
+Plot > Statistical > Probability Plot	Plot probabilitas normal: data terurut terhadap skala probabilitas.
+Plot > Statistical > 2D Kernel Density	Peta kepadatan dua dimensi dari pasangan X–Y.
+Plot > Statistical > Scatter Matrix	Matriks scatter plot semua pasangan kolom terpilih.
+Plot > Statistical > Scatter + Marginal Histograms	Scatter X–Y dengan histogram masing-masing variabel di tepinya.
+Plot > Statistical > Bland-Altman Plot	Plot Bland-Altman: selisih dua metode terhadap rata-ratanya, dengan batas kesesuaian.
+Plot > Statistical > Pareto Chart	Diagram Pareto: batang terurut menurun dengan garis persentase kumulatif.
+Plot > Statistical > QC Chart (X-bar R)	Diagram kendali mutu X-bar dan R untuk data subgrup.
+Plot > Statistical > QC Chart (I-MR)	Diagram kendali individu dan moving range (I-MR).
+Plot > Contour > Contour - Color Fill	Kontur berwarna dari kolom X, Y, Z (di-grid otomatis) atau dari matriks yang aktif.
+Plot > Contour > Heatmap	Peta warna (heatmap) nilai Z pada kisi X–Y, dari kolom XYZ atau dari matriks yang aktif.
+Plot > 3D > 3D Scatter	Scatter tiga dimensi dari kolom X, Y, Z; seret grafik untuk memutar.
+Plot > 3D > 3D Colormap Surface	Permukaan 3D berwarna dari kolom XYZ atau dari matriks yang aktif; seret grafik untuk memutar.
+Plot > 3D > 3D Bars	Batang tiga dimensi pada posisi X–Y dengan tinggi Z.
+Plot > 3D > 3D Line / Trajectory	Garis lintasan dalam ruang tiga dimensi.
+Plot > 3D > 3D Waterfall	Kurva-kurva berderet dalam tampilan tiga dimensi.
+Plot > Specialized > Polar θ(X) r(Y)	Grafik polar: X sebagai sudut θ dan Y sebagai jari-jari r.
+Plot > Specialized > Ternary	Diagram terner untuk komposisi tiga komponen (X, Y, Z).
+Plot > Specialized > Vector XYAM	Medan vektor: posisi X, Y dengan sudut (A) dan panjang (M) dari kolom berikutnya.
+Plot > Specialized > Radar / Spider	Diagram radar (spider) untuk membandingkan beberapa variabel.
+Plot > Specialized > Wind Rose	Diagram mawar angin: frekuensi menurut arah dan kelas besaran.
+Plot > Plot Setup	Membuka Plot Setup untuk memilih jenis plot dan kolom setiap peran (X, Y, galat, label) secara manual.
+Column > Set As > X	Menjadikan kolom terpilih sebagai X (variabel bebas, sumbu mendatar).
+Column > Set As > Y	Menjadikan kolom terpilih sebagai Y; setiap Y diplot terhadap kolom X terdekat di kirinya.
+Column > Set As > Z	Menjadikan kolom terpilih sebagai Z untuk data XYZ (kontur, 3D).
+Column > Set As > X Error	Menjadikan kolom terpilih sebagai galat X (xEr) untuk error bar horizontal.
+Column > Set As > Y Error	Menjadikan kolom terpilih sebagai galat Y (yEr) untuk error bar vertikal dan pembobotan fit.
+Column > Set As > Label	Menjadikan kolom terpilih sebagai label (L), misalnya nama titik atau kategori.
+Column > Set As > Disregard	Menandai kolom agar diabaikan saat membuat grafik (N).
+Column > Set Column Values	Mengisi kolom dengan rumus, misalnya col(A)^2 atau sin(i/10); rumus disimpan di baris F(x)= dan dihitung ulang otomatis.
+Column > Fill Column With > Row Numbers	Mengisi kolom terpilih dengan nomor baris 1, 2, 3, ...
+Column > Fill Column With > Uniform Random Numbers	Mengisi kolom terpilih dengan bilangan acak seragam antara 0 dan 1.
+Column > Fill Column With > Normal Random Numbers	Mengisi kolom terpilih dengan bilangan acak normal (rata-rata 0, SD 1).
+Column > Add New Columns	Menambah satu kolom Y baru di ujung kanan worksheet.
+Column > Add New Columns (N)	Menambah sejumlah kolom Y baru sekaligus.
+Column > Insert	Menyisipkan kolom Y baru di posisi kolom terpilih.
+Column > Delete Columns	Menghapus kolom terpilih beserta isinya.
+Column > Move Column > Move Left	Memindahkan kolom terpilih satu posisi ke kiri.
+Column > Move Column > Move Right	Memindahkan kolom terpilih satu posisi ke kanan.
+Column > Sort Column > Ascending	Mengurutkan isi kolom terpilih dari kecil ke besar (kolom lain tidak ikut).
+Column > Sort Column > Descending	Mengurutkan isi kolom terpilih dari besar ke kecil (kolom lain tidak ikut).
+Column > Column Properties	Mengatur nama pendek, Long Name, Units, Comments, designation, lebar, dan rumus F(x) kolom.
+Column > Mask > Mask	Me-mask sel terpilih (merah): dikecualikan dari grafik, fit, dan analisis tanpa dihapus.
+Column > Mask > Unmask	Membuka mask sel terpilih.
+Column > Mask > Swap Mask	Membalik status mask sel terpilih.
+Column > Mask > Mask by Condition	Me-mask atau membuka mask sel suatu kolom yang memenuhi syarat, misalnya B > 5.
+Column > Mask > Unmask Selected Columns	Membuka semua mask di kolom terpilih.
+Column > Mask > Unmask All	Membuka semua mask di worksheet aktif.
+Column > Simple Column Math	Menghitung kolom baru dari dua kolom atau kolom dan konstanta (+, −, ×, ÷, pangkat).
+Worksheet > Clear Worksheet	Mengosongkan semua sel dan rumus worksheet aktif; kolom dan label tetap ada.
+Worksheet > Set Number of Rows	Mengatur jumlah baris worksheet aktif.
+Worksheet > Sort Worksheet > Ascending	Mengurutkan semua baris worksheet menaik menurut kolom terpilih (atau kolom X).
+Worksheet > Sort Worksheet > Descending	Mengurutkan semua baris worksheet menurun menurut kolom terpilih (atau kolom X).
+Worksheet > Transpose	Menukar baris dan kolom worksheet aktif.
+Worksheet > Convert to Matrix > Direct	Mengubah blok angka worksheet langsung menjadi matriks (opsional: kolom pertama berisi Y, Long Name berisi X).
+Worksheet > Convert to Matrix > XYZ Gridding	Mengubah kolom X, Y, Z (teratur maupun tersebar) menjadi matriks dengan metode gridding pilihan.
+Worksheet > Add Sheet	Menambah worksheet baru ke workbook aktif.
+Worksheet > Duplicate Sheet	Membuat salinan worksheet aktif di workbook yang sama.
+Worksheet > Rename Sheet	Mengganti nama worksheet aktif (juga dengan klik dua kali pada tab).
+Worksheet > Delete Sheet	Menghapus worksheet aktif dari workbook.
+Worksheet > Sort Worksheet (Nested)	Mengurutkan baris menurut hingga tiga kunci kolom, masing-masing menaik atau menurun.
+Worksheet > Worksheet Query	Memilih baris yang memenuhi syarat (misalnya A > 0 and B < 5) untuk diekstrak ke sheet baru atau di-mask.
+Worksheet > Split Worksheet	Memecah worksheet menjadi beberapa sheet menurut nilai suatu kolom atau per sejumlah baris.
+Worksheet > Stack Columns	Menumpuk beberapa kolom menjadi satu kolom data plus kolom penanda asal (format long).
+Worksheet > Unstack Columns	Kebalikan Stack: memecah satu kolom data menjadi satu kolom per grup.
+Worksheet > Pivot Table	Membuat tabel pivot dari kolom baris, kolom kolom, dan data dengan agregasi (rata-rata, jumlah, dll.).
+Worksheet > Reduce > Reduce Rows	Mengurangi baris: menyimpan satu dari setiap N baris atau menggabungkannya (rata-rata, jumlah, min, maks).
+Worksheet > Reduce > Reduce Duplicate X	Menggabungkan baris yang nilai X-nya sama; Y digabung dengan rata-rata atau agregasi lain.
+Worksheet > Reduce > Reduce to Evenly Spaced X	Meringkas data menjadi titik-titik X berjarak sama dengan nilai Y per interval.
+Worksheet > Remove Duplicate Rows	Menghapus baris yang isinya kembar pada kolom pembanding yang dipilih.
+Worksheet > Remove Rows with Missing Values	Menghapus baris yang berisi sel kosong (salah satu atau semuanya).
+Analysis > Mathematics > Differentiate	Menghitung turunan (orde 1 atau lebih) data Y terhadap X ke kolom baru.
+Analysis > Mathematics > Integrate	Menghitung integral kumulatif dan luas total di bawah kurva dengan baseline pilihan.
+Analysis > Mathematics > Normalize Columns	Menormalkan data: bagi maksimum, skala [0, 1], z-score, luas = 1, bagi jumlah, atau bagi nilai tertentu.
+Analysis > Mathematics > Interpolate/Extrapolate	Menginterpolasi kurva ke titik-titik X baru (linier, cubic spline, Akima, PCHIP), opsional dengan ekstrapolasi.
+Analysis > Mathematics > Interpolate/Extrapolate Y from X	Menghitung nilai Y pada nilai-nilai X dari kolom lain melalui interpolasi.
+Analysis > Mathematics > XYZ Interpolation (2D)	Menginterpolasi data XYZ tersebar ke kisi teratur (matriks) dengan triangulasi, spline, atau RBF.
+Analysis > Mathematics > 3D Interpolation	Menginterpolasi nilai V dari data X, Y, Z ke titik-titik target.
+Analysis > Mathematics > Average Multiple Curves	Merata-ratakan beberapa kurva pada sumbu X bersama (dengan interpolasi).
+Analysis > Mathematics > Simple Curve Math	Operasi aritmetika antara dua kurva (diinterpolasi ke X yang sama) atau kurva dan konstanta.
+Analysis > Mathematics > Simple Column Math	Menghitung kolom baru dari dua kolom atau kolom dan konstanta (+, −, ×, ÷, pangkat).
+Analysis > Mathematics > Subtract Reference Data	Mengurangkan kurva referensi (misalnya blanko) dari kurva data, dengan interpolasi.
+Analysis > Mathematics > Subtract Straight Line	Mengurangkan garis lurus (melalui titik ujung atau dua titik pilihan) dari data.
+Analysis > Mathematics > Vertical Translate	Menggeser kurva secara vertikal dengan offset atau ke nilai referensi (min, maks, titik awal/akhir, rata-rata).
+Analysis > Mathematics > Horizontal Translate	Menggeser kurva secara horizontal dengan offset atau ke nilai referensi.
+Analysis > Mathematics > Polygon Area	Menghitung luas poligon tertutup yang dibentuk titik-titik X–Y.
+Analysis > Mathematics > Set Operations	Operasi himpunan antara dua kolom: gabungan, irisan, selisih, atau selisih simetris.
+Analysis > Fitting > Linear Fit	Regresi linier y = a + bx dengan report lengkap (parameter, statistik, ANOVA, residual) dan garis fit di grafik.
+Analysis > Fitting > Polynomial Fit	Regresi polinomial orde 2 sampai 9 dengan report dan kurva fit.
+Analysis > Fitting > Nonlinear Curve Fit	Fit nonlinier (NLFit) dengan fungsi dari pustaka atau persamaan buatan sendiri; nilai awal, parameter tetap, dan batas bisa diatur.
+Analysis > Fitting > Nonlinear Curve Fit (Multiple Data, Global, Constraints)	NLFit lanjutan: fit beberapa dataset sekaligus (independen, global dengan parameter bersama, atau replika) dengan constraint dan pilihan algoritma.
+Analysis > Fitting > Multiple Linear Regression	Regresi linier berganda satu kolom Y terhadap beberapa kolom X, dengan atau tanpa intersep.
+Analysis > Fitting > Sigmoidal Fit (Boltzmann)	Fit kurva sigmoid: Boltzmann, Logistic, DoseResp, Hill, Gompertz, Richards, dan lainnya.
+Analysis > Fitting > Fit Linear with X Error (York)	Regresi linier York yang memperhitungkan galat X dan Y (kolom xEr dan yEr atau SD tetap).
+Analysis > Fitting > Orthogonal Distance Regression	Fit ODR: meminimalkan jarak tegak lurus ke kurva bila X dan Y sama-sama mengandung galat.
+Analysis > Fitting > Implicit Fit (circle, ellipse, f(x,y)=0)	Fit fungsi implisit seperti lingkaran, elips, atau persamaan f(x, y) = 0 buatan sendiri.
+Analysis > Fitting > Surface Fit (XYZ or Matrix)	Fit permukaan z = f(x, y) (bidang, Gauss2D, polinomial, atau persamaan sendiri) dari kolom XYZ atau matriks.
+Analysis > Fitting > Compare Models	Membandingkan dua model pada data yang sama dengan uji F, AIC/AICc, dan BIC.
+Analysis > Fitting > Compare Datasets	Menguji apakah beberapa dataset bisa dijelaskan oleh satu set parameter yang sama.
+Analysis > Fitting > Rank Models	Mencoba banyak fungsi (atau satu kategori) pada data lalu mengurutkannya menurut kriteria seperti AICc.
+Analysis > Fitting > Simulate Curve	Membuat kurva dari fungsi dan nilai parameter pada rentang X tertentu ke workbook baru.
+Analysis > Fitting > Simulate Surface	Membuat permukaan dari fungsi z = f(x, y) dan parameternya ke matriks baru.
+Analysis > Fitting > Calibration Curve (LOD/LOQ)	Kurva kalibrasi lengkap: fit (berbobot), LOD dan LOQ, serta konsentrasi sampel tak diketahui dari responsnya.
+Analysis > Fitting > Quick Fit Gadget (graph region)	Seret daerah pada grafik aktif; fungsi pilihan langsung di-fit pada titik di dalam daerah itu.
+Analysis > Signal Processing > Smoothing	Penghalusan cepat: Savitzky-Golay, Adjacent-Averaging, Percentile, FFT low-pass, atau LOWESS.
+Analysis > Signal Processing > FFT	Transformasi Fourier cepat dari sinyal dengan pilihan jendela (window), menghasilkan spektrum frekuensi.
+Analysis > Signal Processing > Smoothing (LOESS, Binomial, SG...)	Penghalusan lengkap: LOESS, LOWESS, Savitzky-Golay (dengan turunan), Binomial, Adjacent-Averaging berbobot, dan Percentile.
+Analysis > Signal Processing > FFT > FFT	FFT lengkap: jendela, spektrum satu/dua sisi, zero-padding, detrend, dan keluaran Re, Im, amplitudo, fase, PSD, atau dB.
+Analysis > Signal Processing > FFT > IFFT	Transformasi Fourier balik dari kolom Re (dan Im) kembali ke domain waktu.
+Analysis > Signal Processing > FFT > FFT Filters	Filter domain frekuensi: low-pass, high-pass, band-pass, band-stop, atau ambang amplitudo.
+Analysis > Signal Processing > FFT > STFT	Short-Time Fourier Transform: spektrum yang berubah terhadap waktu (spektrogram) ke matriks.
+Analysis > Signal Processing > IIR Filter	Merancang dan menerapkan filter IIR (Butterworth, Chebyshev, Elliptic, dll.) dengan opsi zero-phase dan respons frekuensi.
+Analysis > Signal Processing > Convolution	Konvolusi dua sinyal (linier atau sirkular).
+Analysis > Signal Processing > Deconvolution	Dekonvolusi: memisahkan sinyal dari fungsi respons, opsional dengan regularisasi.
+Analysis > Signal Processing > Correlation	Korelasi silang dua sinyal, atau autokorelasi satu sinyal.
+Analysis > Signal Processing > Coherence	Koherensi dua sinyal sebagai fungsi frekuensi.
+Analysis > Signal Processing > Hilbert Transform	Transformasi Hilbert, selubung (envelope), dan fase sesaat sinyal.
+Analysis > Signal Processing > Envelope	Menghitung selubung (envelope) sinyal melalui transformasi Hilbert.
+Analysis > Signal Processing > Decimation	Mengurangi laju sampel dengan faktor tertentu disertai filter anti-aliasing.
+Analysis > Signal Processing > Wavelet > Continuous Wavelet	Transformasi wavelet kontinu (CWT) ke matriks skala-waktu.
+Analysis > Signal Processing > Wavelet > Decompose (DWT)	Dekomposisi wavelet diskret satu tingkat menjadi koefisien aproksimasi dan detail.
+Analysis > Signal Processing > Wavelet > Multi-Scale DWT	Dekomposisi wavelet diskret bertingkat (multi-skala).
+Analysis > Signal Processing > Wavelet > Denoise	Menghilangkan derau dengan ambang (threshold) koefisien wavelet.
+Analysis > Signal Processing > Wavelet > Smooth	Menghaluskan sinyal dengan membuang tingkat-tingkat detail wavelet.
+Analysis > Peaks and Baseline > Baseline (create and subtract)	Membuat baseline (polinomial iteratif atau Asymmetric Least Squares) lalu mengurangkannya dari data.
+Analysis > Peaks and Baseline > Find Peaks	Mencari puncak (positif atau negatif) dengan prominensi minimum; posisi dan tinggi dicatat di workbook.
+Analysis > Peaks and Baseline > Multiple Peak Fit	Fit beberapa puncak sekaligus dengan bentuk Gaussian, Lorentzian, atau Voigt plus baseline.
+Analysis > Peaks and Baseline > Peak Analyzer	Wizard analisis puncak bertahap: baseline, cari puncak, integrasi, atau fit puncak, dengan pratinjau dan report.
+Analysis > Peaks and Baseline > Quick Peaks Gadget (graph region)	Seret daerah pada grafik; puncak di dalamnya dicari dan diintegrasi di atas baseline garis lurus.
+Analysis > Peaks and Baseline > Quick Peaks (find and integrate)	Mencari dan mengintegrasi semua puncak (maksimum lokal di atas 5% tinggi) tanpa dialog.
+Analysis > Peaks and Baseline > Batch Peak Analysis	Menerapkan satu pengaturan Peak Analyzer ke setiap kolom Y di worksheet aktif.
+Analysis > Spectroscopy > Peak Deconvolution	Membuka Peak Analyzer langsung pada tujuan fit puncak untuk memisahkan pita yang tumpang tindih.
+Analysis > Spectroscopy > Unit Conversion (nm, cm⁻¹, eV)	Mengonversi sumbu X spektrum antara nm, cm⁻¹, eV, dan satuan lain.
+Analysis > Spectroscopy > Tauc Plot (Band Gap)	Membuat plot Tauc dari spektrum serapan dan menaksir celah pita (band gap) dari bagian liniernya.
+Analysis > Spectroscopy > Kubelka-Munk	Mengubah reflektansi menjadi fungsi Kubelka-Munk F(R) = (1 − R)²/2R.
+Analysis > Spectroscopy > Absorbance ↔ Transmittance	Mengonversi absorbansi menjadi transmitansi atau sebaliknya.
+Statistics > Descriptive Statistics > Statistics on Columns	Statistik deskriptif setiap kolom (N, rata-rata, SD, SE, min, maks, median, kuartil, dll.) dalam report sheet.
+Statistics > Descriptive Statistics > Statistics on Rows	Statistik setiap baris dari kolom-kolom terpilih, ditambahkan sebagai kolom baru di worksheet.
+Statistics > Descriptive Statistics > Frequency Counts	Tabel frekuensi: pusat bin, cacah, frekuensi relatif, dan kumulatif di sheet baru.
+Statistics > Descriptive Statistics > Correlation Coefficient	Koefisien korelasi Pearson, Spearman, atau Kendall antarkolom beserta nilai p.
+Statistics > Descriptive Statistics > Normality Test	Uji normalitas (Shapiro-Wilk, Kolmogorov-Smirnov, Lilliefors, Anderson-Darling, dan lainnya).
+Statistics > Descriptive Statistics > Distribution Fit	Mencocokkan data dengan distribusi teoretis (normal, lognormal, Weibull, dll.) dan menguji kecocokannya.
+Statistics > Descriptive Statistics > Partial Correlation	Korelasi parsial antarvariabel dengan mengendalikan variabel lain.
+Statistics > Descriptive Statistics > Cross Tabulation (Chi-Square)	Tabulasi silang dua variabel kategori dengan uji chi-kuadrat.
+Statistics > Descriptive Statistics > Grubbs Test	Uji Grubbs untuk mendeteksi pencilan (outlier) dalam data berdistribusi normal.
+Statistics > Descriptive Statistics > Dixon's Q Test	Uji Q Dixon untuk pencilan pada sampel kecil.
+Statistics > Hypothesis Testing > One-Sample t-Test	Menguji apakah rata-rata satu sampel berbeda dari nilai acuan.
+Statistics > Hypothesis Testing > Two-Sample t-Test	Membandingkan rata-rata dua sampel independen (varians sama atau Welch).
+Statistics > Hypothesis Testing > Pair-Sample t-Test	Membandingkan rata-rata dua pengukuran berpasangan.
+Statistics > Hypothesis Testing > One-Sample Test for Variance	Menguji varians satu sampel terhadap nilai acuan (uji chi-kuadrat).
+Statistics > Hypothesis Testing > Two-Sample Test for Variance	Membandingkan varians dua sampel (uji F).
+Statistics > Hypothesis Testing > Tests for Equal Variance	Uji kesamaan varians beberapa kelompok (Levene, Brown-Forsythe, Bartlett).
+Statistics > Hypothesis Testing > One-Sample Test for Proportion	Menguji proporsi satu sampel terhadap nilai acuan, dari data atau ringkasan.
+Statistics > Hypothesis Testing > Two-Sample Test for Proportions	Membandingkan proporsi dua sampel.
+Statistics > ANOVA > One-Way ANOVA	ANOVA satu faktor dengan uji lanjut perbandingan rata-rata (Tukey, Bonferroni, Dunnett, dll.).
+Statistics > ANOVA > Two-Way ANOVA	ANOVA dua faktor (seimbang atau tidak) dengan interaksi dan perbandingan rata-rata.
+Statistics > ANOVA > Three-Way ANOVA	ANOVA tiga faktor dengan interaksinya.
+Statistics > ANOVA > One-Way Repeated Measures ANOVA	ANOVA pengukuran berulang satu faktor (subjek yang sama diukur beberapa kali).
+Statistics > ANOVA > Two-Way Repeated Measures ANOVA	ANOVA pengukuran berulang dua faktor.
+Statistics > ANOVA > One-Way MANOVA	MANOVA satu faktor untuk beberapa variabel respons sekaligus.
+Statistics > Nonparametric Tests > Mann-Whitney Test	Uji Mann-Whitney U: alternatif nonparametrik t-test dua sampel independen.
+Statistics > Nonparametric Tests > Paired Sample Wilcoxon Signed Rank Test	Uji peringkat bertanda Wilcoxon untuk dua sampel berpasangan.
+Statistics > Nonparametric Tests > Kruskal-Wallis ANOVA	Uji Kruskal-Wallis: alternatif nonparametrik ANOVA satu faktor.
+Statistics > Nonparametric Tests > Friedman ANOVA	Uji Friedman untuk pengukuran berulang (blok).
+Statistics > Nonparametric Tests > One-Sample Wilcoxon Signed Rank Test	Uji Wilcoxon satu sampel terhadap median acuan.
+Statistics > Nonparametric Tests > Paired Sample Sign Test	Uji tanda untuk dua sampel berpasangan.
+Statistics > Nonparametric Tests > Two-Sample Kolmogorov-Smirnov Test	Membandingkan distribusi dua sampel dengan uji Kolmogorov-Smirnov.
+Statistics > Nonparametric Tests > Mood's Median Test	Uji median Mood untuk dua kelompok atau lebih.
+Statistics > Multivariate Analysis > Principal Component Analysis	Analisis komponen utama (PCA): eigenvalue, loading, skor, scree plot, dan biplot.
+Statistics > Multivariate Analysis > K-Means Cluster Analysis	Pengelompokan K-Means ke sejumlah klaster yang Anda tentukan.
+Statistics > Multivariate Analysis > Hierarchical Cluster Analysis	Klaster hierarkis dengan dendrogram (pilihan jarak dan metode penggabungan).
+Statistics > Multivariate Analysis > Discriminant Analysis	Analisis diskriminan untuk mengklasifikasikan pengamatan ke dalam grup yang diketahui.
+Statistics > Multivariate Analysis > Partial Least Squares	Regresi Partial Least Squares (PLS) untuk banyak prediktor yang saling berkorelasi, misalnya data spektrum.
+Statistics > Survival Analysis > Kaplan-Meier Estimator	Kurva kesintasan Kaplan-Meier dengan uji log-rank antar kelompok.
+Statistics > Survival Analysis > Cox Proportional Hazards Model	Model regresi Cox proportional hazards untuk data waktu-kejadian.
+Statistics > Survival Analysis > Weibull Fit Model	Fit distribusi Weibull pada data waktu-kejadian (dengan sensor).
+Statistics > ROC Curve > ROC Curve	Kurva ROC dengan luas di bawah kurva (AUC) untuk menilai uji diagnostik.
+Statistics > Power and Sample Size > One-Sample t-Test	Menghitung power atau ukuran sampel untuk t-test satu sampel.
+Statistics > Power and Sample Size > Two-Sample t-Test	Menghitung power atau ukuran sampel untuk t-test dua sampel.
+Statistics > Power and Sample Size > Paired-Sample t-Test	Menghitung power atau ukuran sampel untuk t-test berpasangan.
+Statistics > Power and Sample Size > One Proportion Test	Menghitung power atau ukuran sampel untuk uji satu proporsi.
+Statistics > Power and Sample Size > Two Proportions Test	Menghitung power atau ukuran sampel untuk uji dua proporsi.
+Statistics > Power and Sample Size > One Variance Test	Menghitung power atau ukuran sampel untuk uji satu varians.
+Statistics > Power and Sample Size > Two Variances Test	Menghitung power atau ukuran sampel untuk uji dua varians.
+Statistics > Power and Sample Size > One-Way ANOVA	Menghitung power atau ukuran sampel untuk ANOVA satu faktor.
+Tools > Options	Pengaturan modul: jumlah baris worksheet baru dan tampilan jendela per folder.
+Tools > Linear Fit	Jalan pintas ke dialog Linear Fit (sama dengan Analysis ▸ Fitting ▸ Linear Fit).
+Tools > Polynomial Fit	Jalan pintas ke dialog Polynomial Fit.
+Tools > Smoothing	Jalan pintas ke dialog Smoothing cepat.
+Tools > Fitting Function Organizer	Mengelola pustaka fungsi fitting: melihat rumus fungsi bawaan dan menambah, mengubah, atau menghapus fungsi buatan sendiri.
+Tools > Digitizer	Mengambil data dari gambar grafik (misalnya dari artikel): kalibrasi sumbu lalu klik titik-titiknya ke worksheet.
+Format > Column Properties	Membuka Column Properties kolom terpilih (nama, Long Name, Units, designation, lebar, rumus).
+Format > Worksheet Rows	Mengatur jumlah baris worksheet aktif.
+Format > Autofit Column Widths	Menyesuaikan lebar semua kolom dengan isinya.
+Window > Cascade	Menyusun jendela-jendela di workspace secara bertumpuk miring.
+Window > Tile	Menyusun jendela-jendela berdampingan memenuhi workspace.
+Window > Arrange Icons	Merapikan jendela yang sedang diminimalkan.
+Window > Refresh	Menghitung ulang rumus dan menggambar ulang semua grafik (sama dengan Edit ▸ Refresh).
+Window > Duplicate	Membuat salinan jendela aktif (sama dengan Edit ▸ Duplicate).
+Window > *	Daftar semua jendela proyek; klik untuk mengaktifkannya (jendela aktif bertanda centang).
+Window > Modules > Module Launcher	Kembali ke Module Launcher untuk memilih modul lain.
+Window > Modules > New Statistics Window	Membuka jendela baru modul Statistics.
+Window > Modules > New RSM / DOE Window	Membuka jendela baru modul RSM / DOE.
+Window > Modules > New Graph & Analysis Window	Membuka jendela baru modul Graph & Analysis dengan proyek terpisah.
+Window > Modules > New Chemical Drawing Window	Membuka jendela baru modul Chemical Drawing.
+Window > Modules > New Image Analysis Window	Membuka jendela baru modul Image Analysis.
+Help > Getting Started	Membuka catatan Getting Started berisi ringkasan langkah kerja dan pintasan keyboard modul ini.
+Help > Check for Updates	Memeriksa apakah tersedia versi RS-StatChem yang lebih baru.
+Help > About RS-StatChem	Menampilkan versi, hak cipta, dan lisensi aplikasi.
+
+# ---- Graph window active (menu saat jendela grafik aktif)
+View > Object Manager - Graph1	Menampilkan atau menyembunyikan Object Manager berisi layer, sumbu, plot, legenda, dan anotasi grafik aktif; centang untuk menampilkan atau menyembunyikan objek.
+Graph > Add Plot to Layer	Menambahkan kolom dari workbook mana pun ke layer aktif grafik, dengan jenis plot dan rentang baris pilihan.
+Graph > Rescale to Show All	Mengatur ulang rentang sumbu agar semua data di layer aktif terlihat.
+Graph > New Layer (Axes) > New Layer Below (stack)	Menambah layer (panel sumbu) baru di bawah layer yang ada.
+Graph > New Layer (Axes) > New Layer Right (side by side)	Menambah layer baru di sebelah kanan layer yang ada.
+Graph > New Layer (Axes) > Inset Layer	Menambah layer kecil (inset) di dalam layer aktif, misalnya untuk memperbesar sebagian data.
+Graph > Show Right Y Axis	Menampilkan atau menyembunyikan sumbu Y kanan pada layer aktif.
+Graph > Remove Layer	Menghapus layer aktif beserta plotnya.
+Graph > Legend	Menampilkan atau menyembunyikan legenda layer aktif.
+Graph > Layer Management	Mengatur layer: urutan, tambah/hapus, susunan kisi baris × kolom dengan jarak, tautan rentang sumbu antarlayer, dan posisi inset.
+Graph > Panel Layout > 2 Panels Vertical	Menyusun grafik menjadi 2 panel atas-bawah; plot-plot dalam satu layer dibagi ke panel-panel itu.
+Graph > Panel Layout > 2 Panels Horizontal	Menyusun grafik menjadi 2 panel berdampingan.
+Graph > Panel Layout > 4 Panels (2 × 2)	Menyusun grafik menjadi 4 panel (2 baris × 2 kolom).
+Graph > Panel Layout > 6 Panels (2 × 3)	Menyusun grafik menjadi 6 panel (2 baris × 3 kolom).
+Graph > Panel Layout > 9 Panels (3 × 3)	Menyusun grafik menjadi 9 panel (3 baris × 3 kolom).
+Graph > Merge Graph Windows	Menggabungkan beberapa jendela grafik pilihan menjadi satu grafik berpanel.
+Graph > Extract Layers to Graphs	Memecah setiap layer grafik aktif menjadi jendela grafik tersendiri.
+Graph > Exchange X-Y Axes	Menukar sumbu X dan Y layer aktif (plot diputar menjadi tegak/mendatar).
+Graph > Axis Scale > X Axis > Linear	Skala linier untuk sumbu X.
+Graph > Axis Scale > X Axis > Log10	Skala logaritma basis 10 untuk sumbu X.
+Graph > Axis Scale > X Axis > Log2	Skala logaritma basis 2 untuk sumbu X.
+Graph > Axis Scale > X Axis > Ln	Skala logaritma natural untuk sumbu X.
+Graph > Axis Scale > X Axis > Probability	Skala probabilitas (normal) untuk sumbu X; nilai dalam persen.
+Graph > Axis Scale > X Axis > Probit	Skala probit untuk sumbu X: jarak sama dengan skala probabilitas, tetapi angka sumbu dalam satuan probit (5 = 50%).
+Graph > Axis Scale > X Axis > Logit	Skala logit ln(p/(100 − p)) untuk sumbu X; nilai dalam persen.
+Graph > Axis Scale > X Axis > Reciprocal	Skala kebalikan (1/x) untuk sumbu X, misalnya untuk plot Arrhenius.
+Graph > Axis Scale > X Axis > Offset Reciprocal	Skala kebalikan dengan offset, 1/(x + offset), misalnya 1/(T + 273,15) untuk suhu dalam °C.
+Graph > Axis Scale > X Axis > Double Log Reciprocal (Weibull)	Skala ln(−ln(1 − p)) untuk sumbu X (p dalam persen), dipakai pada plot Weibull.
+Graph > Axis Scale > X Axis > Symmetric Log	Skala log simetris untuk sumbu X: logaritmik untuk nilai besar, linier di sekitar nol, sehingga nilai negatif tetap bisa ditampilkan.
+Graph > Axis Scale > Y Axis > Linear	Skala linier untuk sumbu Y.
+Graph > Axis Scale > Y Axis > Log10	Skala logaritma basis 10 untuk sumbu Y.
+Graph > Axis Scale > Y Axis > Log2	Skala logaritma basis 2 untuk sumbu Y.
+Graph > Axis Scale > Y Axis > Ln	Skala logaritma natural untuk sumbu Y.
+Graph > Axis Scale > Y Axis > Probability	Skala probabilitas (normal) untuk sumbu Y; nilai dalam persen.
+Graph > Axis Scale > Y Axis > Probit	Skala probit untuk sumbu Y: jarak sama dengan skala probabilitas, tetapi angka sumbu dalam satuan probit (5 = 50%).
+Graph > Axis Scale > Y Axis > Logit	Skala logit ln(p/(100 − p)) untuk sumbu Y; nilai dalam persen.
+Graph > Axis Scale > Y Axis > Reciprocal	Skala kebalikan (1/y) untuk sumbu Y.
+Graph > Axis Scale > Y Axis > Offset Reciprocal	Skala kebalikan dengan offset, 1/(y + offset), untuk sumbu Y.
+Graph > Axis Scale > Y Axis > Double Log Reciprocal (Weibull)	Skala ln(−ln(1 − p)) untuk sumbu Y (p dalam persen), dipakai pada plot Weibull.
+Graph > Axis Scale > Y Axis > Symmetric Log	Skala log simetris untuk sumbu Y: logaritmik untuk nilai besar, linier di sekitar nol.
+Graph > Axis Breaks	Memotong sumbu (axis break) pada rentang yang tidak berisi data, misalnya 20–80, agar dua kelompok data terlihat jelas.
+Graph > Top Axis Linked by Formula > Arrhenius: T (°C) on top of 1000/T (K⁻¹)	Menambahkan sumbu atas berskala suhu °C untuk sumbu bawah 1000/T (K⁻¹).
+Graph > Top Axis Linked by Formula > Arrhenius: 1000/T (K⁻¹) on top of T (°C)	Menambahkan sumbu atas 1000/T (K⁻¹) untuk sumbu bawah suhu °C.
+Graph > Top Axis Linked by Formula > Wavelength (nm) on top of wavenumber (cm⁻¹)	Menambahkan sumbu atas panjang gelombang (nm) untuk sumbu bawah bilangan gelombang (cm⁻¹).
+Graph > Top Axis Linked by Formula > Wavenumber (cm⁻¹) on top of wavelength (nm)	Menambahkan sumbu atas bilangan gelombang (cm⁻¹) untuk sumbu bawah panjang gelombang (nm).
+Graph > Top Axis Linked by Formula > Energy (eV) on top of wavelength (nm)	Menambahkan sumbu atas energi foton (eV) untuk sumbu bawah panjang gelombang (nm).
+Graph > Top Axis Linked by Formula > Same scale (mirror with labels)	Menambahkan sumbu atas berskala sama dengan sumbu bawah, lengkap dengan angka.
+Graph > Top Axis Linked by Formula > Custom Formula	Menambahkan sumbu atas dengan rumus sendiri dari X bawah, misalnya 1000/(x+273.15) atau 1E7/x.
+Graph > Top Axis Linked by Formula > Remove Top Axis	Menghapus sumbu atas yang ditautkan dengan rumus.
+Graph > Reference Lines > Add Reference Line / Range	Menambahkan garis acuan mendatar atau tegak, atau daerah berarsir, pada nilai tertentu atau pada rata-rata, median, rata-rata ± k·SD/SE, atau selang kepercayaan 95% suatu plot.
+Graph > Reference Lines > Y Mean of Plot	Menambahkan garis mendatar pada rata-rata Y plot terpilih.
+Graph > Reference Lines > Y Mean ± 1 SD (shaded)	Menambahkan pita berarsir selebar rata-rata Y ± 1 SD plot terpilih.
+Graph > Reference Lines > Remove All Reference Lines	Menghapus semua garis acuan di layer aktif.
+Graph > Add Error Bars	Menambahkan error bar ke plot: persen Y, konstanta, atau SD/SE data Y.
+Graph > Add Function Plot	Menambahkan kurva dari rumus y = f(x), misalnya sin(x), pada rentang X tertentu.
+Graph > Copy Format	Menyalin format (warna, simbol, garis, atau gaya layer) plot terpilih atau layer aktif.
+Graph > Paste Format	Menerapkan format yang disalin dengan Copy Format ke plot atau layer lain.
+Graph > Gadgets > Statistics	Seret daerah (ROI) pada grafik untuk melihat statistik titik di dalamnya (N, rata-rata, SD, SE, min, maks beserta posisi X-nya, median).
+Graph > Gadgets > Integrate	Seret daerah pada grafik untuk menghitung luas di bawah kurva di dalamnya.
+Graph > Gadgets > FFT	Seret daerah pada grafik untuk melihat spektrum FFT bagian sinyal di dalamnya.
+Graph > Gadgets > Differentiate	Seret daerah pada grafik untuk menghitung turunan kurva di dalamnya.
+Graph > Gadgets > Rise Time	Seret daerah pada grafik untuk mengukur waktu naik antara level 10% dan 90% dari ayunan minimum ke maksimum.
+Graph > Gadgets > Intersect	Mencari titik-titik potong dua kurva di dalam daerah yang diseret.
+Graph > Gadgets > Vertical Cursor	Kursor tegak yang membaca nilai Y kurva (diinterpolasi) dan titik data terdekat pada posisi X-nya.
+Graph > Gadgets > Remove ROI	Menghapus daerah (ROI) gadget yang sedang aktif dari grafik.
+Graph > Gadgets > Quick Fit	Seret daerah pada grafik; fungsi pilihan langsung di-fit pada titik di dalamnya dan kurvanya digambar.
+Graph > Gadgets > Quick Peaks	Seret daerah pada grafik; puncak di dalamnya dicari dan diintegrasi di atas baseline garis lurus.
+Graph > Mask Points > Mask Points in X Range (drag)	Seret rentang X pada grafik untuk me-mask titik-titik di dalamnya (dikecualikan dari fit dan analisis).
+Graph > Mask Points > Unmask Points in X Range (drag)	Seret rentang X pada grafik untuk membuka mask titik-titik di dalamnya.
+Graph > Mask Points > Unmask All Points of the Plot	Membuka semua mask titik pada plot terpilih.
+Format > Page Properties	Mengatur ukuran halaman grafik (lebar dan tinggi dalam cm).
+Format > Layer Properties	Membuka properti layer aktif: posisi, ukuran, warna latar, dan bingkai.
+Format > Axes > X Axis	Membuka properti sumbu X: rentang, skala, tick, angka, grid, dan judul.
+Format > Axes > Y Axis	Membuka properti sumbu Y: rentang, skala, tick, angka, grid, dan judul.
+Format > Plot Properties	Membuka properti plot terpilih (atau plot pertama): jenis, garis, simbol, warna, dan error bar.
+Format > Legend Properties	Membuka properti legenda: isi, posisi, huruf, dan bingkai.
+Format > Theme > *	Menerapkan gaya siap pakai ke seluruh grafik: gaya Origin bawaan, ukuran jurnal satu atau dua kolom, grayscale, presentasi, bingkai terbuka, atau dengan grid.
+Format > Save as Template	Menyimpan grafik aktif sebagai template untuk dipakai lagi pada grafik baru.
+Format > Save Format as Theme	Menyimpan format grafik aktif sebagai tema buatan sendiri yang kemudian bisa diterapkan ke grafik lain.
+Insert > Text Tool	Alat teks: klik di grafik untuk menambahkan label teks (mendukung subskrip, superskrip, dan huruf Yunani dari toolbar Format).
+Insert > Arrow Tool	Alat panah: seret di grafik untuk menggambar panah penunjuk.
+Insert > Line Tool	Alat garis: seret di grafik untuk menggambar garis lurus.
+Insert > Rectangle Tool	Alat persegi: seret di grafik untuk menggambar kotak.
+
+# ---- Matrix window active (menu saat jendela matriks aktif)
+View > Object Manager - MBook1	Menampilkan atau menyembunyikan Object Manager berisi sheet-sheet matrix book aktif.
+Plot > Contour > Contour - Black Line	Kontur garis hitam dari matriks aktif.
+Plot > Contour > Image Plot	Menampilkan matriks aktif sebagai citra berwarna.
+Plot > 3D > 3D Surface (color fill)	Permukaan 3D berisi warna dari matriks aktif.
+Plot > 3D > 3D Wire Frame	Permukaan 3D berupa jaring kawat dari matriks aktif.
+Matrix > Set Values	Mengisi matriks dengan rumus f(x, y, i, j), misalnya sin(x)*cos(y) atau exp(-((x-16)^2+(y-16)^2)/50).
+Matrix > Set Dimensions/Labels	Mengatur jumlah baris dan kolom, rentang X dan Y, serta nama dan satuan X, Y, dan Z matriks.
+Matrix > Transpose	Menukar baris dan kolom matriks (sumbu X dan Y ikut ditukar).
+Matrix > Flip > Flip Horizontal	Mencerminkan matriks secara mendatar (kiri-kanan).
+Matrix > Flip > Flip Vertical	Mencerminkan matriks secara tegak (atas-bawah).
+Matrix > Rotate > Rotate 90 (counter-clockwise)	Memutar matriks 90° berlawanan arah jarum jam.
+Matrix > Rotate > Rotate -90 (clockwise)	Memutar matriks 90° searah jarum jam.
+Matrix > Rotate > Rotate 180	Memutar matriks 180°.
+Matrix > Expand	Memperbesar ukuran matriks dengan faktor baris dan kolom; nilai di antaranya diinterpolasi bilinier.
+Matrix > Shrink	Memperkecil ukuran matriks dengan merata-ratakan blok baris × kolom sel.
+Matrix > Convert to Worksheet (XYZ)	Mengubah matriks menjadi worksheet tiga kolom X, Y, Z.
+Matrix > Image Mode	Menampilkan matriks sebagai citra berwarna, bukan angka.
+Matrix > Show X/Y	Menampilkan koordinat X dan Y di judul baris/kolom matriks, bukan nomor indeks.
+Matrix > Add Sheet	Menambah sheet matriks baru ke matrix book aktif.
+Matrix > Surface Fit	Fit permukaan z = f(x, y) (misalnya Gauss2D atau persamaan sendiri) pada matriks aktif.
+Matrix > Simple Math	Operasi aritmetika matriks dengan konstanta atau matriks lain (+, −, ×, ÷, pangkat), hasil di sheet baru.
+Matrix > Inverse	Menghitung invers matriks ke sheet baru.
+Matrix > Smoothing / Filter	Menyaring matriks: rata-rata, median, Gaussian, minimum, maksimum, atau deteksi tepi (Laplacian, Sobel).
+Matrix > Crop	Memotong matriks ke rentang baris dan kolom tertentu, hasil di sheet baru.
+Matrix > Rotate (any angle)	Memutar matriks dengan sudut sembarang, opsional diperbesar agar seluruhnya muat.
+Matrix > 2D Interpolate	Menginterpolasi matriks ke jumlah baris dan kolom baru (resampling).
+Matrix > Integrate	Menghitung volume di bawah permukaan matriks terhadap baseline Z; hasil di Results Log.
+Matrix > Statistics	Statistik nilai matriks (cacah, sel kosong, rata-rata, SD, minimum, maksimum, jumlah, median) di Results Log.
+Matrix > Signal Processing > 2D FFT	FFT dua dimensi matriks; amplitudo dan fase ditulis ke sheet baru.
+Matrix > Signal Processing > 2D FFT Filter	Filter frekuensi dua dimensi (low-pass, high-pass, band) pada matriks.
+Matrix > Signal Processing > 2D Correlation	Autokorelasi dua dimensi matriks ke sheet baru.
+Format > Set Dimensions/Labels	Mengatur ukuran, rentang X/Y, serta nama dan satuan matriks (sama dengan Matrix ▸ Set Dimensions/Labels).
+Format > Image Mode	Menampilkan matriks sebagai citra (sama dengan Matrix ▸ Image Mode).
+Format > Show X/Y	Menampilkan koordinat X/Y di judul baris dan kolom matriks.
+Help > User Guide (PDF)	Membuka panduan pengguna (PDF) untuk versi aplikasi ini di browser; panduan yang sama juga bisa diunduh dari halaman rilis.

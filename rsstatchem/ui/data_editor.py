@@ -404,6 +404,9 @@ class DataEditorWindow(QMainWindow):
         self.window_menu.aboutToShow.connect(self._fill_window_menu)
 
         help_menu = mb.addMenu("&Help")
+        from rsstatchem.ui.update_dialog import open_user_guide
+
+        help_menu.addAction("User &Guide (PDF)", open_user_guide)
         updates = help_menu.addAction("Check for &Updates...")
         updates.triggered.connect(lambda: self.ctx.check_for_updates(manual=True))
         help_menu.addSeparator()

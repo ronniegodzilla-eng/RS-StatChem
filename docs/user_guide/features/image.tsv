@@ -1,0 +1,375 @@
+# Image Analysis (modul gaya ImageJ): penjelasan setiap perintah menu.
+# Format: Menu > Submenu > Item<TAB>Penjelasan. Baris "> *" menjelaskan seluruh submenu.
+File > New > Image	Membuat citra atau stack baru dengan nama, tipe (8-bit, 16-bit, 32-bit, RGB), isi awal (putih, hitam, ramp, acak), lebar, tinggi, dan jumlah slice.
+File > New > Hyperstack	Membuat hyperstack baru dengan jumlah channel (c), slice (z), dan frame (t) yang Anda tentukan, beserta tipe dan mode tampilannya.
+File > New > Text Window	Membuka jendela teks kosong yang bisa diketik dan disimpan.
+File > New > Internal Clipboard	Membuat citra baru dari isi clipboard internal (hasil Edit > Copy terakhir).
+File > New > System Clipboard	Membuat citra baru dari gambar yang sedang ada di clipboard sistem operasi, misalnya hasil salin dari aplikasi lain.
+File > Open	Membuka berkas apa pun yang didukung: citra (TIFF, PNG, JPEG, GIF, BMP, DICOM, FITS, PGM, AVI, ZIP), ROI dan RoiSet, LUT, tabel, teks, makro, serta proyek .rsij.
+File > Open Next	Menutup citra aktif lalu membuka berkas citra berikutnya di folder yang sama, menurut urutan nama.
+File > Open Samples > *	Membuka citra contoh resmi ImageJ. Citra diunduh dari internet saat pertama dipakai, lalu disimpan di cache sehingga berikutnya bisa dibuka tanpa koneksi.
+File > Open Samples > Cache Sample Images	Mengunduh semua citra contoh sekaligus ke cache, agar nanti bisa dibuka tanpa internet.
+File > Open Recent > *	Daftar berkas yang terakhir dibuka di modul ini; klik untuk membukanya lagi.
+File > Import > Image Sequence	Membuka seluruh citra dalam satu folder sebagai satu stack, dengan filter nama, nomor awal, jumlah, langkah, skala, dan pilihan virtual stack.
+File > Import > Raw	Membuka berkas biner mentah dengan tipe piksel, ukuran, offset, jumlah citra, jarak antar citra, dan urutan byte yang Anda tentukan sendiri.
+File > Import > LUT...	Memuat tabel warna (LUT) dari berkas .lut dan menerapkannya ke citra aktif, atau menampilkannya sebagai citra ramp bila tidak ada citra.
+File > Import > Text Image...	Membuka berkas teks berisi angka (dipisah spasi, tab, atau koma) sebagai citra 32-bit.
+File > Import > Text File...	Membuka berkas teks biasa di jendela teks.
+File > Import > Results...	Memuat tabel CSV atau teks ke jendela Results.
+File > Import > Table...	Memuat tabel CSV atau teks ke jendela tabel tersendiri (bukan Results).
+File > Import > URL	Mengunduh dan membuka citra dari alamat web (URL).
+File > Import > Stack From List	Membuka stack dari berkas teks yang berisi daftar path citra, satu per baris.
+File > Import > TIFF Virtual Stack	Membuka TIFF besar sebagai virtual stack: slice dibaca dari disk saat ditampilkan, sehingga hemat memori.
+File > Import > AVI	Membuka video AVI sebagai stack, dengan rentang frame, virtual stack, konversi ke grayscale, dan pembalikan vertikal.
+File > Import > XY Coordinates...	Membuat seleksi poligon dari berkas teks berisi pasangan koordinat x dan y.
+File > Show Folder > Image	Membuka folder tempat berkas citra aktif disimpan di Finder/Explorer.
+File > Show Folder > Plugins	Membuka folder plugins modul ini di Finder/Explorer.
+File > Show Folder > Macros	Membuka folder macros modul ini, tempat makro pribadi bisa disimpan.
+File > Show Folder > LUTs	Membuka folder LUT modul ini, tempat berkas tabel warna tambahan.
+File > Show Folder > ImageJ	Membuka folder data RS-StatChem di Finder/Explorer.
+File > Show Folder > temp	Membuka folder sementara (temp) sistem operasi.
+File > Show Folder > Home	Membuka folder home pengguna.
+File > Close	Menutup jendela citra aktif; bila ada perubahan yang belum disimpan, Anda ditanya dulu.
+File > Close All	Menutup semua jendela citra, dengan pertanyaan simpan untuk citra yang berubah.
+File > Save	Menyimpan citra aktif sebagai TIFF ke berkasnya sendiri, atau menanyakan nama berkas bila belum pernah disimpan sebagai TIFF.
+File > Save As > Tiff	Menyimpan citra atau stack sebagai TIFF gaya ImageJ, lengkap dengan kalibrasi, LUT, seleksi, dan overlay.
+File > Save As > Gif	Menyimpan citra 8-bit (atau stack sebagai GIF animasi) dalam format GIF.
+File > Save As > Jpeg	Menyimpan citra sebagai JPEG; kualitasnya diatur di Edit > Options > Input/Output.
+File > Save As > Text Image	Menyimpan nilai piksel sebagai teks berpemisah tab, satu baris per baris piksel.
+File > Save As > ZIP	Menyimpan citra sebagai TIFF yang dikompresi dalam berkas ZIP.
+File > Save As > Raw Data	Menyimpan piksel sebagai data biner mentah tanpa header.
+File > Save As > Image Sequence...	Menyimpan setiap slice stack sebagai berkas terpisah (TIFF, PNG, JPEG, dan lainnya) dengan nama bernomor.
+File > Save As > AVI...	Menyimpan stack sebagai video AVI dengan kompresi dan frame rate pilihan.
+File > Save As > BMP	Menyimpan citra dalam format BMP.
+File > Save As > PNG	Menyimpan citra dalam format PNG tanpa kehilangan kualitas.
+File > Save As > PGM	Menyimpan citra grayscale dalam format PGM.
+File > Save As > FITS	Menyimpan citra dalam format FITS (lazim di astronomi).
+File > Save As > LUT	Menyimpan tabel warna (LUT) citra aktif ke berkas .lut.
+File > Save As > Selection	Menyimpan seleksi aktif ke berkas .roi yang bisa dibuka lagi di sini atau di ImageJ.
+File > Save As > XY Coordinates	Menyimpan koordinat titik-titik seleksi ke berkas teks.
+File > Save As > Results	Menyimpan isi tabel Results ke berkas CSV atau teks.
+File > Save As > Text	Menyimpan isi jendela teks atau tabel yang aktif ke berkas teks.
+File > Revert	Membuang semua perubahan dan memuat ulang citra dari berkasnya di disk.
+File > Page Setup	Mengatur skala, perataan, dan opsi cetak untuk perintah Print.
+File > Print	Mencetak citra aktif (termasuk overlay) ke printer atau PDF.
+File > Quit	Menutup modul Image Analysis beserta semua jendela citranya, dengan pertanyaan simpan untuk citra yang berubah.
+Edit > Undo	Membatalkan operasi terakhir pada citra aktif.
+Edit > Cut	Menyalin isi seleksi ke clipboard internal lalu mengisinya dengan warna latar.
+Edit > Copy	Menyalin isi seleksi (atau seluruh citra) ke clipboard internal.
+Edit > Copy to System	Menyalin citra atau seleksi seperti yang tampil ke clipboard sistem, agar bisa ditempel di aplikasi lain.
+Edit > Paste	Menempelkan isi clipboard internal ke citra aktif sebagai seleksi yang masih bisa digeser.
+Edit > Paste Control	Memilih cara penempelan (Copy, Blend, Average, Difference, AND, OR, Transparent, dan lainnya) untuk hasil Paste.
+Edit > Clear	Mengisi bagian dalam seleksi dengan warna latar (background).
+Edit > Clear Outside	Mengisi bagian di luar seleksi dengan warna latar.
+Edit > Fill	Mengisi seleksi dengan warna depan (foreground).
+Edit > Draw	Menggambar garis tepi seleksi dengan warna depan dan lebar garis yang berlaku.
+Edit > Invert	Membalik nilai piksel (negatif) di dalam seleksi atau seluruh citra.
+Edit > Selection > Select All	Membuat seleksi persegi seukuran seluruh citra.
+Edit > Selection > Select None	Menghapus seleksi aktif.
+Edit > Selection > Restore Selection	Mengembalikan seleksi terakhir yang dihapus atau diganti.
+Edit > Selection > Fit Spline	Menghaluskan seleksi poligon atau garis bersegmen menjadi kurva spline.
+Edit > Selection > Fit Circle	Mengganti seleksi dengan lingkaran yang paling pas (dari titik-titik atau bentuk seleksi).
+Edit > Selection > Fit Ellipse	Mengganti seleksi area dengan elips yang memiliki luas, orientasi, dan pusat massa yang sama.
+Edit > Selection > Fit Rectangle	Mengganti seleksi dengan persegi panjang terputar terkecil yang melingkupinya.
+Edit > Selection > Interpolate	Menyusun ulang titik-titik seleksi dengan jarak tetap (interval), opsional dihaluskan.
+Edit > Selection > Convex Hull	Mengganti seleksi dengan poligon cembung terkecil yang melingkupinya.
+Edit > Selection > Make Inverse	Membalik seleksi: yang terpilih menjadi seluruh citra di luar seleksi semula.
+Edit > Selection > Create Selection	Membuat seleksi dari piksel yang di-threshold atau dari piksel berwarna depan pada citra biner.
+Edit > Selection > Create Mask	Membuat citra mask biner (putih di dalam seleksi) bernama "Mask".
+Edit > Selection > Properties...	Mengatur nama, posisi, warna garis, lebar garis, dan warna isi seleksi aktif.
+Edit > Selection > Scale...	Memperbesar atau memperkecil seleksi dengan faktor X dan Y, opsional terhadap pusatnya.
+Edit > Selection > Rotate	Memutar seleksi sebesar sudut tertentu, terhadap pusat seleksi atau pusat citra.
+Edit > Selection > Translate...	Menggeser seleksi sejauh offset X dan Y tertentu.
+Edit > Selection > Enlarge	Memperbesar (atau dengan nilai negatif, memperkecil) seleksi sejumlah piksel atau satuan kalibrasi ke segala arah.
+Edit > Selection > Make Band	Membuat seleksi berbentuk pita selebar tertentu di sekeliling seleksi area.
+Edit > Selection > Specify	Membuat seleksi persegi atau oval dengan lebar, tinggi, dan posisi yang diketik secara tepat.
+Edit > Selection > Straighten	Meluruskan struktur melengkung di sepanjang seleksi garis menjadi citra baru dengan lebar garis tertentu.
+Edit > Selection > To Bounding Box	Mengganti seleksi dengan persegi pembatasnya (bounding box).
+Edit > Selection > Line to Area	Mengubah seleksi garis menjadi seleksi area selebar garisnya.
+Edit > Selection > Area to Line	Mengubah tepi seleksi area menjadi seleksi garis (polyline).
+Edit > Selection > Image to Selection	Menempatkan citra lain sebagai seleksi gambar (image ROI) dengan tingkat opasitas tertentu.
+Edit > Selection > Add to Manager	Menambahkan seleksi aktif ke ROI Manager; huruf T saja juga bisa dipakai sebagai pintasan.
+Edit > Options > Appearance	Pengaturan tampilan: interpolasi saat zoom, kanvas hitam, LUT terbalik, rentang 16-bit, ukuran huruf menu.
+Edit > Options > Arrow Tool	Mengatur lebar, ukuran kepala, warna, gaya, dan kepala ganda untuk alat panah.
+Edit > Options > Colors	Mengatur warna depan (foreground), warna latar (background), dan warna seleksi.
+Edit > Options > Conversions	Mengatur konversi tipe: penskalaan saat konversi, konversi RGB berbobot, dan inversi 16-bit penuh.
+Edit > Options > DICOM	Mengatur cara membuka DICOM: sebagai 32-bit, mengabaikan Rescale Slope, penskalaan tetap, dan rotasi.
+Edit > Options > Fonts	Mengatur jenis, ukuran, gaya, dan perataan huruf untuk alat teks.
+Edit > Options > Input/Output	Mengatur kualitas JPEG, indeks transparan GIF/PNG, ekstensi tabel, urutan byte TIFF, serta opsi salin dan simpan tabel Results.
+Edit > Options > Line Width	Mengatur lebar garis untuk seleksi garis, profil, dan perintah Draw.
+Edit > Options > Misc	Pengaturan lain-lain: nilai pembagian dengan nol, kursor, dialog "Process Stack?", dan keharusan menekan Ctrl/Cmd untuk pintasan satu huruf.
+Edit > Options > Plots	Mengatur ukuran plot, ukuran huruf, garis grid, tick, daftar nilai, dan interpolasi profil garis.
+Edit > Options > Point Tool	Mengatur tipe, warna, dan ukuran penanda titik, label nomor, serta pengukuran otomatis dan penambahan ke ROI Manager.
+Edit > Options > Roi Defaults	Mengatur warna, lebar garis, grup, dan nama bawaan untuk seleksi baru.
+Edit > Options > Rounded Rect Tool	Mengatur lebar garis, diameter sudut, warna, dan isi untuk alat persegi bersudut bulat.
+Edit > Options > Startup	Menentukan makro yang dijalankan otomatis setiap kali modul dibuka.
+Edit > Options > Wand Tool	Mengatur mode (Legacy, 4-connected, 8-connected), toleransi, dan penghalusan untuk alat Wand.
+Edit > Options > Fresh Start	Mengembalikan semua pengaturan ke nilai awal (dengan Black background aktif) serta mengosongkan ROI Manager dan Results.
+Edit > Options > Reset...	Mengembalikan semua pengaturan modul ke nilai bawaan.
+Image > Type > 8-bit	Mengubah citra menjadi grayscale 8-bit (0 sampai 255), dengan penskalaan sesuai rentang tampilan.
+Image > Type > 16-bit	Mengubah citra menjadi grayscale 16-bit (0 sampai 65535).
+Image > Type > 32-bit	Mengubah citra menjadi 32-bit bilangan desimal (float), cocok untuk perhitungan.
+Image > Type > 8-bit Color	Mengubah citra RGB menjadi citra berindeks 8-bit dengan palet warna terbatas.
+Image > Type > RGB Color	Mengubah citra (termasuk komposit multi-channel) menjadi citra warna RGB 24-bit.
+Image > Type > RGB Stack	Memisahkan citra RGB menjadi stack tiga slice: merah, hijau, biru.
+Image > Type > HSB Stack	Mengubah citra RGB menjadi stack tiga slice: hue, saturation, brightness (8-bit).
+Image > Type > HSB (32-bit)	Mengubah citra RGB menjadi stack HSB 32-bit dengan nilai desimal.
+Image > Type > Lab Stack	Mengubah citra RGB menjadi stack 32-bit ruang warna CIE L*a*b*.
+Image > Adjust > Brightness/Contrast	Membuka panel untuk mengatur kecerahan, kontras, dan rentang tampilan (minimum dan maksimum), dengan tombol Auto dan Apply.
+Image > Adjust > Window/Level	Panel pengaturan rentang tampilan dengan istilah window (lebar) dan level (pusat), lazim untuk citra medis.
+Image > Adjust > Color Balance	Mengatur rentang tampilan setiap channel warna (merah, hijau, biru) secara terpisah.
+Image > Adjust > Threshold	Membuka panel Threshold: histogram, dua slider batas bawah dan atas, metode otomatis, dan tombol Apply untuk membuat citra biner.
+Image > Adjust > Color Threshold	Panel threshold untuk citra warna di ruang HSB, RGB, Lab, atau YUV, menghasilkan seleksi, citra tersaring, atau mask.
+Image > Adjust > Size	Mengubah ukuran citra (lebar dan tinggi piksel) dengan pilihan rasio tetap, rata-rata saat mengecilkan, dan metode interpolasi.
+Image > Adjust > Canvas Size	Mengubah ukuran kanvas tanpa menskalakan isi; citra ditempatkan di posisi pilihan dan sisanya diisi warna latar atau nol.
+Image > Adjust > Line Width...	Mengatur lebar garis seleksi aktif dan alat garis.
+Image > Adjust > Coordinates	Mengkalibrasi sumbu sehingga tepi kiri, kanan, atas, dan bawah citra bernilai koordinat yang Anda tentukan.
+Image > Show Info	Menampilkan informasi lengkap citra: ukuran, tipe, kalibrasi, rentang tampilan, metadata, dan info seleksi.
+Image > Properties	Mengatur jumlah channel, slice, dan frame, ukuran piksel (kalibrasi), satuan, interval frame, dan asal koordinat.
+Image > Color > Split Channels	Memecah citra RGB atau komposit menjadi citra terpisah, satu per channel.
+Image > Color > Merge Channels	Menggabungkan beberapa citra grayscale menjadi citra komposit atau RGB, dengan warna channel pilihan.
+Image > Color > Arrange Channels	Mengubah urutan channel atau membuang channel tertentu dari hyperstack.
+Image > Color > Invert LUTs	Membalik LUT setiap channel pada citra komposit.
+Image > Color > Channels Tool	Panel untuk memilih mode tampilan komposit (Composite, Color, Grayscale) dan channel yang ditampilkan.
+Image > Color > Stack to RGB	Mengubah stack tiga slice atau citra komposit menjadi satu citra RGB.
+Image > Color > Make Composite	Mengubah citra RGB atau stack multi-channel menjadi citra komposit dengan mode tampilan pilihan.
+Image > Color > Show LUT	Menampilkan LUT citra aktif sebagai gambar batang warna.
+Image > Color > Display LUTs	Menampilkan semua LUT bawaan dalam satu montase agar mudah dibandingkan.
+Image > Color > Edit LUT	Membuka editor LUT untuk mengubah warna palet citra 8-bit satu per satu.
+Image > Color > Color Picker	Membuka panel pemilih warna untuk menentukan warna depan dan latar.
+Image > Stacks > Add Slice	Menambahkan slice kosong setelah slice yang sedang tampil.
+Image > Stacks > Delete Slice	Menghapus slice yang sedang tampil dari stack.
+# 'Next Slice [>]' contains '>', the path separator, so it is explained by this row
+Image > Stacks > *	Next Slice [>]: pindah ke slice berikutnya (tombol ++>++).
+Image > Stacks > Previous Slice [<]	Pindah ke slice sebelumnya (tombol ++<++).
+Image > Stacks > Set Slice	Melompat ke nomor slice tertentu.
+Image > Stacks > Images to Stack	Menggabungkan semua citra terbuka (atau yang judulnya memuat teks tertentu) menjadi satu stack.
+Image > Stacks > Stack to Images	Memecah stack menjadi citra-citra terpisah, satu jendela per slice.
+Image > Stacks > Make Montage	Menyusun slice-slice stack menjadi satu citra montase berbentuk grid, dengan skala, batas, dan label slice.
+Image > Stacks > Reslice [/]	Membuat irisan ortogonal stack di sepanjang seleksi garis atau persegi (misalnya tampilan XZ atau YZ).
+Image > Stacks > Orthogonal Views	Menampilkan tiga tampilan stack yang saling tegak lurus (XY, XZ, YZ) yang bergerak bersama kursor.
+Image > Stacks > Z Project	Memproyeksikan stack menjadi satu citra: rata-rata, maksimum, minimum, jumlah, simpangan baku, atau median per piksel.
+Image > Stacks > 3D Project	Membuat animasi proyeksi tiga dimensi stack yang berputar pada sumbu X, Y, atau Z.
+Image > Stacks > Plot Z-axis Profile	Membuat plot nilai rata-rata seleksi terhadap nomor slice atau waktu.
+Image > Stacks > Measure Stack	Menjalankan Measure pada setiap slice dan menuliskan semua hasilnya ke tabel Results.
+Image > Stacks > Label	Menuliskan nomor, waktu, atau teks pada setiap slice, langsung ke piksel atau sebagai overlay.
+Image > Stacks > Statistics	Menghitung statistik seluruh voxel stack (jumlah, rata-rata, simpangan baku, min, maks, dan lainnya) ke tabel Results.
+Image > Stacks > Animation > Start Animation [\]	Memutar slice-slice stack sebagai animasi.
+Image > Stacks > Animation > Stop Animation	Menghentikan animasi stack.
+Image > Stacks > Animation > Animation Options	Mengatur kecepatan (frame per detik), rentang frame, dan pemutaran bolak-balik.
+Image > Stacks > Tools > Combine	Menggabungkan dua stack berdampingan (atau atas-bawah) menjadi satu stack.
+Image > Stacks > Tools > Concatenate	Menyambung beberapa citra atau stack menjadi satu stack panjang, opsional sebagai citra 4D.
+Image > Stacks > Tools > Grouped Z Project	Membuat proyeksi Z per kelompok slice berukuran tetap, misalnya rata-rata setiap 5 slice.
+Image > Stacks > Tools > Insert	Menyisipkan citra sumber ke citra tujuan pada posisi X dan Y tertentu.
+Image > Stacks > Tools > Magic Montage Tools	Menampilkan pilihan cepat untuk membuat montase dari stack atau mengembalikan montase menjadi stack.
+Image > Stacks > Tools > Make Substack	Membuat stack baru dari rentang atau daftar slice tertentu, opsional menghapusnya dari stack asli.
+Image > Stacks > Tools > Montage to Stack	Memotong citra montase berbentuk grid kembali menjadi stack.
+Image > Stacks > Tools > Plot XY Profile	Menghitung profil garis pada setiap slice dan menuliskannya ke tabel.
+Image > Stacks > Tools > Reduce	Mengurangi jumlah slice dengan mengambil satu dari setiap N slice.
+Image > Stacks > Tools > Remove Slice Labels	Menghapus label (nama) semua slice.
+Image > Stacks > Tools > Reverse	Membalik urutan slice dalam stack.
+Image > Stacks > Tools > Set Label	Mengganti label slice yang sedang tampil.
+Image > Hyperstacks > New Hyperstack	Membuat hyperstack baru dengan jumlah channel, slice, dan frame tertentu.
+Image > Hyperstacks > Stack to Hyperstack	Menata ulang stack biasa menjadi hyperstack dengan urutan dimensi (misalnya xyczt) dan jumlah c, z, t yang Anda tentukan.
+Image > Hyperstacks > Hyperstack to Stack	Mengubah hyperstack kembali menjadi stack biasa satu dimensi.
+Image > Hyperstacks > Reduce Dimensionality	Membuat citra baru yang hanya memuat dimensi pilihan (misalnya semua channel pada slice dan frame saat ini).
+Image > Hyperstacks > Make Subset	Membuat hyperstack baru dari subset channel, slice, dan frame tertentu.
+Image > Crop	Memotong citra (atau seluruh stack) ke batas seleksi persegi.
+Image > Duplicate	Membuat salinan citra, slice saat ini, atau rentang slice tertentu, dipotong ke seleksi bila ada.
+Image > Rename	Mengganti judul citra aktif.
+Image > Scale	Menskalakan citra dengan faktor X dan Y atau ukuran baru, ke jendela baru atau di tempat.
+Image > Transform > Flip Horizontally	Mencerminkan citra atau seleksi secara horizontal (kiri-kanan).
+Image > Transform > Flip Vertically	Mencerminkan citra atau seleksi secara vertikal (atas-bawah).
+Image > Transform > Flip Z	Membalik urutan slice stack (sumbu Z).
+Image > Transform > Rotate 90 Degrees Right	Memutar seluruh citra 90 derajat searah jarum jam.
+Image > Transform > Rotate 90 Degrees Left	Memutar seluruh citra 90 derajat berlawanan arah jarum jam.
+Image > Transform > Rotate...	Memutar citra dengan sudut bebas, dengan pilihan interpolasi, garis bantu, isi latar, dan perbesaran kanvas.
+Image > Transform > Translate	Menggeser isi citra sejauh offset X dan Y tertentu.
+Image > Transform > Bin	Mengecilkan citra dengan menggabungkan blok piksel (rata-rata, median, maks, min, atau jumlah).
+Image > Transform > Image to Results	Menyalin nilai piksel citra (atau seleksi) ke tabel Results.
+Image > Transform > Results to Image	Membuat citra 32-bit dari angka-angka di tabel Results.
+Image > Zoom > In [+]	Memperbesar tampilan ke tingkat zoom berikutnya (tombol plus).
+Image > Zoom > Out [-]	Memperkecil tampilan ke tingkat zoom sebelumnya (tombol minus).
+Image > Zoom > Original Scale	Mengembalikan zoom ke perbesaran saat citra pertama dibuka.
+Image > Zoom > View 100%	Menampilkan citra pada perbesaran 100% (satu piksel citra = satu piksel layar).
+Image > Zoom > To Selection	Memperbesar tampilan agar seleksi aktif memenuhi jendela.
+Image > Zoom > Scale to Fit	Menskalakan tampilan agar citra selalu pas di jendela saat jendela diubah ukurannya.
+Image > Zoom > Set...	Mengatur perbesaran tampilan ke persentase tertentu, opsional berpusat di koordinat tertentu.
+Image > Zoom > Maximize	Memperbesar jendela citra hingga memenuhi layar.
+Image > Overlay > Add Selection	Menambahkan seleksi aktif ke overlay citra (tidak mengubah piksel), dengan warna dan lebar garis pilihan.
+Image > Overlay > Add Image	Menambahkan citra lain sebagai lapisan overlay pada posisi dan opasitas tertentu.
+Image > Overlay > Hide Overlay	Menyembunyikan overlay tanpa menghapusnya.
+Image > Overlay > Show Overlay	Menampilkan kembali overlay yang disembunyikan.
+Image > Overlay > From ROI Manager	Menyalin semua ROI di ROI Manager menjadi overlay citra.
+Image > Overlay > To ROI Manager	Memindahkan elemen-elemen overlay ke ROI Manager.
+Image > Overlay > Remove Overlay	Menghapus overlay dari citra.
+Image > Overlay > Toggle Overlay	Bergantian menampilkan dan menyembunyikan overlay.
+Image > Overlay > List Elements	Menampilkan daftar elemen overlay beserta tipe, posisi, dan warnanya dalam tabel.
+Image > Overlay > Flatten	Membuat citra RGB baru dengan overlay dan seleksi "dibakar" ke dalam piksel, siap untuk publikasi.
+Image > Overlay > Labels	Mengatur warna, ukuran huruf, dan isi label overlay (nomor atau nama).
+Image > Overlay > Measure Overlay	Mengukur setiap elemen overlay dan menuliskan hasilnya ke tabel Results.
+Image > Overlay > Overlay Options	Mengatur warna garis, lebar, dan warna isi bawaan overlay, opsional diterapkan ke overlay yang ada.
+Image > Lookup Tables > Invert LUT	Membalik tabel warna (LUT) tanpa mengubah nilai piksel.
+Image > Lookup Tables > Apply LUT	Menerapkan rentang tampilan atau LUT ke nilai piksel secara permanen.
+Image > Lookup Tables > *	Menerapkan tabel warna (LUT) bawaan pada citra grayscale; nilai piksel tidak berubah, hanya cara menampilkannya.
+Process > Smooth	Menghaluskan citra dengan rata-rata ketetanggaan 3×3.
+Process > Sharpen	Mempertajam citra dengan kernel 3×3 yang menonjolkan detail dan tepi.
+Process > Find Edges	Menonjolkan tepi dengan operator Sobel; hasilnya besar gradien intensitas.
+Process > Find Maxima	Menemukan titik-titik maksimum lokal dengan prominence tertentu; hasilnya titik terpilih, hitungan, atau citra tersegmentasi.
+Process > Enhance Contrast	Meningkatkan kontras dengan persentase piksel jenuh tertentu, opsional menormalkan atau meratakan histogram.
+Process > Noise > Add Noise	Menambahkan derau Gaussian acak dengan simpangan baku 25.
+Process > Noise > Add Specified Noise	Menambahkan derau Gaussian dengan simpangan baku yang Anda tentukan.
+Process > Noise > Salt and Pepper	Menambahkan derau garam dan merica: sekitar 5% piksel acak menjadi putih atau hitam.
+Process > Noise > Despeckle	Mengurangi derau bintik dengan filter median radius 1.
+Process > Noise > Remove Outliers	Mengganti piksel yang menyimpang lebih dari nilai ambang dari median sekitarnya (terang atau gelap) dengan median tersebut.
+Process > Noise > Remove NaNs	Mengganti piksel NaN pada citra 32-bit dengan median sekitarnya.
+Process > Shadows > *	Memberi efek bayangan timbul (emboss) dari arah mata angin yang dipilih.
+Process > Shadows > Shadows Demo	Memutar demo efek bayangan dari kedelapan arah secara bergantian.
+Process > Binary > Make Binary	Mengubah citra (berdasarkan threshold atau secara otomatis) menjadi citra biner hitam-putih.
+Process > Binary > Convert to Mask	Mengubah citra ber-threshold menjadi mask biner 8-bit (objek 255, latar 0) dengan LUT terbalik sesuai pengaturan.
+Process > Binary > Erode	Mengikis objek biner satu lapis piksel dari tepinya.
+Process > Binary > Dilate	Menebalkan objek biner satu lapis piksel.
+Process > Binary > Open	Erosi lalu dilasi: menghapus tonjolan kecil dan memisahkan objek yang bersinggungan tipis.
+Process > Binary > Close-	Dilasi lalu erosi: menutup celah dan lubang kecil pada objek.
+Process > Binary > Median	Menghaluskan tepi objek biner dengan filter median radius tertentu.
+Process > Binary > Outline	Menyisakan garis tepi satu piksel dari objek biner.
+Process > Binary > Fill Holes	Mengisi lubang di dalam objek biner.
+Process > Binary > Skeletonize	Menipiskan objek biner hingga menjadi kerangka selebar satu piksel.
+Process > Binary > Distance Map	Membuat peta jarak Euclidean: nilai setiap piksel objek adalah jaraknya ke latar terdekat.
+Process > Binary > Ultimate Points	Menandai titik pusat terdalam (puncak peta jarak) setiap objek.
+Process > Binary > Watershed	Memisahkan partikel yang saling menempel dengan segmentasi watershed berbasis peta jarak.
+Process > Binary > Voronoi	Membagi latar menjadi wilayah Voronoi, yaitu garis-garis yang berjarak sama ke dua partikel terdekat.
+Process > Binary > Options	Mengatur jumlah iterasi dan count untuk erosi/dilasi, Black background, dan tipe keluaran peta jarak.
+Process > Math > Add	Menambahkan sebuah konstanta ke setiap piksel.
+Process > Math > Subtract	Mengurangi setiap piksel dengan sebuah konstanta.
+Process > Math > Multiply	Mengalikan setiap piksel dengan sebuah konstanta.
+Process > Math > Divide	Membagi setiap piksel dengan sebuah konstanta.
+Process > Math > AND	Operasi bitwise AND setiap piksel dengan sebuah nilai biner.
+Process > Math > OR	Operasi bitwise OR setiap piksel dengan sebuah nilai biner.
+Process > Math > XOR	Operasi bitwise XOR setiap piksel dengan sebuah nilai biner.
+Process > Math > Min	Mengganti piksel yang lebih kecil dari nilai tertentu dengan nilai tersebut.
+Process > Math > Max	Mengganti piksel yang lebih besar dari nilai tertentu dengan nilai tersebut.
+Process > Math > Gamma	Menerapkan koreksi gamma (pangkat) pada nilai piksel.
+Process > Math > Set	Mengisi semua piksel (di dalam seleksi) dengan satu nilai.
+Process > Math > Log	Mengganti setiap piksel dengan logaritma naturalnya.
+Process > Math > Exp	Mengganti setiap piksel dengan nilai eksponensialnya.
+Process > Math > Square	Mengkuadratkan setiap piksel.
+Process > Math > Square Root	Mengganti setiap piksel dengan akar kuadratnya.
+Process > Math > Reciprocal	Mengganti setiap piksel dengan kebalikannya (1/x); khusus citra 32-bit.
+Process > Math > NaN Background	Mengubah piksel di luar threshold menjadi NaN pada citra 32-bit, agar diabaikan dalam pengukuran.
+Process > Math > Abs	Mengganti setiap piksel dengan nilai mutlaknya (citra 32-bit).
+Process > Math > Macro	Menghitung ulang setiap piksel dengan rumus makro, memakai v (nilai), x, y, z, w, h, a (sudut), dan d (jarak dari pusat).
+Process > FFT > FFT	Menghitung transformasi Fourier dan menampilkan spektrum dayanya.
+Process > FFT > Inverse FFT	Mengembalikan jendela FFT (yang mungkin sudah difilter dengan seleksi) ke ruang spasial.
+Process > FFT > Redisplay Power Spectrum	Menampilkan ulang spektrum daya asli pada jendela FFT.
+Process > FFT > FFT Options	Mengatur keluaran FFT: spektrum daya, spektrum mentah, Hartley, atau Fourier kompleks, serta transformasi maju.
+Process > FFT > Bandpass Filter	Filter pita di domain frekuensi: membuang struktur besar dan kecil di luar rentang ukuran tertentu, serta menekan garis-garis.
+Process > FFT > Custom Filter	Memfilter citra di domain frekuensi memakai citra lain sebagai filter.
+Process > FFT > FD Math	Korelasi, konvolusi, atau dekonvolusi dua citra di domain frekuensi.
+Process > FFT > Swap Quadrants	Menukar kuadran citra (1 dengan 3, 2 dengan 4), seperti pada tampilan spektrum.
+Process > FFT > Make Circular Selection	Membuat seleksi lingkaran berjari-jari tertentu di tengah citra (untuk filter FFT).
+Process > Filters > Convolve	Konvolusi dengan kernel yang Anda ketik sendiri, opsional dinormalkan.
+Process > Filters > Gaussian Blur	Mengaburkan citra dengan filter Gaussian bersigma tertentu, efektif mengurangi derau.
+Process > Filters > Median	Filter median dengan radius tertentu; mengurangi derau sambil menjaga tepi.
+Process > Filters > Mean	Filter rata-rata dengan radius tertentu.
+Process > Filters > Minimum	Filter minimum (erosi grayscale) dengan radius tertentu.
+Process > Filters > Maximum	Filter maksimum (dilasi grayscale) dengan radius tertentu.
+Process > Filters > Unsharp Mask	Mempertajam dengan mengurangkan versi kabur citra, diatur dengan sigma dan bobot mask.
+Process > Filters > Variance	Mengganti setiap piksel dengan variansi ketetanggaannya; menonjolkan tepi dan tekstur.
+Process > Filters > Top Hat	Filter top-hat: menghapus latar yang bervariasi perlahan dan menyisakan objek kecil.
+Process > Filters > Gaussian Blur 3D	Gaussian blur pada stack dengan sigma X, Y, dan Z terpisah.
+Process > Filters > Median 3D	Filter median tiga dimensi pada stack dengan radius X, Y, dan Z.
+Process > Filters > Mean 3D	Filter rata-rata tiga dimensi pada stack.
+Process > Filters > Minimum 3D	Filter minimum tiga dimensi pada stack.
+Process > Filters > Maximum 3D	Filter maksimum tiga dimensi pada stack.
+Process > Filters > Variance 3D	Filter variansi tiga dimensi pada stack.
+Process > Filters > Show Circular Masks	Menampilkan bentuk ketetanggaan lingkaran yang dipakai filter rank untuk setiap radius.
+Process > Batch > Measure	Mengukur semua citra dalam satu folder (dengan pengaturan Set Measurements) ke tabel Results.
+Process > Batch > Convert	Mengonversi semua citra dalam folder ke format lain, opsional dengan penskalaan, ke folder keluaran.
+Process > Batch > Macro...	Menjalankan kode makro pada setiap citra dalam folder dan menyimpan hasilnya ke folder keluaran.
+Process > Batch > Virtual Stack	Menjalankan kode makro pada setiap slice virtual stack dan menyimpan hasilnya.
+Process > Image Calculator	Operasi antara dua citra (tambah, kurang, kali, bagi, AND, OR, beda, rata-rata, min, maks, dan lainnya), ke citra baru atau 32-bit.
+Process > Subtract Background	Menghapus latar yang tidak rata dengan algoritme rolling ball atau sliding paraboloid.
+Process > Repeat Command	Menjalankan ulang perintah terakhir dengan pengaturan yang sama.
+Analyze > Measure	Mengukur seleksi aktif (atau seluruh citra) sesuai pilihan di Set Measurements, lalu menambahkan satu baris ke tabel Results.
+Analyze > Analyze Particles	Menghitung dan mengukur objek pada citra ber-threshold atau biner, dengan filter ukuran dan sirkularitas, serta tabel hasil, ringkasan, dan gambar outline.
+Analyze > Summarize	Menambahkan baris rata-rata, simpangan baku, minimum, dan maksimum setiap kolom di tabel Results.
+Analyze > Distribution	Membuat histogram distribusi salah satu kolom Results, dengan jumlah bin otomatis atau ditentukan.
+Analyze > Label	Menuliskan nomor pengukuran terakhir pada citra di posisi seleksinya.
+Analyze > Clear Results	Mengosongkan tabel Results.
+Analyze > Set Measurements	Memilih besaran yang diukur (luas, rata-rata, min/maks, pusat massa, perimeter, bentuk, Feret, dan lainnya), redirect, dan jumlah desimal.
+Analyze > Set Scale	Mengkalibrasi ukuran piksel: jarak dalam piksel, jarak sebenarnya, rasio aspek, dan satuan panjang (misalnya µm).
+Analyze > Calibrate	Mengkalibrasi nilai intensitas dengan fungsi (garis lurus, polinomial, eksponensial, OD, dan lainnya) dari pasangan nilai standar.
+Analyze > Histogram	Menampilkan histogram citra atau seleksi beserta jumlah piksel, rata-rata, simpangan baku, min, maks, dan modus.
+Analyze > Plot Profile	Menampilkan plot profil intensitas di sepanjang seleksi garis (atau rata-rata kolom pada seleksi persegi).
+Analyze > Surface Plot	Membuat gambar permukaan tiga dimensi dengan intensitas sebagai ketinggian.
+Analyze > Gels > Select First Lane	Menandai seleksi persegi sebagai lajur pertama untuk analisis gel.
+Analyze > Gels > Select Next Lane	Menandai lajur berikutnya dengan seleksi berukuran sama.
+Analyze > Gels > Plot Lanes	Membuat plot profil semua lajur yang ditandai, siap untuk mengukur luas puncak.
+Analyze > Gels > Re-plot Lanes	Menggambar ulang plot lajur dengan lajur yang sama.
+Analyze > Gels > Reset	Menghapus semua lajur yang sudah ditandai.
+Analyze > Gels > Label Peaks	Memberi label luas (atau persen) pada setiap puncak yang telah dipisahkan di plot lajur.
+Analyze > Gels > Gel Analyzer Options	Mengatur lajur vertikal, OD tak terkalibrasi, label persentase, dan pembalikan puncak.
+Analyze > Tools > Save XY Coordinates	Menyimpan koordinat dan nilai setiap piksel bukan latar ke berkas teks.
+Analyze > Tools > Fractal Box Count	Menghitung dimensi fraktal objek biner dengan metode box counting.
+Analyze > Tools > Analyze Line Graph	Mengekstrak koordinat kurva dari citra grafik garis yang telah di-threshold.
+Analyze > Tools > Curve Fitting	Mencocokkan data X dan Y dengan fungsi pilihan (linier, polinomial, eksponensial, power, Gaussian, Rodbard, dan lainnya) dan menampilkan plotnya.
+Analyze > Tools > ROI Manager	Membuka ROI Manager untuk menyimpan, menamai, mengukur, dan mengelola banyak seleksi sekaligus.
+Analyze > Tools > Scale Bar	Menambahkan batang skala berkalibrasi dengan lebar, warna, posisi, dan teks pilihan, ke piksel atau sebagai overlay.
+Analyze > Tools > Calibration Bar	Menambahkan batang kalibrasi warna (LUT beserta nilainya) ke citra.
+Analyze > Tools > Synchronize Windows	Menyinkronkan kursor, zoom, dan seleksi di beberapa jendela citra sekaligus.
+Analyze > Tools > Grid	Menampilkan grid garis, silang, atau titik sebagai overlay dengan luas per titik tertentu (untuk penghitungan stereologi).
+Plugins > Macros > *	Makro yang Anda pasang lewat Install muncul di bagian bawah submenu ini dan bisa dijalankan dengan sekali klik.
+Plugins > Macros > Install	Memasang makro dari berkas sehingga setiap blok macro "Nama" {...} muncul sebagai perintah di menu Plugins > Macros.
+Plugins > Macros > Run	Menjalankan berkas makro (.ijm) atau skrip Python, opsional dengan argumen.
+Plugins > Macros > Edit	Membuka berkas makro atau skrip di editor makro.
+Plugins > Macros > Record	Membuka Recorder yang mencatat setiap perintah yang Anda jalankan sebagai baris makro.
+Plugins > Shortcuts > Add Shortcut...	Memberi tombol pintas (misalnya F1 atau satu huruf) pada perintah menu pilihan.
+Plugins > Shortcuts > Add Shortcut by Name...	Memberi tombol pintas pada perintah dengan mengetik namanya.
+Plugins > Shortcuts > Remove Shortcut	Menghapus tombol pintas buatan Anda.
+Plugins > Shortcuts > List Shortcuts	Menampilkan daftar semua tombol pintas dalam tabel.
+Plugins > Shortcuts > List Commands	Menampilkan daftar semua perintah menu beserta letaknya dalam tabel.
+Plugins > Utilities > Control Panel	Menampilkan seluruh pohon menu; klik dua kali sebuah perintah untuk menjalankannya.
+Plugins > Utilities > Find Commands	Mencari perintah berdasarkan sebagian namanya lalu menjalankannya.
+Plugins > Utilities > Commands	Menampilkan perintah-perintah yang baru dipakai; klik untuk menjalankannya lagi.
+Plugins > Utilities > Search	Mencari teks di berkas makro, skrip, dan teks dalam satu folder; hasilnya ditulis ke jendela Log.
+Plugins > Utilities > Capture Screen	Mengambil tangkapan layar penuh sebagai citra RGB baru.
+Plugins > Utilities > Capture Delayed	Mengambil tangkapan layar setelah jeda beberapa detik.
+Plugins > Utilities > Capture Image	Membuat citra RGB dari citra aktif persis seperti yang tampil (zoom, LUT, overlay).
+Plugins > Utilities > Benchmark	Mengukur kecepatan komputer dengan serangkaian operasi baku; waktunya ditulis ke Log.
+Plugins > Utilities > Reset	Mengosongkan buffer undo dan/atau clipboard internal untuk membebaskan memori.
+Plugins > New > Macro	Membuka editor makro baru berisi templat makro.
+Plugins > New > Macro Tool	Membuka editor makro baru berisi templat alat (tool) makro.
+Plugins > New > Text Window	Membuat jendela teks baru dengan nama dan ukuran tertentu.
+Plugins > Fiji > Auto Threshold	Threshold otomatis gaya Fiji dengan 17 metode (Default, Otsu, Huang, Li, Triangle, dan lainnya), dengan pilihan Try all untuk membandingkan semua metode dalam satu montase.
+Plugins > Fiji > Auto Local Threshold	Threshold lokal (Bernsen, Mean, Median, Niblack, Phansalkar, Sauvola, dan lainnya) dengan radius ketetanggaan tertentu, untuk latar yang tidak rata.
+Plugins > Fiji > Enhance Local Contrast (CLAHE)	Meningkatkan kontras lokal secara adaptif (CLAHE) dengan ukuran blok, jumlah bin, dan kemiringan maksimum.
+Plugins > Fiji > MorphoLibJ > Morphological Filters	Filter morfologi grayscale (erosi, dilasi, opening, closing, gradien, top-hat) dengan bentuk dan radius elemen struktur pilihan.
+Plugins > Fiji > MorphoLibJ > Morphological Reconstruction	Rekonstruksi morfologi (dilasi atau erosi) dari citra marker di dalam citra mask.
+Plugins > Fiji > MorphoLibJ > Regional Min & Max	Menandai minimum atau maksimum regional citra sebagai citra biner.
+Plugins > Fiji > MorphoLibJ > Extended Min & Max	Menandai minimum atau maksimum yang lebih dalam dari nilai dynamic tertentu.
+Plugins > Fiji > MorphoLibJ > Fill Holes (Binary/Gray)	Mengisi lubang pada citra biner maupun grayscale.
+Plugins > Fiji > MorphoLibJ > Kill Borders	Menghapus objek yang menyentuh tepi citra.
+Plugins > Fiji > MorphoLibJ > Chamfer Distance Map	Peta jarak dengan bobot chamfer (Borgefors, Chessknight, dan lainnya) pada citra biner.
+Plugins > Fiji > MorphoLibJ > Marker-controlled Watershed	Segmentasi watershed yang dimulai dari citra marker, opsional dibatasi mask dan dengan garis batas (dams).
+Plugins > Fiji > MorphoLibJ > Distance Transform Watershed	Memisahkan objek biner yang menempel memakai watershed pada peta jarak chamfer.
+Plugins > Fiji > MorphoLibJ > Connected Components Labeling	Memberi nomor label berbeda pada setiap objek terhubung, sebagai citra label 8-, 16-, atau 32-bit.
+Plugins > Fiji > Analyze > Cell Counter	Membuka panel penghitung sel: klik objek di citra untuk menghitungnya per kategori (counter).
+Plugins > Fiji > Analyze > Coloc 2	Analisis kolokalisasi dua channel: koefisien Pearson, Manders, Li, Spearman, Kendall, histogram 2D, dan uji Costes.
+Plugins > Fiji > Analyze > Analyze Skeleton (2D/3D)	Menganalisis kerangka (hasil Skeletonize): jumlah cabang, sambungan, ujung, dan panjang cabang.
+Plugins > Fiji > Image > Bleach Correction	Mengoreksi pemudaran (photobleaching) pada time-lapse dengan rasio sederhana, fit eksponensial, atau pencocokan histogram.
+Plugins > Fiji > Image > Colour Deconvolution	Memisahkan citra pewarnaan histologi RGB (misalnya H&E, H DAB) menjadi tiga citra pewarna.
+Plugins > Fiji > Image > KymographBuilder	Membuat kymograph (jarak di sepanjang garis terhadap waktu) dari time-lapse, satu per channel.
+Window > *	Daftar jendela citra dan jendela lain yang sedang terbuka; klik untuk menampilkannya di depan.
+Window > Show All	Menampilkan semua jendela modul di depan jendela lain.
+Window > Main Window [return]	Menampilkan dan mengaktifkan bar utama ImageJ (tombol ++Enter++).
+Window > Put Behind [tab]	Memindahkan jendela citra aktif ke belakang dan mengaktifkan jendela berikutnya (tombol ++Tab++).
+Window > Cascade	Menyusun jendela citra bertumpuk miring di bawah bar utama.
+Window > Tile	Menyusun jendela citra berdampingan dalam grid agar semuanya terlihat.
+Window > ImageJ	Menampilkan bar utama modul (menu, alat, dan baris status).
+Window > Modules > *	Kembali ke Module Launcher atau membuka jendela baru dari modul lain.
+Help > ImageJ Website	Membuka situs web ImageJ di browser.
+Help > Macro Functions	Membuka daftar fungsi bahasa makro ImageJ di browser.
+Help > Check for Updates	Memeriksa apakah tersedia versi RS-StatChem yang lebih baru.
+Help > About RS-StatChem	Menampilkan versi, hak cipta, dan lisensi RS-StatChem.
+Help > User Guide (PDF)	Membuka panduan pengguna (PDF) untuk versi aplikasi ini di browser; panduan yang sama juga bisa diunduh dari halaman rilis.

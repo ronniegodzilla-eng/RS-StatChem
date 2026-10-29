@@ -68,6 +68,13 @@ jobs:
           echo "pytest process exit code: $code"
           exit $code
 
+      # The PDF user guide is made from the app itself (screenshots, menus) on the macOS
+      # runner, so every release carries a guide that matches it; --strict fails when a menu
+      # command has no explanation or a screenshot scene broke
+      - name: User guide (PDF)
+        if: runner.os == 'macOS'
+        run: python docs/user_guide/build.py --strict --out RS-StatChem-User-Guide.pdf
+
       - name: Build
         run: python -m PyInstaller packaging/rsstatchem.spec --noconfirm --clean
 
@@ -151,13 +158,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          path: |
+            ${{ matrix.artifact }}.zip
+            RS-StatChem-User-Guide.pdf
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact }}.zip
+          files: |
+            ${{ matrix.artifact }}.zip
+            RS-StatChem-User-Guide.pdf
 
       # The source repository is private, so the app checks for updates against a public
       # mirror that only holds the release zips and notes (needs the RELEASES_TOKEN secret).
@@ -168,6 +179,7 @@ jobs:
           git log -1 --pretty=%B | grep -v '^Co-Authored-By:' > release-notes.md
           echo "" >> release-notes.md
           echo "Install: unzip, then replace RS-StatChem (macOS: in Applications; Windows: the portable folder)." >> release-notes.md
+          echo "Panduan pengguna: RS-StatChem-User-Guide.pdf (dibuat otomatis untuk versi ini)." >> release-notes.md
 
       - name: Publish to the public releases repository
         if: startsWith(github.ref, 'refs/tags/v') && env.HAS_RELEASES_TOKEN == 'true'
@@ -178,4 +190,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: RS-StatChem ${{ github.ref_name }}
           body_path: release-notes.md
-          files: ${{ matrix.artifact }}.zip
+          files: |
+            ${{ matrix.artifact }}.zip
+            RS-StatChem-User-Guide.pdf

@@ -1,7 +1,7 @@
 """Window and Help menu commands of the ImageJ bar (Phase 0; WP-A may extend them).
 
 They are UI-only (``ui_action``), not macro commands: Show All, Main Window, Put Behind,
-Cascade, Tile, ImageJ Website..., Macro Functions..., Check for Updates..., About
+Cascade, Tile, ImageJ Website..., Macro Functions..., User Guide (PDF), Check for Updates..., About
 RS-StatChem....
 """
 from __future__ import annotations
@@ -67,6 +67,12 @@ def _open_url(url: str):
     return action
 
 
+def _user_guide(bar, _cmd) -> None:
+    from rsstatchem.ui.update_dialog import open_user_guide
+
+    open_user_guide()
+
+
 def _updates(bar, _cmd) -> None:
     if bar.ctx is not None:
         bar.ctx.check_for_updates(manual=True)
@@ -82,6 +88,7 @@ def register(registry) -> None:
                           ("Put Behind [tab]", _put_behind), ("Cascade", _cascade),
                           ("Tile", _tile), ("ImageJ Website...", _open_url(IMAGEJ_WEBSITE)),
                           ("Macro Functions...", _open_url(MACRO_FUNCTIONS)),
+                          ("User Guide (PDF)", _user_guide),
                           ("Check for Updates...", _updates),
                           ("About RS-StatChem...", _about)):
         registry.register(Command(label, needs_image=False, undoable=False, recordable=False,

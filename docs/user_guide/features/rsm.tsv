@@ -1,0 +1,62 @@
+# RSM / DOE (rsstatchem/ui/dx): one line per menu command, "Menu > Item<TAB>explanation"
+File > New Design	Membuka wizard New Design untuk memilih jenis desain, mengisi faktor beserta rentangnya, dan menamai respons. Jika jendela ini sudah berisi desain, desain baru dibuka di jendela RSM baru.
+File > Open Design	Membuka berkas desain `.rsx` lengkap dengan data respons, analisis, dan pengaturan optimasinya.
+File > Import Data Set (Historical)	Membuat desain *historical data* dari tabel CSV/Excel; Anda menentukan kolom mana yang menjadi faktor (numerik atau kategorik) dan mana yang menjadi respons.
+File > Open Recent > *	Daftar berkas `.rsx` yang terakhir dibuka; klik salah satunya untuk membukanya kembali.
+File > Save	Menyimpan desain ke berkasnya; jika belum pernah disimpan, Anda diminta memilih nama dan lokasi berkas `.rsx`.
+File > Save As	Menyimpan desain dengan nama atau di lokasi lain sebagai berkas `.rsx` baru.
+File > Import Responses (CSV / Excel)	Mengisi kolom respons dari tabel CSV/Excel. Kolom dicocokkan dengan nama respons (atau R1, R2, ...), dan baris dicocokkan lewat kolom Std atau Run jika ada.
+File > Export Design Layout (CSV / Excel)	Menyimpan design layout (urutan run, faktor, dan respons) sebagai berkas CSV atau Excel, misalnya untuk lembar kerja di laboratorium.
+File > Export Graph As	Menyimpan grafik yang sedang tampil sebagai gambar PNG, JPEG, BMP, atau TIFF.
+File > Close	Menutup jendela ini; jika ada perubahan yang belum disimpan, Anda ditanya apakah ingin menyimpannya.
+Edit > Undo	Membatalkan perubahan terakhir pada design layout, misalnya isian respons, sisipan run, atau augmentasi.
+Edit > Redo	Mengulang kembali perubahan yang baru saja dibatalkan dengan Undo.
+Edit > Copy	Menyalin sel yang dipilih di design layout, tabel laporan (siap ditempel ke Word/Excel), atau grafik yang sedang tampil.
+Edit > Paste	Menempelkan data dari clipboard, misalnya satu kolom dari Excel, ke sel respons di design layout mulai dari sel yang dipilih.
+Edit > Copy Graph	Menyalin grafik yang sedang tampil ke clipboard sebagai gambar.
+Edit > Preferences	Mengatur taraf signifikansi (alpha), tingkat kepercayaan interval, serta proporsi dan kepercayaan *tolerance interval* yang dipakai oleh ANOVA, interval, dan optimasi.
+View > Navigation Pane	Menampilkan atau menyembunyikan panel navigasi di sebelah kiri.
+View > Toolbar	Menampilkan atau menyembunyikan toolbar.
+View > Annotated ANOVA	Menampilkan atau menyembunyikan catatan penjelasan di bawah tabel ANOVA dan Fit Summary.
+Display Options > Process Factors > Actual	Menampilkan nilai faktor di design layout dalam satuan aslinya (misalnya °C atau menit).
+Display Options > Process Factors > Coded	Menampilkan nilai faktor dalam satuan kode (−1, 0, +1).
+Display Options > Show Space Point Type	Menambahkan kolom jenis titik (misalnya factorial, axial, center, edge) di design layout.
+Display Options > Show Design Points on Graphs	Menampilkan atau menyembunyikan titik-titik desain pada grafik model (kontur dan permukaan 3D).
+Design Tools > Sort by Std Order	Mengurutkan design layout menurut urutan standar (Std).
+Design Tools > Sort by Run Order	Mengurutkan design layout menurut urutan pengerjaan (Run), yaitu urutan acak untuk menjalankan percobaan.
+Design Tools > Randomize Run Order	Mengacak ulang urutan run. Jika respons sudah diisi, Anda diminta konfirmasi; data tetap melekat pada run-nya, hanya nomor Run yang berubah.
+Design Tools > Edit Factor and Response Info	Mengubah nama dan satuan faktor serta respons; untuk faktor numerik juga simpangan baku (untuk POE) dan level diskret yang diizinkan dalam optimasi.
+Design Tools > Evaluate Design	Membuka node Evaluation: derajat bebas, galat baku dan VIF koefisien, power, leverage, serta grafik FDS untuk model yang dipilih, tanpa perlu data respons.
+Design Tools > Augment Design > Augment Design: Foldover	Menambahkan foldover (penuh, satu faktor, atau semifold) dari desain dua level sebagai blok baru untuk memisahkan efek yang ter-alias.
+Design Tools > Augment Design > Add Center Points	Menambahkan titik pusat untuk menaksir *pure error* dan menguji kelengkungan, opsional sebagai blok baru.
+Design Tools > Augment Design > Add Axial Points (to CCD)	Mengubah desain faktorial menjadi central composite design dengan menambahkan titik aksial pada ±alpha dan titik pusat dalam blok baru.
+Design Tools > Augment Design > Add Replicates	Mengulang semua run desain (respons kosong), opsional satu blok baru per replikasi.
+Design Tools > Augment Design > Optimal Augment	Menambahkan run optimal (I-, D-, atau A-optimal) agar model yang lebih besar dapat ditaksir; run lama dipertahankan dan run baru bisa menjadi blok baru.
+Design Tools > Augment Design > Modify Design Space	Mengubah batas bawah dan atas faktor numerik. Run lama mempertahankan nilai aktualnya, sedangkan nilai kodenya ikut berubah.
+Design Tools > Augment Design > Edit Constraints	Mengedit batasan linear daerah desain, misalnya `A + B <= 15`, lalu menampilkan titik sudut daerah dan run yang berada di luarnya.
+Design Tools > Edit Layout > Insert Run	Menambahkan satu run kosong di akhir design layout.
+Design Tools > Edit Layout > Delete Selected Runs	Menghapus run yang dipilih di design layout; nomor Std dan Run disusun ulang (bisa dibatalkan dengan Undo).
+Design Tools > Edit Layout > Add Response	Menambahkan kolom respons baru dengan nama dan satuan yang Anda tentukan.
+Design Tools > Edit Layout > Round Factor Values	Membulatkan nilai faktor numerik ke sejumlah desimal atau digit signifikan; komponen mixture disesuaikan agar jumlahnya tetap sama dengan total.
+Design Tools > Edit Layout > Rename Blocks	Memberi nama pada setiap blok desain.
+Design Tools > Import Responses (CSV / Excel)	Sama dengan [[File > Import Responses (CSV / Excel)]]: mengisi kolom respons dari tabel CSV/Excel.
+Analysis > *	Daftar respons desain; pilih salah satunya untuk membuka analisisnya. Saat sebuah analisis terbuka, menu ini juga memuat tab Transform, Fit Summary, Model, ANOVA, Diagnostics, dan Model Graphs.
+Optimization > Numerical	Optimasi numerik dengan fungsi desirability: tentukan tujuan setiap respons (maximize, minimize, target, in range), lalu lihat solusi terbaik, ramps, dan grafiknya.
+Optimization > Graphical	Optimasi grafis: tentukan batas respons, lalu overlay plot menandai dengan warna kuning daerah faktor yang memenuhi semua batas tersebut.
+Optimization > Propagation of Error	Grafik kontur atau 3D dari *propagation of error* (POE) sebuah respons, yaitu variasi respons yang diteruskan dari simpangan baku pengaturan faktor.
+Optimization > Post Analysis	Judul kelompok (tidak dapat diklik) untuk tiga perintah analisis lanjutan di bawahnya.
+Optimization > Point Prediction	Prediksi setiap respons beserta SE, CI, PI, dan TI pada pengaturan faktor yang Anda pilih dengan slider.
+Optimization > Confirmation	Membandingkan rata-rata run konfirmasi dengan interval prediksi untuk sejumlah n run pada pengaturan Point Prediction.
+Optimization > Coefficients Table	Koefisien model (dalam satuan kode) semua respons berdampingan dalam satu tabel, diwarnai menurut p-value.
+Window > Modules > *	Membuka Module Launcher atau jendela baru dari modul lain.
+Window > *	Daftar jendela RSM / DOE yang sedang terbuka; klik untuk berpindah ke jendela tersebut.
+Help > Screen Tips	Menampilkan penjelasan singkat tentang layar yang sedang dibuka.
+Help > Tutorial Data > Chemical process (CCD, Montgomery 11.2)	Membuka contoh CCD dua faktor (waktu dan suhu reaksi) dengan respons yield dari Montgomery, Contoh 11.2.
+Help > Tutorial Data > Filtration rate (2⁴ factorial, Montgomery 6.2)	Membuka contoh faktorial 2⁴ (suhu, tekanan, konsentrasi, pengadukan) dengan respons laju filtrasi dari Montgomery, Contoh 6.2.
+Help > Tutorial Data > Battery life (numeric x categoric, Montgomery 5.1)	Membuka contoh faktor numerik (suhu) yang disilangkan dengan faktor kategorik (bahan pelat), empat replikasi, dari Montgomery, Contoh 5.1.
+Help > Tutorial Data > Paper pulp (split-plot, Montgomery 14.4)	Membuka contoh desain split-plot (metode persiapan pulp sulit diubah, suhu mudah diubah) dari Montgomery, Bagian 14.4.
+Help > Tutorial Data > Chemical conversion (CCD, 2 responses)	Membuka contoh CCD rotatable tiga faktor dengan dua respons (konversi dan aktivitas) dari Myers & Montgomery, cocok untuk latihan optimasi.
+Help > Tutorial Data > Flare (constrained mixture, McLean-Anderson)	Membuka contoh desain mixture empat komponen dengan batasan (extreme vertices) dari McLean dan Anderson, tanpa data respons.
+Help > Check for Updates	Memeriksa apakah tersedia versi RS-StatChem yang lebih baru.
+Help > About RS-StatChem	Menampilkan versi, hak cipta, dan lisensi aplikasi.
+Help > User Guide (PDF)	Membuka panduan pengguna (PDF) untuk versi aplikasi ini di browser; panduan yang sama juga bisa diunduh dari halaman rilis.

@@ -887,6 +887,9 @@ class DXMainWindow(QMainWindow):
         for key, (text, _) in EXAMPLES.items():
             tut.addAction(text, lambda _=False, k=key: self.open_example(k))
         m.addSeparator()
+        from rsstatchem.ui.update_dialog import open_user_guide
+
+        m.addAction("User &Guide (PDF)", open_user_guide)
         m.addAction(self.a_updates)
         m.addAction(self.a_about)
 

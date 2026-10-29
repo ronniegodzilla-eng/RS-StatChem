@@ -626,6 +626,7 @@ MENU_LAYOUT: tuple[Menu, ...] = (
         I('ImageJ Website...', '', 'BrowserLauncher'),
         I('Macro Functions...', '', 'BrowserLauncher'),
         SEP,
+        I('User Guide (PDF)', '', 'RS-StatChem'),
         I('Check for Updates...', '', 'RS-StatChem'),
         I('About RS-StatChem...', '', 'RS-StatChem'),
     )),

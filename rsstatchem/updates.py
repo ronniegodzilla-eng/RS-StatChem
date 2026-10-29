@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from rsstatchem import APP_NAME, __version__
 
 RELEASES_REPO = "ronniegodzilla-eng/RS-StatChem-releases"
+# the PDF user guide built for every release (docs/user_guide), attached next to the zips
+USER_GUIDE_ASSET = "RS-StatChem-User-Guide.pdf"
 LATEST_URL = f"https://api.github.com/repos/{RELEASES_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{RELEASES_REPO}/releases/latest"
 TIMEOUT = 8
@@ -99,3 +101,8 @@ def fetch_latest(url: str = LATEST_URL, timeout: float = TIMEOUT) -> UpdateInfo:
     except ValueError:
         raise UpdateError("GitHub sent an unreadable answer.") from None
     return info_from_release(data)
+
+
+def user_guide_url(version: str = __version__) -> str:
+    """The user guide made for this version (Help > User Guide)."""
+    return f"https://github.com/{RELEASES_REPO}/releases/download/v{version}/{USER_GUIDE_ASSET}"

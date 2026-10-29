@@ -32,6 +32,13 @@ def _install_hint() -> str:
     return "Unzip the download and replace your current copy."
 
 
+def open_user_guide() -> None:
+    """Help > User Guide (PDF): the guide of this version, in the browser."""
+    from rsstatchem.updates import user_guide_url
+
+    QDesktopServices.openUrl(QUrl(user_guide_url()))
+
+
 class UpdateDialog(QDialog):
     def __init__(self, info: UpdateInfo, settings, parent=None):
         super().__init__(parent)

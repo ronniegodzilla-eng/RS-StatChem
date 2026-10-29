@@ -14,10 +14,15 @@ pemilih **lima modul**, masing-masing dengan jendela dan cara input datanya send
 
 Modul lain bisa dibuka kapan saja lewat **Window → Modules**.
 
+**Panduan pengguna (PDF)** — instalasi, jendela kerja setiap modul dengan gambar beranotasi, dan
+penjelasan semua perintah menu — dibuat otomatis dari aplikasi untuk setiap rilis
+(`RS-StatChem-User-Guide.pdf` di halaman rilis, atau **Help → User Guide (PDF)** di aplikasi).
+Sumbernya ada di [docs/user_guide](docs/user_guide/README.md).
+
 Dibangun dengan Python 3.12, PySide6 (Qt), pandas, SciPy, dan statsmodels. Berjalan native di
 Apple Silicon dan sebagai aplikasi portable (tanpa instalasi) di Windows.
 
-## Status (v0.10.2)
+## Status (v0.10.3)
 
 129 entri menu aktif; yang masih nonaktif hanya Ratio dan Distances. 567 tes otomatis
 membandingkan hasil dengan SciPy, statsmodels, pingouin, lavaan (via contoh terpublikasi),

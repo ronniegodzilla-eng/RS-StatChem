@@ -1,0 +1,181 @@
+# Chemical Drawing (rsstatchem/ui/chemdraw, rsstatchem/ui/chem_editor): one line per menu command, "Menu > Item<TAB>explanation"
+File > New Document	Membuka dokumen gambar baru yang kosong di jendela Chemical Drawing baru, dengan style sheet yang terakhir dipilih.
+File > Open Style Sheets > *	Membuka dokumen baru dengan gaya gambar (panjang ikatan, tebal garis, huruf) jurnal tersebut; gaya ini juga menjadi bawaan untuk dokumen baru berikutnya. Jika dokumen saat ini masih kosong, gayanya langsung diganti.
+File > Open	Membuka berkas gambar (`.rsc`, `.cdx`, `.cdxml`) atau berkas struktur (`.mol`, `.sdf`, `.rxn`, `.smi`, `.helm`, `.fasta`); jika dokumen saat ini sudah berisi gambar, berkas dibuka di jendela baru.
+File > Open Recent > *	Daftar berkas kimia yang terakhir dibuka; klik salah satunya untuk membukanya kembali.
+File > Open Spectrum (JCAMP-DX)	Membuka spektrum NMR terukur (`.jdx`, `.dx`) sebagai tumpangan di jendela NMR Prediction, untuk dibandingkan dengan spektrum prediksi.
+File > Close	Menutup jendela dokumen; jika ada perubahan yang belum disimpan, Anda ditanya apakah ingin menyimpannya.
+File > Save	Menyimpan dokumen ke berkasnya (`.rsc`, `.cdx` atau `.cdxml`); dokumen yang belum pernah disimpan meminta nama berkas.
+File > Save As	Menyimpan dokumen dengan nama atau format baru: RS-StatChem drawing (`.rsc`), ChemDraw document (`.cdx`) atau ChemDraw XML (`.cdxml`).
+File > Revert	Membuang semua perubahan dan memuat ulang versi terakhir yang disimpan.
+File > Import > Insert Structure Text (SMILES, MOL, InChI)	Membuka kotak untuk menempelkan SMILES, InChI, blok MOL/SDF, SMILES reaksi atau blok RXN; strukturnya digambar di tempat kosong pada halaman.
+File > Import > Structure File (CDX, CDXML, MOL, SDF, RXN, HELM, FASTA)	Membuka berkas struktur atau dokumen ChemDraw, sama seperti File ▸ Open.
+File > Export > ChemDraw Document (.cdx)	Menyimpan gambar (atau bagian yang dipilih) sebagai dokumen ChemDraw biner `.cdx`.
+File > Export > ChemDraw XML (.cdxml)	Menyimpan gambar (atau bagian yang dipilih) sebagai ChemDraw XML `.cdxml`, yang bisa dibuka dan diedit di ChemDraw.
+File > Export > MDL Molfile (.mol)	Menyimpan struktur sebagai Molfile V2000, format pertukaran yang dibaca hampir semua program kimia.
+File > Export > MDL Molfile V3000 (.mol)	Menyimpan struktur sebagai Molfile V3000 (format baru untuk molekul besar dan stereokimia lanjut).
+File > Export > SD File (.sdf)	Menyimpan setiap molekul di gambar sebagai satu rekaman dalam berkas SD.
+File > Export > MDL Rxnfile (.rxn)	Menyimpan reaksi yang digambar (reaktan, panah, produk) sebagai Rxnfile V2000.
+File > Export > MDL Rxnfile V3000 (.rxn)	Menyimpan reaksi sebagai Rxnfile V3000.
+File > Export > SMILES	Menyimpan SMILES struktur ke berkas teks.
+File > Export > Reaction SMILES	Menyimpan SMILES reaksi (`reaktan>agen>produk`) ke berkas teks.
+File > Export > InChI / InChIKey	Menyimpan InChI dan InChIKey struktur ke berkas teks.
+File > Export > HELM	Menyimpan peptida yang digambar dalam notasi HELM.
+File > Export > FASTA	Menyimpan urutan peptida yang digambar dalam format FASTA.
+File > Export > PNG Image	Menyimpan gambar sebagai PNG; Anda memilih resolusi (150 sampai 1200 dpi) dan latar transparan atau putih.
+File > Export > TIFF Image	Menyimpan gambar sebagai TIFF dengan resolusi pilihan, cocok untuk naskah jurnal yang meminta TIFF.
+File > Export > JPEG Image	Menyimpan gambar sebagai JPEG dengan resolusi pilihan.
+File > Export > BMP Image	Menyimpan gambar sebagai bitmap BMP dengan resolusi pilihan.
+File > Export > SVG Image	Menyimpan gambar sebagai grafik vektor SVG yang tetap tajam saat diperbesar.
+File > Export > PDF	Menyimpan gambar sebagai PDF vektor.
+File > Document Annotations	Mencatat kata kunci dan isinya (Name, Description, Type, Other Info, atau kata kunci sendiri) yang ikut tersimpan di dokumen.
+File > Document Settings	Mengatur gaya dokumen: panjang ikatan, tebal garis dan ikatan tebal, jarak ikatan rangkap dan hash, huruf dan ukuran label serta keterangan, dan warna menurut unsur.
+File > Apply Document Settings from > *	Menerapkan gaya style sheet tersebut ke dokumen yang sedang dibuka; gambar diskalakan ke panjang ikatan yang baru.
+File > List Nicknames	Menampilkan tabel semua nickname (singkatan seperti Ph, OMe, Boc, Ts) yang dikenali label atom, beserta nama dan strukturnya.
+File > Page Setup	Memilih ukuran kertas halaman dokumen (Letter atau A4).
+File > Print	Mencetak halaman dokumen ke printer.
+File > Send to Output Viewer	Mengirim gambar struktur beserta sifat-sifatnya ke Output Viewer, sehingga bisa disalin ke laporan bersama hasil analisis lain.
+Edit > Undo	Membatalkan perubahan terakhir.
+Edit > Redo	Mengulang perubahan yang tadi dibatalkan.
+Edit > Repeat	Mengulang perintah menu Object terakhir (misalnya Rotate 15° atau Align) pada pilihan saat ini; namanya berubah sesuai perintah yang diingat.
+Edit > Cut	Memotong bagian yang dipilih ke clipboard.
+Edit > Copy	Menyalin bagian yang dipilih (atau seluruh gambar) ke clipboard sebagai gambar dan data kimia, sehingga bisa ditempel ke Word, PowerPoint atau ChemDraw.
+Edit > Copy As > MOL Text	Menyalin struktur sebagai teks Molfile V2000.
+Edit > Copy As > MOL V3000 Text	Menyalin struktur sebagai teks Molfile V3000.
+Edit > Copy As > SMILES	Menyalin SMILES struktur ke clipboard.
+Edit > Copy As > InChI	Menyalin InChI struktur ke clipboard.
+Edit > Copy As > InChIKey	Menyalin InChIKey struktur, misalnya untuk dicari di basis data.
+Edit > Copy As > HELM	Menyalin notasi HELM dari peptida yang digambar.
+Edit > Copy As > FASTA	Menyalin urutan FASTA dari peptida yang digambar.
+Edit > Copy As > Reaction SMILES	Menyalin SMILES reaksi yang digambar.
+Edit > Copy As > CDXML Text	Menyalin gambar sebagai teks ChemDraw XML.
+Edit > Copy As > Picture (PNG, 300 dpi)	Menyalin gambar sebagai citra PNG 300 dpi berlatar putih.
+Edit > Copy As > SVG	Menyalin gambar sebagai grafik vektor SVG.
+Edit > Paste	Menempelkan isi clipboard: gambar dari RS-StatChem atau ChemDraw, atau teks struktur (SMILES, MOL, InChI).
+Edit > Paste Special > SMILES	Menempelkan teks clipboard sebagai SMILES (satu struktur per baris).
+Edit > Paste Special > MOL / CDXML	Menempelkan teks clipboard sebagai blok MOL/RXN atau teks CDXML; jenisnya dikenali otomatis.
+Edit > Paste Special > InChI	Menempelkan InChI dari clipboard sebagai struktur.
+Edit > Paste Special > HELM	Menempelkan notasi HELM dari clipboard sebagai peptida.
+Edit > Paste Special > FASTA Peptide	Menempelkan urutan FASTA dari clipboard sebagai peptida.
+Edit > Paste Special > FASTA DNA	Menempelkan urutan FASTA dari clipboard sebagai untai DNA.
+Edit > Paste Special > FASTA RNA	Menempelkan urutan FASTA dari clipboard sebagai untai RNA.
+Edit > Paste Special > Name as Structure	Mengubah nama senyawa di clipboard menjadi struktur, seperti Convert Name to Structure.
+Edit > Paste Special > Insert Structure Text (SMILES, MOL, InChI)	Membuka kotak untuk menempelkan teks struktur atau reaksi, lalu menggambarnya.
+Edit > Clear	Menghapus bagian yang dipilih.
+Edit > Select All	Memilih semua objek di dokumen.
+Edit > Insert File	Menambahkan isi berkas gambar atau struktur ke dokumen yang sedang dibuka (File ▸ Open membuka dokumen baru).
+Edit > Duplicate Across Arrow > Right (Ctrl+Right)	Menambahkan panah reaksi ke kanan pilihan beserta salinan pilihan di seberangnya, sebagai awal produk.
+Edit > Duplicate Across Arrow > Left (Ctrl+Left)	Menambahkan panah reaksi ke kiri pilihan beserta salinan pilihan di seberangnya.
+Edit > Duplicate Across Arrow > Down (Ctrl+Down)	Menambahkan panah reaksi ke bawah pilihan beserta salinan pilihan di bawahnya.
+Edit > Duplicate Across Arrow > Up (Ctrl+Up)	Menambahkan panah reaksi ke atas pilihan beserta salinan pilihan di atasnya.
+View > Show Main Toolbar	Menampilkan atau menyembunyikan Main Toolbar (palet alat menggambar di kiri).
+View > Show General Toolbar	Menampilkan atau menyembunyikan General Toolbar (berkas, clipboard, zoom, Clean Up, nama).
+View > Show Style Toolbar	Menampilkan atau menyembunyikan Style Toolbar (huruf, ukuran, gaya teks).
+View > Show Analysis Window	Menampilkan atau menyembunyikan jendela Analysis (rumus kimia, massa eksak, berat molekul, m/z, analisis unsur).
+View > Show Chemical Properties Window	Menampilkan atau menyembunyikan jendela Chemical Properties (titik didih dan leleh, sifat kritis, logP, tPSA, pKa dan lain-lain).
+View > Show Templates Window	Menampilkan atau menyembunyikan Templates Window berisi pustaka templat bergambar.
+View > Show Periodic Table Window	Membuka tabel periodik; unsur yang dipilih diterapkan ke atom terpilih dan menjadi alat atom aktif.
+View > Show Reaction Interpretation	Mewarnai bagian reaksi sebagaimana dibaca aplikasi: reaktan merah, produk magenta, kondisi biru muda, panah biru. Gambar dokumen tidak berubah.
+View > Show Rulers	Menampilkan penggaris (cm) di tepi atas dan kiri halaman, lengkap dengan tanda posisi penunjuk dan pilihan.
+View > Show Crosshair	Menampilkan garis bantu silang yang mengikuti penunjuk untuk meratakan objek.
+View > Show Grid	Menampilkan kisi bantu di halaman dengan jarak satu panjang ikatan.
+View > Actual Size	Menampilkan dokumen pada ukuran sebenarnya (100%).
+View > Fit to Window	Memperbesar atau memperkecil tampilan sehingga seluruh gambar pas di jendela.
+View > Magnify	Memperbesar tampilan satu tingkat.
+View > Reduce	Memperkecil tampilan satu tingkat.
+View > Page Size > *	Mengganti ukuran halaman dokumen (Letter atau A4).
+Object > Fixed Lengths	Jika aktif, ikatan baru selalu digambar dengan panjang ikatan tetap dari style sheet.
+Object > Fixed Angles	Jika aktif, ikatan dan panah baru mengikuti sudut kelipatan 15°; tahan Shift saat menyeret untuk sudut bebas.
+Object > Bring to Front	Memindahkan objek terpilih (panah, bentuk, teks, dan lain-lain) ke lapisan paling depan.
+Object > Send to Back	Memindahkan objek terpilih ke lapisan paling belakang.
+Object > Group	Menyatukan objek terpilih menjadi satu grup yang dipilih dan dipindahkan bersama.
+Object > Ungroup	Memecah grup terpilih kembali menjadi objek-objek terpisah.
+Object > Join	Menyatukan dua atom terpilih, atau dua ikatan terpilih, dari dua struktur berbeda sehingga struktur kedua menempel pada yang pertama.
+Object > Align > Lefts	Meratakan sisi kiri objek-objek terpilih.
+Object > Align > Horizontal Centers	Meratakan objek-objek terpilih pada garis tengah vertikal yang sama.
+Object > Align > Rights	Meratakan sisi kanan objek-objek terpilih.
+Object > Align > Tops	Meratakan sisi atas objek-objek terpilih.
+Object > Align > Vertical Centers	Meratakan objek-objek terpilih pada garis tengah horizontal yang sama.
+Object > Align > Bottoms	Meratakan sisi bawah objek-objek terpilih.
+Object > Distribute > Horizontally	Mengatur jarak horizontal objek-objek terpilih agar sama.
+Object > Distribute > Vertically	Mengatur jarak vertikal objek-objek terpilih agar sama.
+Object > Flip Horizontal	Mencerminkan pilihan terhadap sumbu vertikal (kiri-kanan); konfigurasi stereo ikut terbalik.
+Object > Flip Vertical	Mencerminkan pilihan terhadap sumbu horizontal (atas-bawah); konfigurasi stereo ikut terbalik.
+Object > Rotate 180° Horizontal	Membalik pilihan 180° dalam ruang terhadap sumbu vertikal; wedge dan hash ditukar sehingga konfigurasi stereo tetap.
+Object > Rotate 180° Vertical	Membalik pilihan 180° dalam ruang terhadap sumbu horizontal; wedge dan hash ditukar sehingga konfigurasi stereo tetap.
+Object > Rotate 90° Clockwise	Memutar pilihan 90° searah jarum jam.
+Object > Rotate 90° Counterclockwise	Memutar pilihan 90° berlawanan arah jarum jam.
+Object > Rotate 180°	Memutar pilihan 180° di bidang gambar.
+Object > Rotate	Memutar pilihan (atau seluruh gambar) dengan sudut yang Anda ketik, searah jarum jam.
+Object > Scale	Mengubah ukuran pilihan (atau seluruh gambar) dengan persentase yang Anda ketik.
+Object > Center on Page	Memindahkan pilihan (atau seluruh gambar) ke tengah halaman.
+Object > Show Stereochemistry	Menampilkan indikator stereo CIP (R/S, r/s, E/Z, M/P) di samping pusat kiral dan ikatan rangkap stereogenik.
+Object > Stereo Indicator Options > Include Parentheses	Menuliskan indikator stereo dalam tanda kurung, misalnya (S).
+Object > Stereo Indicator Options > Hide Indicators of Selected Atoms	Menyembunyikan indikator stereo pada atom terpilih saja.
+Object > Stereo Indicator Options > Show Indicators of Selected Atoms	Menampilkan kembali indikator stereo pada atom terpilih.
+Structure > Atom Properties	Membuka sifat atom terpilih: unsur, label, muatan, isotop, jumlah H, radikal, dan nomor peta.
+Structure > Expand Label	Mengganti nickname (Ph, OMe, Boc, ...) pada atom terpilih, atau di seluruh gambar, dengan atom-atom penyusunnya.
+Structure > Add Atom Numbers	Menuliskan nomor urut kecil di samping setiap atom (yang dipilih, atau semua).
+Structure > Remove Atom Numbers	Menghapus nomor atom yang ditampilkan.
+Structure > Check Structure	Memeriksa valensi semua atom; atom yang bermasalah dipilih dan dijelaskan dalam pesan.
+Structure > Clean Up Structure	Merapikan tata letak struktur terpilih (atau semua): panjang ikatan dan sudut dibuat seragam.
+Structure > Clean Up Reaction	Merapikan reaksi satu tahap: jarak antarkomponen dibuat sama, tanda plus ditambahkan, dan panah dipanjangkan sesuai kondisi reaksi.
+Structure > Structure Perspective (3D)	Membuka tampilan 3D molekul terpilih yang bisa diputar dengan mouse; Apply to Drawing mengganti gambar dengan proyeksi hasil putaran.
+Structure > Mass Fragmentation Tool	Memilih alat fragmentasi massa: tarik garis melintasi ikatan untuk melihat rumus dan massa setiap fragmen.
+Structure > Convert Name to Structure	Mengubah nama senyawa (atau teks terpilih) menjadi struktur, berturut-turut dari daftar nama offline, basis data nama offline, OPSIN (offline), lalu PubChem jika diizinkan.
+Structure > Convert Structure to Name	Menuliskan nama IUPAC di bawah setiap struktur terpilih, dari daftar offline, penamaan otomatis berbasis aturan, basis data offline, atau PubChem jika diizinkan.
+Structure > Use PubChem for Names (online)	Jika aktif, nama atau struktur yang tidak ditemukan secara offline dicari di PubChem lewat internet (yang dikirim hanya InChIKey atau nama).
+Structure > Map Reaction Atoms	Memetakan atom reaktan ke atom produk secara otomatis (toolkit Indigo); nomor peta muncul pada atom yang dipetakan.
+Structure > Clear Reaction Map	Menghapus nomor peta atom dari atom terpilih atau dari seluruh reaksi.
+Structure > Check Reaction Balance	Membandingkan jumlah setiap unsur di ruas reaktan dan produk, dan menyarankan koefisien jika reaksi belum setara.
+Structure > Reaction Stoichiometry	Membuka tabel stoikiometri reaksi: isi jumlah reaktan (mmol, mg, g atau ekuivalen) untuk menghitung ekuivalen, pereaksi pembatas dan hasil teoretis.
+Structure > Chemistry Calculators > Formula & Molar Mass	Menghitung massa molar, massa monoisotopik dan komposisi unsur dari rumus yang Anda ketik; hasilnya dikirim ke Output Viewer.
+Structure > Chemistry Calculators > Empirical Formula	Menghitung rumus empiris dan rumus molekul dari persen massa atau data CHN.
+Structure > Chemistry Calculators > Molecule Properties	Menampilkan identitas, deskriptor RDKit dan aturan *drug-likeness* untuk struktur di gambar atau SMILES yang diketik.
+Structure > Chemistry Calculators > Balance Equation & Stoichiometry	Menyetarakan persamaan reaksi yang diketik dan membuat tabel stoikiometrinya.
+Structure > Chemistry Calculators > Solution Calculator	Kalkulator laboratorium: pembuatan larutan, stok, pengenceran (termasuk berseri), satuan konsentrasi, pH, buffer, molalitas dan normalitas, hukum gas, konversi satuan.
+Structure > Chemistry Calculators > Insert Structure into Output	Menggambar molekul atau SMILES reaksi sebagai citra di Output Viewer.
+Structure > Insert Structure Text (SMILES, MOL, InChI)	Membuka kotak untuk menempelkan SMILES, InChI, MOL/SDF atau teks reaksi, lalu menggambarnya.
+Structure > Autonumber Reaction	Memberi nomor senyawa (1, 2, 3, ...) di bawah setiap struktur reaksi, untuk dirujuk di naskah.
+Structure > Clear Reaction Numbers	Menghapus nomor senyawa yang dibuat Autonumber Reaction.
+Structure > Reaction Numbering Style > Arabic (1, 2, 3)	Memakai angka Arab untuk nomor senyawa.
+Structure > Reaction Numbering Style > Roman (I, II, III)	Memakai angka Romawi untuk nomor senyawa.
+Structure > Reaction Numbering Style > Alphabetic (a, b, c)	Memakai huruf untuk nomor senyawa.
+Structure > Bond Properties	Membuka sifat ikatan terpilih: orde, tampilan (wedge, hash, tebal, putus-putus, ...) dan posisi ikatan rangkap.
+Structure > Bracket Properties	Membuka sifat kurung terpilih: jenis dan sisi kurung, jumlah ulang (misalnya n), jenis polimer dan pola ulangnya.
+Structure > Predict ¹H-NMR Shifts	Membuka jendela NMR Prediction dengan spektrum ¹H prediksi dan daftar puncak struktur di gambar.
+Structure > Predict ¹³C-NMR Shifts	Membuka jendela NMR Prediction dengan spektrum ¹³C prediksi dan daftar puncak struktur di gambar.
+Text > Font > *	Mengganti jenis huruf teks terpilih; jika yang dipilih atom, huruf label atom seluruh dokumen yang diganti.
+Text > Size > *	Mengganti ukuran huruf (pt) teks terpilih; jika yang dipilih atom, ukuran label atom seluruh dokumen yang diganti.
+Text > Style > Plain	Menghapus gaya tebal, miring, garis bawah dan Formula dari teks terpilih.
+Text > Style > Bold	Menebalkan teks terpilih.
+Text > Style > Italic	Memiringkan teks terpilih.
+Text > Style > Underline	Memberi garis bawah pada teks terpilih.
+Text > Style > Formula	Menulis teks sebagai rumus kimia: angka otomatis menjadi subskrip dan muatan menjadi superskrip (H2SO4 menjadi H₂SO₄).
+Text > Style > Subscript	Menjadikan teks (atau huruf yang disorot saat mengetik) subskrip.
+Text > Style > Superscript	Menjadikan teks (atau huruf yang disorot saat mengetik) superskrip.
+Curves > Plain	Mengembalikan kurva terpilih (atau kurva Pen berikutnya) ke garis polos tanpa mata panah dan tanpa isian.
+Curves > Arrow at Start	Memberi mata panah penuh di awal kurva.
+Curves > Arrow at End	Memberi mata panah penuh di ujung kurva.
+Curves > Arrow at Both Ends	Memberi mata panah penuh di kedua ujung kurva.
+Curves > Half Arrow at Start	Memberi mata panah setengah (fishhook) di awal kurva.
+Curves > Half Arrow at End	Memberi mata panah setengah (fishhook) di ujung kurva.
+Curves > No Arrowheads	Menghapus mata panah kurva.
+Curves > Dashed	Menggambar kurva dengan garis putus-putus.
+Curves > Bold	Menggambar kurva dengan garis tebal.
+Curves > Doubled	Menggambar kurva dengan garis ganda.
+Curves > Closed	Menutup kurva sehingga titik akhir tersambung ke titik awal.
+Curves > Filled	Mengisi kurva tertutup dengan warna penuh.
+Curves > Shaded	Mengisi kurva tertutup dengan arsiran abu-abu.
+Curves > Faded	Mengisi kurva dengan gradasi dari warnanya ke putih.
+Curves > Pen Tool	Memilih alat Pen untuk menggambar kurva Bézier: klik untuk titik sudut, seret untuk titik halus.
+Colors > *	Mewarnai objek terpilih (atom, ikatan, teks, panah, bentuk) dengan warna tersebut; Black mengembalikan warna otomatis.
+Colors > Other	Memilih warna lain dari kotak dialog warna untuk objek terpilih.
+Colors > Color by Element	Mewarnai label atom menurut unsurnya (N biru, O merah, S kuning, ...) di seluruh dokumen.
+Window > *	Daftar jendela Chemical Drawing yang sedang terbuka; klik untuk berpindah ke jendela tersebut.
+Window > Minimize	Meminimalkan jendela ini.
+Window > Modules > *	Membuka Module Launcher atau jendela baru dari modul lain.
+Help > Shortcuts and Hotkeys	Menampilkan daftar hotkey menggambar (ketik huruf atau angka saat menunjuk atom atau ikatan) dan pintasan menu.
+Help > Check for Updates	Memeriksa apakah tersedia versi RS-StatChem yang lebih baru.
+Help > About RS-StatChem	Menampilkan versi, hak cipta, dan lisensi aplikasi.
+Help > User Guide (PDF)	Membuka panduan pengguna (PDF) untuk versi aplikasi ini di browser; panduan yang sama juga bisa diunduh dari halaman rilis.

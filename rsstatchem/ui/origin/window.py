@@ -583,6 +583,9 @@ class OriginMainWindow(QMainWindow):
         hp = menu("help", "&Help")
         hp.addAction(self._act("&Getting Started", self.getting_started, "F1"))
         hp.addSeparator()
+        from rsstatchem.ui.update_dialog import open_user_guide
+
+        hp.addAction(self._act("User &Guide (PDF)", open_user_guide))
         hp.addAction(self._act("Check for &Updates...", self._check_updates))
         hp.addAction(self._act("&About RS-StatChem...", self._about))
         self._install_menu_extensions()

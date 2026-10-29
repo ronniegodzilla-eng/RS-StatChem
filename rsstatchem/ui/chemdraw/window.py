@@ -705,6 +705,9 @@ class ChemDrawWindow(ChemEditorWindow):
         self.menus["Help"] = m
         m.addAction("Shortcuts and &Hotkeys", self.show_hotkeys)
         m.addSeparator()
+        from rsstatchem.ui.update_dialog import open_user_guide
+
+        m.addAction("User &Guide (PDF)", open_user_guide)
         m.addAction("Check for &Updates...", self._check_updates)
         m.addAction("&About RS-StatChem", self._about)
 

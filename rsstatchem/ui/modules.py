@@ -83,6 +83,7 @@ def add_module_menu(menu, ctx):
     sub.addAction("Module &Launcher...", ctx.show_launcher)
     sub.addSeparator()
     for info in MODULES:
-        sub.addAction(f"New {info.title} Window",
+        # "&&": a single "&" would be read as a keyboard mnemonic and disappear
+        sub.addAction(f"New {info.title.replace('&', '&&')} Window",
                       lambda _=False, k=info.key: open_module(ctx, k))
     return sub

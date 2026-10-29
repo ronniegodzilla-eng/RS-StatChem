@@ -83,7 +83,7 @@ class GenericDialog(QDialog):
                                     int(round(s.value())) if i else float(s.value()))
             return row + 1
         if f.kind == "checkbox":
-            cb = QCheckBox(f.label)
+            cb = QCheckBox(f.label.replace("&", "&&"))  # "&" is not a mnemonic here
             cb.setObjectName(f.key)
             cb.setChecked(bool(f.default))
             cb.toggled.connect(lambda _=False: self._changed())
@@ -96,7 +96,7 @@ class GenericDialog(QDialog):
             g.setContentsMargins(0, 0, 0, 0)
             cols = f.columns or 1
             for i, (item, default) in enumerate(zip(f.items, f.default)):
-                cb = QCheckBox(item)
+                cb = QCheckBox(item.replace("&", "&&"))  # "Min & max gray value"
                 cb.setChecked(bool(default))
                 cb.toggled.connect(lambda _=False: self._changed())
                 g.addWidget(cb, i // cols, i % cols)
