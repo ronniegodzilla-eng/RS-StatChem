@@ -1148,29 +1148,40 @@ PROBIT_PROBS = np.r_[np.arange(1, 11) / 100, np.arange(15, 90, 5) / 100,
 
 
 def _probit_ll(par, x, r, n, link, nat, fixed_c, groups, ng):
+    """``x``: covariates as an (n, k) array (or a vector for one covariate)."""
+    x = np.asarray(x, float)
+    x = x.reshape(len(x), -1)
+    k = x.shape[1]
     a = par[:ng]
-    b = par[ng]
-    c = fixed_c if nat != "estimate" else special.expit(par[ng + 1])
-    eta = a[groups] + b * x
+    b = np.asarray(par[ng:ng + k], float)
+    c = fixed_c if nat != "estimate" else special.expit(par[ng + k])
+    eta = a[groups] + x @ b
     F = stats.norm.cdf(eta) if link == "probit" else special.expit(eta)
     P = c + (1 - c) * F
     P = np.clip(P, 1e-12, 1 - 1e-12)
     return float(np.sum(r * np.log(P) + (n - r) * np.log(1 - P)))
 
 
-def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str | None = None,
+def probit(ds: Dataset, response: str, total: str, covariate, factor: str | None = None,
            model: str = "probit", transform: str = "log10", natural: str = "none",
            natural_value: float = 0.0, level: float = 0.95, frequencies: bool = True,
            relative_potency: bool = False, parallelism: bool = False,
            fiducial: bool = True, het_alpha: float = 0.15) -> Section:
-    """SPSS PROBIT with one dose covariate. ``transform`` none / log10 / ln; ``natural``
-    none / estimate / value (natural response rate)."""
+    """SPSS PROBIT. ``covariate`` is one dose variable or a list of covariates (fiducial
+    limits, relative median potency and the parallelism test need exactly one, as in SPSS).
+    ``transform`` none / log10 / ln (applied to every covariate); ``natural`` none / estimate /
+    value (natural response rate)."""
     from statsmodels.tools.numdiff import approx_hess3
 
+    covs = [covariate] if isinstance(covariate, str) else list(covariate)
+    if not covs:
+        raise ValueError("Probit Analysis needs at least one covariate.")
+    n_cov = len(covs)
+    covariate = covs[0]
     section = Section("Probit Analysis")
     tkw = {"none": "NONE", "log10": "LG10", "ln": "LN"}[transform]
     section.log(f"PROBIT {response} OF {total}" + (f" BY {factor}" if factor else "")
-                + f" WITH {covariate}\n  /LOG {tkw}\n  /MODEL {model.upper()}"
+                + f" WITH {' '.join(covs)}\n  /LOG {tkw}\n  /MODEL {model.upper()}"
                 + "\n  /PRINT " + " ".join(["FREQ"] * frequencies + ["CI"] * fiducial
                                           + ["RMP"] * relative_potency
                                           + ["PARALL"] * parallelism)
@@ -1178,13 +1189,15 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
                 + ("\n  /NATRES" + (f"={natural_value:g}" if natural == "value" else "")
                    if natural != "none" else "") + ".")
     frame = pd.DataFrame({"r": numeric(ds, response), "n": numeric(ds, total),
-                          "x": numeric(ds, covariate)})
+                          **{f"x{j}": numeric(ds, c) for j, c in enumerate(covs)}})
+    xcols = [f"x{j}" for j in range(n_cov)]
     if factor:
         frame["f"] = ds.analysis_series(factor)
     frame = frame.dropna()
     n_all = len(frame)
     bad_resp = frame["r"] > frame["n"]
-    control = frame["x"] <= 0 if transform != "none" else pd.Series(False, index=frame.index)
+    control = (frame[xcols] <= 0).any(axis=1) if transform != "none" else \
+        pd.Series(False, index=frame.index)
     valid = frame[~bad_resp & ~control]
     rows = [["Cases", "Valid", fmt_int(len(valid))],
             ["", "Rejected", ""],
@@ -1204,7 +1217,7 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
         section.note("Warning", "Not enough valid dose groups.", style="warning")
         return section
     tf = {"none": lambda v: v, "log10": np.log10, "ln": np.log}[transform]
-    x = tf(valid["x"].to_numpy(float))
+    x = tf(valid[xcols].to_numpy(float))          # (n, k)
     r = valid["r"].to_numpy(float)
     nn = valid["n"].to_numpy(float)
     if factor:
@@ -1216,8 +1229,8 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
     # control group data contribute to the natural response rate
     if natural == "estimate" and control.any():
         cg = frame[control & ~bad_resp]
-        xc = np.full(len(cg), -np.inf)
-        x_all = np.r_[x, xc]
+        xc = np.full((len(cg), n_cov), -np.inf)
+        x_all = np.vstack([x, xc])
         r_all = np.r_[r, cg["r"].to_numpy(float)]
         n_all_ = np.r_[nn, cg["n"].to_numpy(float)]
         g_all = np.r_[groups, np.zeros(len(cg), int)]
@@ -1227,11 +1240,11 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
     # starting values from an unweighted linear fit on empirical probits
     pe = np.clip((r + 0.5) / (nn + 1), 1e-3, 1 - 1e-3)
     zt = stats.norm.ppf(pe) if model == "probit" else special.logit(pe)
-    b0 = np.polyfit(x, zt, 1)
-    start = np.r_[np.full(ng, b0[1]), b0[0]] + 0.0
+    b0 = np.polyfit(x[:, 0], zt, 1)
+    start = np.r_[np.full(ng, b0[1]), b0[0], np.zeros(n_cov - 1)] + 0.0
     if natural == "estimate":
-        p0 = (r_all[np.isinf(x_all)].sum() / n_all_[np.isinf(x_all)].sum()) \
-            if np.isinf(x_all).any() else 0.05
+        ctl = np.isinf(x_all).any(axis=1)
+        p0 = (r_all[ctl].sum() / n_all_[ctl].sum()) if ctl.any() else 0.05
         start = np.r_[start, special.logit(np.clip(p0, 0.01, 0.5))]
 
     def nll(par):
@@ -1246,19 +1259,20 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
     par = opt.x
     H = approx_hess3(par, nll)
     cov = np.linalg.pinv(H)
-    c_hat = special.expit(par[ng + 1]) if natural == "estimate" else fixed_c
+    c_hat = special.expit(par[ng + n_cov]) if natural == "estimate" else fixed_c
     if natural == "estimate":
         d = c_hat * (1 - c_hat)
         J = np.eye(len(par))
         J[-1, -1] = d
         cov = J @ cov @ J.T
-    a, b = par[:ng], par[ng]
-    eta = a[groups] + b * x
+    a, b_vec = par[:ng], par[ng:ng + n_cov]
+    b = b_vec[0]                       # the dose slope (fiducial limits, potency, parallelism)
+    eta = a[groups] + x @ b_vec
     F = stats.norm.cdf(eta) if model == "probit" else special.expit(eta)
     P = c_hat + (1 - c_hat) * F
     expct = nn * P
     chi = float(np.sum((r - expct) ** 2 / (nn * P * (1 - P))))
-    df = len(x) - (ng + 1) - (1 if natural == "estimate" else 0)
+    df = len(x) - (ng + n_cov) - (1 if natural == "estimate" else 0)
     pchi = float(stats.chi2.sf(chi, df)) if df > 0 else float("nan")
     het = df > 0 and pchi < het_alpha
     hf = chi / df if het else 1.0
@@ -1273,9 +1287,10 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
     tnote = {"none": "", "log10": " (Covariates X are transformed using the base 10.000 "
                                   "logarithm.)",
              "ln": " (Covariates X are transformed using the base 2.718 logarithm.)"}[transform]
-    prow = [[f"{label}ᵃ", ds.var(covariate).title, fmt(b), fmt(se[ng]), fmt(b / se[ng]),
-             _sig(2 * stats.norm.sf(abs(b / se[ng]))), fmt(b - zpar * se[ng]),
-             fmt(b + zpar * se[ng])]]
+    prow = [[f"{label}ᵃ" if j == 0 else "", ds.var(c).title, fmt(b_vec[j]), fmt(se[ng + j]),
+             fmt(b_vec[j] / se[ng + j]), _sig(2 * stats.norm.sf(abs(b_vec[j] / se[ng + j]))),
+             fmt(b_vec[j] - zpar * se[ng + j]), fmt(b_vec[j] + zpar * se[ng + j])]
+            for j, c in enumerate(covs)]
     for i in range(ng):
         name = "Interceptᵇ" if not factor else value_text(ds.var(factor), flv[i])
         prow.append(["", name if factor else "Interceptᵇ", fmt(a[i]), fmt(se[i]),
@@ -1296,13 +1311,13 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
                                        "a. Control group is not provided."]))
     crow = [["Pearson Goodness-of-Fit Test", fmt(chi), fmt_int(df), _sig(pchi)
              + (sup("b") if het else sup("a"))]]
-    if parallelism and factor and ng > 1:
+    if parallelism and factor and ng > 1 and n_cov == 1:
         # IBM: chi2 = chi2_0 - sum_j chi2_j, chi2_j the Pearson chi-square of a separate fit to
         # group j (own intercept, slope and, when estimated, natural response rate); df q - 1.
         sep_chi = 0.0
         for gi in range(ng):
             m = groups == gi
-            xm, rm, nm = x[m], r[m], nn[m]
+            xm, rm, nm = x[m, 0], r[m], nn[m]
 
             def nll_g(pp, xm=xm, rm=rm, nm=nm):
                 cg = special.expit(pp[2]) if natural == "estimate" else fixed_c
@@ -1339,16 +1354,20 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
         for i in range(len(x)):
             frows.append([str(i + 1)] + ([value_text(ds.var(factor), flv[groups[i]])]
                                          if factor else [])
-                         + [fmt(x[i], 3), fmt_int(nn[i]), fmt_int(r[i]), fmt(expct[i], 3),
+                         + [fmt(v, 3) for v in x[i]]
+                         + [fmt_int(nn[i]), fmt_int(r[i]), fmt(expct[i], 3),
                             fmt(r[i] - expct[i], 3), fmt(P[i], 3)])
         section.table(Table("Cell Counts and Residuals", ["Number"] + (
             [ds.var(factor).title] if factor else []) + [
-            ds.var(covariate).title + ("ᵃ" if transform != "none" else ""),
+            ds.var(c).title + ("ᵃ" if transform != "none" else "") for c in covs] + [
             "Number of Subjects", "Observed Responses", "Expected Responses", "Residual",
             "Probability"], frows, row_header_cols=0,
             footnotes=[f"a. Logarithm base = {'10' if transform == 'log10' else 'e'}."]
             if transform != "none" else []))
-    if fiducial:
+    if n_cov > 1 and (fiducial or relative_potency or parallelism):
+        section.note("Note", "Confidence limits for the dose, relative median potency and the "
+                     "parallelism test are computed only when the model has one covariate.")
+    if fiducial and n_cov == 1:
         inv_t = {"none": lambda v: v, "log10": lambda v: 10 ** v, "ln": np.exp}[transform]
         lrows = []
         for gi in range(ng):
@@ -1378,7 +1397,7 @@ def probit(ds: Dataset, response: str, total: str, covariate: str, factor: str |
             notes.append(f"b. Logarithm base = {'10' if transform == 'log10' else 'e'}.")
         section.table(Table("Confidence Limits", cols, lrows,
                             row_header_cols=1 if factor else 0, footnotes=notes))
-    if relative_potency and factor and ng > 1:
+    if relative_potency and factor and ng > 1 and n_cov == 1:
         rrows = []
         inv_t = {"none": lambda v: v, "log10": lambda v: 10 ** v, "ln": np.exp}[transform]
         for i in range(ng):

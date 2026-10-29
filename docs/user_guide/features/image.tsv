@@ -373,3 +373,4 @@ Help > Macro Functions	Membuka daftar fungsi bahasa makro ImageJ di browser.
 Help > Check for Updates	Memeriksa apakah tersedia versi RS-StatChem yang lebih baru.
 Help > About RS-StatChem	Menampilkan versi, hak cipta, dan lisensi RS-StatChem.
 Help > User Guide (PDF)	Membuka panduan pengguna (PDF) untuk versi aplikasi ini di browser; panduan yang sama juga bisa diunduh dari halaman rilis.
+File > Save Project	Menyimpan semua citra yang terbuka, isi ROI Manager, tabel Results/lainnya, dan Log ke satu berkas proyek .rsij; buka lagi dengan File > Open untuk melanjutkan pekerjaan.

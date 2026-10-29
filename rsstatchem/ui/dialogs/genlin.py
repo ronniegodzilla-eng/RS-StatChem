@@ -299,7 +299,7 @@ class ProbitDialog(VariablePickerDialog):
         self.add_target("resp", "Response Frequency:", accepts=is_numeric, single=True)
         self.add_target("total", "Total Observed:", accepts=is_numeric, single=True)
         self.add_target("factor", "Factor:", single=True, required=False)
-        self.add_target("cov", "Covariate(s):", accepts=is_numeric, single=True)
+        self.add_target("cov", "Covariate(s):", accepts=is_numeric)
         self.add_option_button("Options...", self._options)
         row = QHBoxLayout()
         self.transform = QComboBox()
@@ -343,7 +343,7 @@ class ProbitDialog(VariablePickerDialog):
     def compute(self):
         o = self.opts
         return genlin.probit(self.ds, self.selected_one("resp"), self.selected_one("total"),
-                             self.selected_one("cov"), self.selected_one("factor"), o["model"],
+                             self.selected("cov"), self.selected_one("factor"), o["model"],
                              o["transform"], o["natural"], o["natural_value"],
                              o["level"] / 100, o["frequencies"], o["potency"],
                              o["parallelism"], o["fiducial"], o["het_alpha"])

@@ -267,6 +267,22 @@ def test_probit_finney_rotenone():
         assert math.isclose(lhs, rhs, rel_tol=2e-2)
 
 
+def test_probit_several_covariates_match_glm():
+    """Covariate(s): two covariates give one slope each (the binomial GLM with a probit link);
+    the dose-only tables are left out with a note, as SPSS does."""
+    df = FINNEY.assign(temp=[20.0, 22.0, 19.0, 25.0, 21.0])
+    sec = genlin.probit(Dataset(df.copy()), "r", "n", ["dose", "temp"], transform="none")
+    ref = sm.GLM(np.column_stack([df.r, df.n - df.r]), sm.add_constant(df[["dose", "temp"]]),
+                 family=sm.families.Binomial(sm.families.links.Probit())).fit()
+    pe = table(sec, "Parameter Estimates")
+    assert [r[1] for r in pe.rows[:2]] == ["dose", "temp"]
+    for row, coef in zip(pe.rows[:3], (ref.params["dose"], ref.params["temp"],
+                                       ref.params["const"])):
+        assert num(row[2]) == pytest.approx(coef, abs=2e-3)
+    assert not [t for t in sec.items if getattr(t, "title", "") == "Confidence Limits"]
+    assert "one covariate" in str(sec.items)
+
+
 def test_probit_logit_factor_potency():
     df = pd.concat([FINNEY.assign(f=1.0), FINNEY.assign(f=2.0, dose=FINNEY.dose * 2)])
     sec = genlin.probit(Dataset(df.reset_index(drop=True)), "r", "n", "dose", factor="f",

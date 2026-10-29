@@ -24,7 +24,7 @@ from rsstatchem.ui.origin.model import Worksheet, format_cell
 ROW_VAR = "_ROWIDX"
 _COL_RE = re.compile(r"""(?i)\bcol\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]+))\s*\)""")
 # Origin name -> expression-language name (applied before an opening parenthesis).
-_RENAMES = {"log": "LG10", "log10": "LG10", "int": "TRUNC", "round": "RND", "atan": "ARTAN",
+_RENAMES = {"log": "LG10", "log10": "LG10", "int": "TRUNC", "atan": "ARTAN",
             "asin": "ARSIN", "ln": "LN", "sqrt": "SQRT", "abs": "ABS", "exp": "EXP",
             "sin": "SIN", "cos": "COS", "mod": "MOD"}
 _RANDOM = {"rnd": "RV.UNIFORM(0, 1)", "ran": "RV.UNIFORM(0, 1)", "rand": "RV.UNIFORM(0, 1)",
@@ -68,6 +68,44 @@ def _rewrite_call(text: str, name: str, template: str) -> str:
         text = text[:m.start()] + template.format(a=arg) + text[close_at + 1:]
 
 
+def _split_args(text: str) -> list[str]:
+    """Top-level comma-separated arguments."""
+    args, depth, start = [], 0, 0
+    for k, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(text[start:k])
+            start = k + 1
+    args.append(text[start:])
+    return args
+
+
+def _rewrite_round(text: str) -> str:
+    """Origin's round(x, n) rounds to n decimal places; the expression language's RND(x, m)
+    rounds to a multiple m, so round(x, n) becomes RND(x*10^n)/10^n."""
+    pattern = re.compile(r"(?i)(?<![\w.])round\s*\(")
+    pos = 0
+    while True:
+        m = pattern.search(text, pos)
+        if not m:
+            return text
+        open_at = m.end() - 1
+        close_at = _matching_paren(text, open_at)
+        args = _split_args(text[open_at + 1:close_at])
+        if len(args) == 1:
+            repl = f"RND({args[0]})"
+        elif len(args) == 2:
+            a, n = args[0].strip(), args[1].strip()
+            repl = f"(RND(({a})*10**({n}))/10**({n}))"
+        else:
+            raise FormulaError("round() takes a value and optionally the number of decimals.")
+        text = text[:m.start()] + repl + text[close_at + 1:]
+        pos = m.start() + len(repl)
+
+
 def translate(ws: Worksheet, formula: str) -> str:
     """Origin formula -> expression-language text (column references become short names)."""
     text = formula.strip()
@@ -99,6 +137,7 @@ def translate(ws: Worksheet, formula: str) -> str:
         text = re.sub(rf"(?i)(?<![\w.]){name}\s*\(\s*[^()]*\)", repl, text)
     text = _rewrite_call(text, "tan", "(SIN({a})/COS({a}))")
     text = _rewrite_call(text, "acos", "(1.5707963267948966 - ARSIN({a}))")
+    text = _rewrite_round(text)
     for name, repl in _RENAMES.items():
         text = re.sub(rf"(?i)(?<![\w.]){name}\s*\(", repl + "(", text)
     text = re.sub(r"(?<![\w.])i(?![\w.(])", ROW_VAR, text)

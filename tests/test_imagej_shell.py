@@ -455,6 +455,19 @@ def test_project_save_and_open_through_bar(bar, tmp_path):
     assert bar.session.roi_manager[-1].name == "r"
 
 
+def test_file_save_project_menu(bar, tmp_path):
+    """File > Save Project... writes the .rsij that File > Open reads back."""
+    _new(bar, np.arange(12, dtype=np.uint8).reshape(3, 4), title="m.tif")
+    bar.session.roi_manager.append(S.RectRoi(0, 0, 2, 2, name="cell"))
+    bar.file_hook = lambda kind, title, default: str(tmp_path / "work")
+    bar.run_command("Save Project...")
+    assert (tmp_path / "work.rsij").exists()
+    bar.run_command("Close All")
+    bar.open_path(str(tmp_path / "work.rsij"))
+    assert [d.title for d in bar.session.images] == ["m.tif"]
+    assert bar.session.roi_manager[-1].name == "cell"
+
+
 def test_close_prompts_for_changed_images(bar, tmp_path):
     doc, win = _new(bar, np.zeros((5, 5), np.uint8), title="c")
     doc.changed = True

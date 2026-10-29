@@ -186,6 +186,7 @@ MENU_LAYOUT: tuple[Menu, ...] = (
             I('Results...', '', 'MeasurementsWriter'),
             I('Text...', '', 'TextWriter'),
         )),
+        I('Save Project...', '', 'RS-StatChem'),
         I('Revert', 'R', 'Commands("revert")'),
         SEP,
         I('Page Setup...', '', 'filter.Printer("setup")'),

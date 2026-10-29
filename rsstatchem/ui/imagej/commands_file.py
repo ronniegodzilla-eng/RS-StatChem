@@ -576,6 +576,42 @@ def _avi_fields(session, image):
             C.Field("file", "Save:", "", key="save")]
 
 
+def save_project_cmd(session, image, save=""):
+    """File > Save Project...: every open image, the ROI Manager, tables and the Log in one
+    .rsij file (File > Open restores them)."""
+    from rsstatchem.core.imaging.project import save_project
+    if not save:
+        raise CommandError("A file path is required (save=...)")
+    if not session.images:
+        raise CommandError("There are no images open")
+    try:
+        save_project(session, save)
+    except (OSError, ValueError) as exc:
+        raise CommandError(str(exc)) from None
+
+
+def _ui_save_project(bar, cmd):
+    from rsstatchem.core.imaging.project import EXTENSION, save_project
+    if not bar.session.images:
+        bar.error("There are no images open")
+        return
+    doc = bar.session.active or bar.session.images[0]
+    stem = Path(doc.title).stem if "." in doc.title else doc.title
+    path = bar.get_path("save", "Save Project", str(Path(bar.last_directory()) /
+                                                    (stem + EXTENSION)),
+                        "RS-StatChem Image Analysis project (*.rsij)")
+    if not path:
+        return
+    try:
+        out = save_project(bar.session, path)
+    except (OSError, ValueError) as exc:
+        bar.error(str(exc), "Save Project")
+        return
+    bar.record_call("run", "Save Project...", f"save=[{Path(out).as_posix()}]")
+    if bar.ctx is not None and hasattr(bar.ctx, "add_recent"):
+        bar.ctx.add_recent(str(out))
+
+
 def revert(session, image):
     from rsstatchem.core.imaging.io import open_image
     if not image.path or not Path(image.path).exists():
@@ -757,6 +793,8 @@ def register(registry) -> None:
             ui_action=_ui_save_as(label, fmt, ext, flt), recordable=False)
     add("Image Sequence... ", save_sequence_cmd, _save_sequence_fields, undoable=False)
     add("AVI... ", save_avi, _avi_fields, undoable=False)
+    add("Save Project...", save_project_cmd, save_field, needs_image=False, undoable=False,
+        ui_action=_ui_save_project, recordable=False)
     add("Revert", revert)
     add("Page Setup...", None, needs_image=False, undoable=False, recordable=False,
         ui_action=_ui_page_setup)

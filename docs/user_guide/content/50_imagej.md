@@ -8,7 +8,9 @@ Anda sudah pernah memakai ImageJ atau Fiji, Anda akan langsung merasa akrab.
 Modul ini membuka TIFF (termasuk TIFF gaya ImageJ beserta kalibrasi dan ROI-nya), PNG, JPEG,
 GIF, BMP, DICOM, FITS, PGM, AVI, dan ZIP. Selain citra, modul ini juga membuka berkas seleksi
 `.roi` dan `RoiSet.zip`, tabel CSV, makro `.ijm`, serta proyek `.rsij` yang menyimpan citra,
-ROI Manager, dan tabel hasil dalam satu berkas.
+ROI Manager, dan tabel hasil dalam satu berkas. Proyek dibuat dengan [[File > Save Project]]
+dan dibuka lagi dengan [[File > Open]], sehingga pekerjaan bisa dilanjutkan persis dari titik
+terakhir.
 
 ## Mengenal jendela kerja
 

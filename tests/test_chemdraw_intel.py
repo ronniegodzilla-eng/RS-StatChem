@@ -245,6 +245,21 @@ def test_nmr_literature_ethyl_acetate():
     assert {s.atom_idx for s in shifts} == {0, 1, 4}
 
 
+def test_nmr_exchangeable_protons_at_their_group_position():
+    """OH/NH are not the D2O water signal (~4.7 ppm) of the archive spectra but the usual CDCl3
+    position of their group: COOH ~11, phenol ~5.5, alcohol ~2, amide ~6.5, amine ~1.5."""
+    for smiles, idx, lo, hi in (("CC(=O)Oc1ccccc1C(=O)O", 12, 10.0, 13.0),   # aspirin COOH
+                                ("Oc1ccccc1", 0, 4.0, 8.0),                  # phenol
+                                ("CCO", 2, 0.5, 5.0),                        # ethanol
+                                ("CC(=O)Nc1ccccc1", 3, 5.0, 8.5),            # acetanilide NH
+                                ("CCN", 2, 0.5, 3.0),                        # ethylamine
+                                ("c1ccc2[nH]ccc2c1", 4, 7.5, 12.0)):         # indole NH
+        mol = Chem.MolFromSmiles(smiles)
+        peak = next(p for p in npd.predict_detailed(mol, "1H") if idx in p.atoms)
+        assert peak.exchangeable and lo <= peak.shift <= hi, smiles
+        assert "typical" in peak.note
+
+
 def test_nmr_multiplets_and_equivalence():
     iso = _by_atoms(npd.predict_detailed(Chem.MolFromSmiles("CC(C)O"), "1H"))
     assert iso[(1,)].multiplicity == "sept" and iso[(0, 2)].multiplicity == "d"

@@ -113,8 +113,7 @@ class DescriptivesDialog(_BootstrapButton, VariablePickerDialog):
             ("", [("mean", "Mean"), ("sum", "Sum")]),
             ("Dispersion", [("std", "Std. deviation"), ("var", "Variance"), ("range", "Range"),
                             ("min", "Minimum"), ("max", "Maximum"), ("sem", "S.E. mean")]),
-            ("Characterize Posterior Distribution", [("kurt", "Kurtosis"),
-                                                     ("skew", "Skewness")]),
+            ("Distribution", [("kurt", "Kurtosis"), ("skew", "Skewness")]),
         ], type(self)._stats, self)
         box = QGroupBox("Display Order")
         inner = QVBoxLayout(box)
@@ -169,8 +168,7 @@ class FrequenciesDialog(_BootstrapButton, VariablePickerDialog):
                                   ("sum", "Sum")]),
             ("Dispersion", [("std", "Std. deviation"), ("var", "Variance"), ("range", "Range"),
                             ("min", "Minimum"), ("max", "Maximum"), ("sem", "S.E. mean")]),
-            ("Characterize Posterior Distribution", [("skew", "Skewness"),
-                                                     ("kurt", "Kurtosis")]),
+            ("Distribution", [("skew", "Skewness"), ("kurt", "Kurtosis")]),
         ], type(self)._stats, self)
         box = dlg.grid.itemAtPosition(0, 0).widget()
         inner = box.layout()

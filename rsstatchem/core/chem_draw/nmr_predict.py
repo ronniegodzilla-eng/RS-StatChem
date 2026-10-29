@@ -30,6 +30,13 @@ H-C-C-H 7 Hz (sp3), aromatic ortho 7.8 Hz, alkene trans 16 Hz / cis 10.5 Hz (fro
 drawn E/Z geometry; 13 Hz when undefined), terminal =CH2 to its CH 10/17 Hz, aldehyde CHO-CH
 2.5 Hz. Topologically equivalent hydrogens do not split each other; O-H, N-H and S-H are
 exchangeable (broad singlets). Long-range and second-order effects are ignored.
+
+Exchangeable O-H, N-H and S-H protons are not taken from the table: in the mostly D2O spectra
+of the archive they exchange with the solvent and are reported at the water signal (about
+4.7 ppm). They get the usual dilute-CDCl3 position of their group instead (carboxylic acid
+about 11 ppm, phenol 5.5, alcohol 2, amide 6.5, amine 1.5, aromatic N-H 8.5...), with the
+typical range in the note, since the real position depends on solvent, concentration and
+temperature.
 No Qt here.
 """
 from __future__ import annotations
@@ -353,6 +360,42 @@ def _merge(couplings) -> list:
     return [(round(j, 1), n) for j, n in out]
 
 
+# typical dilute-CDCl3 shift (ppm) and range of exchangeable protons, by group (generic values
+# found in any NMR textbook's overview of OH/NH/SH resonances)
+_EXCHANGEABLE = (
+    ("[OX2H][CX3]=[O,S]", "carboxylic acid O-H", 11.0, 10.0, 13.0),
+    ("[OX2H][OX2]", "hydroperoxide O-H", 8.0, 7.0, 9.0),
+    ("[OX2H]c", "phenol O-H", 5.5, 4.0, 8.0),
+    ("[OX2H][CX3]=[CX3]", "enol O-H", 5.5, 4.0, 8.0),
+    ("[OX2H][CX3]=[NX2]", "oxime O-H", 8.5, 7.5, 10.5),
+    ("[OX2H]", "alcohol O-H", 2.0, 0.5, 5.0),
+    ("[nH]", "aromatic N-H", 8.5, 7.5, 12.0),
+    ("[NX3;H1,H2]C(=O)[NX3]", "urea N-H", 5.5, 4.5, 7.0),
+    ("[NX3;H1]([CX3]=O)[CX3]=O", "imide N-H", 9.0, 8.0, 11.0),
+    ("[NX3;H2][CX3]=O", "primary amide N-H", 6.0, 5.0, 7.5),
+    ("[NX3;H1][CX3]=O", "amide N-H", 6.5, 5.0, 8.5),
+    ("[NX3;H1,H2][SX4](=O)=O", "sulfonamide N-H", 5.0, 4.0, 7.0),
+    ("[NX3;H1,H2]c", "aromatic amine N-H", 3.6, 3.0, 5.0),
+    ("[NX3;H1,H2]", "amine N-H", 1.5, 0.5, 3.0),
+    ("[SX2H]c", "thiophenol S-H", 3.4, 2.8, 3.6),
+    ("[SX2H]", "thiol S-H", 1.5, 1.2, 2.0),
+)
+_EXCHANGEABLE_PATTERNS: list = []
+
+
+def exchangeable_shift(mol, idx: int):
+    """(shift, low, high, group) for the H on heteroatom ``idx``, or None."""
+    from rdkit import Chem
+
+    if not _EXCHANGEABLE_PATTERNS:
+        for smarts, name, shift, lo, hi in _EXCHANGEABLE:
+            _EXCHANGEABLE_PATTERNS.append((Chem.MolFromSmarts(smarts), name, shift, lo, hi))
+    for patt, name, shift, lo, hi in _EXCHANGEABLE_PATTERNS:
+        if any(match[0] == idx for match in mol.GetSubstructMatches(patt)):
+            return shift, lo, hi, name
+    return None
+
+
 def predict_detailed(mol, nucleus: str, table=None) -> list[Peak]:
     """One :class:`Peak` per group of equivalent atoms (sorted by shift, high to low)."""
     nucleus = normalise(nucleus)
@@ -379,8 +422,15 @@ def predict_detailed(mol, nucleus: str, table=None) -> list[Peak]:
         if nucleus == "1H":
             if first.GetSymbol() in ("O", "N", "S"):
                 p.exchangeable = True
-                p.note = (p.note + "; " if p.note else "") + \
-                    "exchangeable H: broad, position depends on solvent and concentration"
+                typical = exchangeable_shift(m, atoms[0])
+                if typical is not None:
+                    shift, lo, hi, name = typical
+                    p.shift, p.std, p.n_ref, p.radius = shift, (hi - lo) / 4, 0, -1
+                    p.note = (f"{name}: typical {lo:g}-{hi:g} ppm (CDCl3); exchangeable H, "
+                              "broad, position depends on solvent and concentration")
+                else:
+                    p.note = (p.note + "; " if p.note else "") + \
+                        "exchangeable H: broad, position depends on solvent and concentration"
             else:
                 coup = []
                 for nb in first.GetNeighbors():

@@ -226,13 +226,21 @@ class DesignDocument:
         if self.mixture or self.split_plot or not self.factors:
             return False
         coded = self.coded_matrix()
+        numeric = []
         for j, f in enumerate(self.factors):
             if f.get("type") == "categoric":
                 if len(f.get("levels", [])) != 2:
                     return False
-            elif not np.all(np.isclose(np.abs(coded[:, j]), 1) | np.isclose(coded[:, j], 0)):
-                return False
-        return True
+            else:
+                numeric.append(j)
+        if not numeric:
+            return True
+        # every run is a factorial point (all numeric factors at -1/+1) or a centre point
+        # (all at 0); a Box-Behnken or CCD run mixes 0 and +-1 (or +-alpha) and is not
+        m = coded[:, numeric]
+        factorial = np.all(np.isclose(np.abs(m), 1), axis=1)
+        centre = np.all(np.isclose(m, 0), axis=1)
+        return bool(np.all(factorial | centre) and factorial.any())
 
     def foldover(self, kind: str = "full", factor: int | None = None,
                  keep_factor: int | None = None, keep_level: float = 1.0,

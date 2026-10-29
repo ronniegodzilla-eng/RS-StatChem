@@ -305,6 +305,9 @@ class ComputeDialog(QDialog):
         layout.addWidget(buttons)
         self.builder.validate()
         self._update_ok()
+        from rsstatchem.ui.dialogs.base import keep_ok_default
+
+        keep_ok_default(self, self.ok)
 
     def _update_ok(self, *_):
         name = self.target.text().strip()

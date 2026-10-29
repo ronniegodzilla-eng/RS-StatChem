@@ -80,6 +80,12 @@ def test_formula_translation_and_evaluation():
     assert t[1] == pytest.approx(np.tan(2.5))
     assert fx.evaluate_formula(ws, "log(100) + ln(1) + sqrt(16)")[0] == pytest.approx(6.0)
     assert fx.evaluate_formula(ws, "B*0 + pi")[0] == pytest.approx(np.pi)
+    # round(x, n): n decimal places (Origin), not a multiple of n; round(x): nearest integer
+    assert fx.evaluate_formula(ws, "round(col(A)*0 + 2.346, 1)")[0] == 2.3
+    assert fx.evaluate_formula(ws, "round(col(A)*0 + 2.346, 2)")[0] == 2.35
+    assert fx.evaluate_formula(ws, "round(col(A)*0 + 2.5)")[0] == 3.0
+    assert fx.evaluate_formula(ws, "round(col(A)*0 + 1234.5, -2)")[0] == 1200.0
+    assert fx.evaluate_formula(ws, "round(sqrt(col(A)*0 + 2), 3)")[0] == 1.414
     with pytest.raises(fx.FormulaError, match="No column Q"):
         fx.evaluate_formula(ws, "col(Q) + 1")
     rnd = fx.evaluate_formula(ws, "rnd()")

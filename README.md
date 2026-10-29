@@ -22,7 +22,7 @@ Sumbernya ada di [docs/user_guide](docs/user_guide/README.md).
 Dibangun dengan Python 3.12, PySide6 (Qt), pandas, SciPy, dan statsmodels. Berjalan native di
 Apple Silicon dan sebagai aplikasi portable (tanpa instalasi) di Windows.
 
-## Status (v0.10.3)
+## Status (v0.10.4)
 
 129 entri menu aktif; yang masih nonaktif hanya Ratio dan Distances. 567 tes otomatis
 membandingkan hasil dengan SciPy, statsmodels, pingouin, lavaan (via contoh terpublikasi),

@@ -266,6 +266,35 @@ def test_indigo_automap():
     assert len(nums) >= 2                      # the ethyl carbons are mapped on both sides
 
 
+@pytest.mark.skipif(not mapping.available(), reason="Indigo (epam.indigo) is not installed")
+def test_automap_two_products_uses_each_atom_once():
+    """Aspirin synthesis: Indigo gives anhydride atoms to both products; the checked result
+    maps every reactant atom once and each number to one product atom of the same element."""
+    d = _doc("OC(=O)c1ccccc1O.CC(=O)OC(C)=O>>CC(=O)Oc1ccccc1C(=O)O.CC(=O)O")
+    mapping.map_reaction(d)
+    split = convert.split_reaction(d)
+    left = [d.atoms[a] for comp in split.reactants for a in comp]
+    right = [d.atoms[a] for comp in split.products for a in comp]
+    nums = [a.map_number for a in right if a.map_number]
+    assert len(nums) == len(set(nums)) == 17            # 13 + 4 product atoms, all mapped
+    by_number = {a.map_number: a for a in left}
+    assert len(by_number) == 17 and 0 not in by_number
+    for a in right:
+        assert a.symbol == by_number[a.map_number].symbol
+
+
+def test_mapping_check_and_mcs_fallback():
+    from rdkit import Chem
+
+    r = [Chem.MolFromSmiles("CC(=O)OC(C)=O")]
+    p = [Chem.MolFromSmiles("CC(=O)O"), Chem.MolFromSmiles("CC(=O)O")]
+    # the same reactant atoms in both products: invalid
+    assert not mapping.valid_mapping(r, p, [[1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4], [1, 2, 3, 4]])
+    numbers = mapping.mcs_mapping(r, p)
+    assert mapping.valid_mapping(r, p, numbers)
+    assert sorted(n for nums in numbers[1:] for n in nums) == [0] + list(range(1, 8))
+
+
 def test_rdkit_cdx_support_flag():
     assert isinstance(cdx.rdkit_cdx_support(), bool)
     assert cdxml.to_cdxml(_doc()).startswith("<?xml")

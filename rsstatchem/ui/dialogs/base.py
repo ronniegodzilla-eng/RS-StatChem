@@ -36,6 +36,16 @@ def variable_item(var: Variable) -> QListWidgetItem:
     return item
 
 
+
+def keep_ok_default(dialog, ok) -> None:
+    """Only OK reacts to Return and looks like the default button: Qt makes every button of a
+    dialog "auto default", so a focused Reset or Options... button would take the red look."""
+    from PySide6.QtWidgets import QPushButton
+
+    for button in dialog.findChildren(QPushButton):
+        button.setAutoDefault(button is ok)
+    ok.setDefault(True)
+
 class _Target:
     def __init__(self, key: str, widget: QListWidget, accepts: Callable[[Variable], bool],
                  single: bool, min_items: int, arrow: QPushButton):
@@ -237,6 +247,7 @@ class VariablePickerDialog(QDialog):
 
     def finish(self) -> None:
         """Call at the end of the subclass constructor to restore remembered selections."""
+        keep_ok_default(self, self.ok_button)
         memory = self._memory.get(type(self).__name__, {})
         for target in self._targets:
             for name in memory.get(target.key, []):

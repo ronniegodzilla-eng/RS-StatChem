@@ -324,6 +324,14 @@ def test_foldover_augments_a_new_block(ctx, qapp):
     assert not split.two_level()
     with pytest.raises(ValueError):
         split.foldover()
+    # a Box-Behnken design has runs mixing 0 and +-1: not a two-level design
+    bbd = DesignDocument.from_spec({"design": "bbd", "randomize": False,
+                                    "factors": [{"name": n} for n in "ABC"]})
+    assert not bbd.two_level()
+    centred = DesignDocument.from_spec({"design": "factorial", "randomize": False,
+                                        "factors": [{"name": n} for n in "ABC"],
+                                        "options": {"center_points": 3}})
+    assert centred.two_level()
 
 
 # ---------------------------------------------------------------------------- compatibility
