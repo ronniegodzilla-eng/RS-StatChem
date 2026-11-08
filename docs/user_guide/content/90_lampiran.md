@@ -43,6 +43,7 @@ Pemeriksaan otomatis versi baru bisa dimatikan di jendela **Software Update** (h
 | Tabel output berantakan saat ditempel di Word | Salin lewat **Edit ▸ Copy** di Output Viewer, lalu tempel di Word dengan ++Ctrl+V++ biasa. Tabel akan masuk sebagai tabel Word dengan lebar kolom yang sudah disesuaikan. |
 | Nama senyawa tidak ditemukan | Coba nama IUPAC atau nama umum dalam bahasa Inggris. Untuk nama yang jarang dipakai, sambungkan internet agar PubChem bisa dicari. |
 | Pemeriksaan versi baru gagal | Periksa koneksi internet. Batas akses anonim GitHub kadang tercapai, jadi coba lagi beberapa saat kemudian. |
+| Aplikasi berhenti merespons (*hang*) | Jika antarmuka tidak merespons lebih dari 10 detik, RS-StatChem otomatis mencatat posisi macetnya ke berkas `hang-....txt` di folder `logs` (di dalam folder pengaturan di bawah ini). Kirim berkas itu ke pengembang agar penyebabnya bisa langsung ditemukan. Berkas tidak dikirim ke mana pun secara otomatis. |
 | Ingin mengembalikan pengaturan awal | Tutup aplikasi, lalu hapus folder pengaturannya. Di macOS: `~/Library/Application Support/RS-StatChem`. Di Windows: folder **UserData** di sebelah **RS-StatChem.exe**. |
 
 ## Lisensi

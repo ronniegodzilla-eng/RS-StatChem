@@ -15,6 +15,7 @@ RELEASE = {
     "published_at": "2026-10-25T08:00:00Z",
     "assets": [
         {"name": "RS-StatChem-macOS-arm64.zip", "browser_download_url": "https://x/mac.zip"},
+        {"name": "RS-StatChem-macOS-x86_64.zip", "browser_download_url": "https://x/intel.zip"},
         {"name": "RS-StatChem-Windows-x64-portable.zip",
          "browser_download_url": "https://x/win.zip"},
     ],
@@ -30,6 +31,7 @@ def test_parse_and_compare_versions():
 
 
 @pytest.mark.parametrize("keyword, url", [("macOS-arm64", "https://x/mac.zip"),
+                                          ("macOS-x86_64", "https://x/intel.zip"),
                                           ("Windows-x64", "https://x/win.zip"),
                                           ("Linux", None)])
 def test_asset_for_this_platform(monkeypatch, keyword, url):
@@ -127,6 +129,32 @@ def test_newer_release_opens_dialog_and_skip_is_respected(checker_env):
     assert checker.dialog is not None
 
 
+def test_update_notice_waits_until_no_dialog_is_open(checker_env):
+    """A check that finishes while a modal dialog is open (above all the native Save/Open
+    panel, which Qt reports as a modal QFileDialog) must not raise a window over it: that froze
+    the interface. The notice appears once the dialog is closed."""
+    import time
+
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtWidgets import QDialog
+
+    update_dialog, settings, messages = checker_env
+    checker = update_dialog.UpdateChecker(settings, fetch=lambda: info_from_release(RELEASE))
+    checker.RETRY_MS = 20
+    save_panel = QDialog()
+    save_panel.setWindowModality(Qt.WindowModality.ApplicationModal)
+    save_panel.show()
+    _run(checker, manual=False)
+    assert checker.dialog is None                      # still waiting
+    save_panel.close()
+    deadline = time.monotonic() + 3
+    while checker.dialog is None and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    assert checker.dialog is not None and checker.dialog.isVisible()
+    checker.dialog.close()
+
+
 def test_up_to_date_and_error_messages_only_when_manual(checker_env):
     update_dialog, settings, messages = checker_env
     current = info_from_release({**RELEASE, "tag_name": f"v{__version__}"})
@@ -157,3 +185,11 @@ def test_automatic_check_schedule(checker_env):
     assert checker.due()
     settings.setValue(update_dialog.AUTO_KEY, False)
     assert not checker.due()
+
+
+def test_asset_keyword_tells_apple_silicon_from_intel(monkeypatch):
+    monkeypatch.setattr(updates.sys, "platform", "darwin")
+    monkeypatch.setattr(updates.platform, "machine", lambda: "arm64")
+    assert updates.asset_keyword() == "macOS-arm64"
+    monkeypatch.setattr(updates.platform, "machine", lambda: "x86_64")
+    assert updates.asset_keyword() == "macOS-x86_64"

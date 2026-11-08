@@ -163,7 +163,7 @@ if sys.platform == "darwin":
             "CFBundleVersion": VERSION,
             "NSHumanReadableCopyright": COPYRIGHT,
             "NSHighResolutionCapable": True,
-            "LSMinimumSystemVersion": "12.0",
+            "LSMinimumSystemVersion": "14.0",   # PySide6 6.12 wheels are macosx_14_0
             "NSRequiresAquaSystemAppearance": True,
             "CFBundleDocumentTypes": [{
                 "CFBundleTypeName": "RS-StatChem Dataset",

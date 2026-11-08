@@ -20,9 +20,10 @@ penjelasan semua perintah menu — dibuat otomatis dari aplikasi untuk setiap ri
 Sumbernya ada di [docs/user_guide](docs/user_guide/README.md).
 
 Dibangun dengan Python 3.12, PySide6 (Qt), pandas, SciPy, dan statsmodels. Berjalan native di
-Apple Silicon dan sebagai aplikasi portable (tanpa instalasi) di Windows.
+Mac Apple Silicon dan Mac Intel (macOS 14 ke atas), serta sebagai aplikasi portable (tanpa
+instalasi) di Windows.
 
-## Status (v0.10.4)
+## Status (v0.10.5)
 
 129 entri menu aktif; yang masih nonaktif hanya Ratio dan Distances. 567 tes otomatis
 membandingkan hasil dengan SciPy, statsmodels, pingouin, lavaan (via contoh terpublikasi),
@@ -83,7 +84,9 @@ xattr -dr com.apple.quarantine /Applications/RS-StatChem.app
 
 - **GitHub Actions (disarankan):** push repo ini ke GitHub, lalu jalankan workflow *Build*
   (tab Actions → Build → Run workflow), atau push tag `v0.1.0`. Hasilnya berupa artifact
-  `RS-StatChem-Windows-x64-portable.zip` dan `RS-StatChem-macOS-arm64.zip`.
+  `RS-StatChem-Windows-x64-portable.zip`, `RS-StatChem-macOS-arm64.zip` (Apple Silicon) dan
+  `RS-StatChem-macOS-x86_64.zip` (Mac Intel; runner `macos-15-intel`, RDKit terakhir yang
+  masih punya wheel Intel dipilih otomatis oleh pip).
 - **Di komputer Windows:** pasang Python 3.12, `pip install -r requirements.txt -r requirements-dev.txt`,
   lalu jalankan `scripts\build_windows.bat`.
 

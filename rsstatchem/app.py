@@ -151,8 +151,15 @@ class AppContext:
         return self._updates
 
     def _dialog_parent(self):
+        """A visible main window for dialogs that appear on their own (update notices): never
+        the hidden QFileDialog Qt keeps behind an open native Save/Open panel."""
+        from PySide6.QtWidgets import QFileDialog
+
         active = self.app.activeWindow()
-        return active if active is not None else (self.windows[-1] if self.windows else None)
+        if active is not None and active.isVisible() and not isinstance(active, QFileDialog):
+            return active
+        visible = [w for w in self.windows if w.isVisible()]
+        return visible[-1] if visible else (self.windows[-1] if self.windows else None)
 
     def check_for_updates(self, manual: bool = False) -> None:
         if manual or self.updates().due():
@@ -256,6 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     if not os.environ.get("RSSTATCHEM_NO_UPDATE_CHECK"):
         QTimer.singleShot(4000, first, lambda: ctx.check_for_updates(manual=False))
     app._rs_context = ctx  # keep a strong reference for the lifetime of the app
+    from rsstatchem.hang_watchdog import HangWatchdog
+
+    watchdog = HangWatchdog(user_data_dir() / "logs")  # writes logs/hang-*.txt on a freeze
     try:
         return app.exec()
     finally:
@@ -264,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         # arbitrary order, which crashes on quit.
         from rsstatchem.ui.qt_lifecycle import shutdown_application
 
+        watchdog.stop()
         app.removeEventFilter(file_filter)
         ctx.editors.clear()
         ctx.windows.clear()
@@ -271,5 +282,5 @@ def main(argv: list[str] | None = None) -> int:
         ctx._output = None
         ctx._updates = None
         del app._rs_context
-        del splash, first, ctx, file_filter
+        del splash, first, ctx, file_filter, watchdog
         shutdown_application(app)

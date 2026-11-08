@@ -57,7 +57,8 @@ def parse_version(text: str) -> tuple[int, ...]:
 def asset_keyword() -> str:
     """Which release asset belongs to this machine."""
     if sys.platform == "darwin":
-        return "macOS-arm64" if platform.machine() == "arm64" else "macOS"
+        # Apple Silicon and Intel Macs have their own builds
+        return "macOS-arm64" if platform.machine() == "arm64" else "macOS-x86_64"
     if sys.platform == "win32":
         return "Windows-x64"
     return "Linux"

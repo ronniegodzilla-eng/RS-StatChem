@@ -16,6 +16,8 @@ jobs:
         include:
           - os: macos-14          # Apple Silicon runner -> native arm64 .app
             artifact: RS-StatChem-macOS-arm64
+          - os: macos-15-intel    # Intel runner -> native x86_64 .app for Intel Macs
+            artifact: RS-StatChem-macOS-x86_64
           - os: windows-latest
             artifact: RS-StatChem-Windows-x64-portable
     runs-on: ${{ matrix.os }}
@@ -72,7 +74,7 @@ jobs:
       # runner, so every release carries a guide that matches it; --strict fails when a menu
       # command has no explanation or a screenshot scene broke
       - name: User guide (PDF)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && runner.arch == 'ARM64'   # one guide per release
         run: python docs/user_guide/build.py --strict --out RS-StatChem-User-Guide.pdf
 
       - name: Build

@@ -1,7 +1,7 @@
 # Instalasi dan Pembaruan
 
-RS-StatChem tersedia untuk **macOS** (Apple Silicon: M1, M2, M3, M4 dan penerusnya) dan
-**Windows** 64-bit. Aplikasi ini tidak memerlukan instalasi Python, Java, atau program
+RS-StatChem tersedia untuk **macOS** 14 Sonoma atau lebih baru, baik Mac dengan chip Apple (M1,
+M2, M3, M4 dan penerusnya) maupun Mac dengan prosesor Intel, serta untuk **Windows** 64-bit. Aplikasi ini tidak memerlukan instalasi Python, Java, atau program
 lain, karena semua yang dibutuhkan sudah ada di dalam paketnya.
 
 ## Mengunduh
@@ -14,14 +14,19 @@ Di bagian **Assets**, unduh berkas yang sesuai dengan komputer Anda:
 
 | Berkas | Untuk |
 |---|---|
-| `RS-StatChem-macOS-arm64.zip` | Mac dengan chip Apple (M1 atau lebih baru), macOS 12 Monterey ke atas |
+| `RS-StatChem-macOS-arm64.zip` | Mac dengan chip Apple (M1 atau lebih baru), macOS 14 Sonoma ke atas |
+| `RS-StatChem-macOS-x86_64.zip` | Mac dengan prosesor Intel, macOS 14 Sonoma ke atas |
 | `RS-StatChem-Windows-x64-portable.zip` | Windows 10 atau 11, 64-bit |
 | `RS-StatChem-User-Guide.pdf` | Panduan ini |
 
 ## Instalasi di macOS
 
-1. Klik dua kali `RS-StatChem-macOS-arm64.zip` untuk mengekstraknya. Akan muncul
-   **RS-StatChem.app**.
+> [!TIP] Tidak yakin jenis Mac Anda? Klik menu Apple ▸ **About This Mac**. Jika tertulis
+> **Chip** (misalnya Apple M2), unduh versi `arm64`. Jika tertulis **Processor** (misalnya
+> Intel Core i5), unduh versi `x86_64`. Fitur kedua versi sama persis.
+
+1. Klik dua kali berkas zip yang sesuai (`RS-StatChem-macOS-arm64.zip` atau
+   `RS-StatChem-macOS-x86_64.zip`) untuk mengekstraknya. Akan muncul **RS-StatChem.app**.
 2. Seret **RS-StatChem.app** ke folder **Applications**.
 3. Buka **Applications**, lalu klik dua kali **RS-StatChem**.
 4. Pada pembukaan pertama, macOS mungkin menolak membukanya karena aplikasi ini belum

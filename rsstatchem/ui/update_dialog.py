@@ -138,17 +138,38 @@ class UpdateChecker(QObject):
         manual = self._manual
         if error:
             if manual:
-                QMessageBox.warning(self._parent(), "Software Update",
-                                    f"Could not check for updates.\n\n{error}")
+                self._when_free(lambda: QMessageBox.warning(
+                    self._parent(), "Software Update",
+                    f"Could not check for updates.\n\n{error}"))
             return
         self.settings.setValue(LAST_KEY, datetime.now().isoformat(timespec="seconds"))
         if not info.newer:
             if manual:
-                QMessageBox.information(self._parent(), "Software Update",
-                                        f"{APP_NAME} {__version__} is the latest version.")
+                self._when_free(lambda: QMessageBox.information(
+                    self._parent(), "Software Update",
+                    f"{APP_NAME} {__version__} is the latest version."))
             return
         if not manual and str(self.settings.value(SKIP_KEY, "")) == info.version:
             return
+        self._when_free(lambda: self._show_dialog(info))
+
+    def _show_dialog(self, info: UpdateInfo) -> None:
         self.dialog = UpdateDialog(info, self.settings, self._parent())
         self.dialog.show()
         self.dialog.raise_()
+
+    RETRY_MS = 1500
+
+    def _when_free(self, show) -> None:
+        """Run ``show`` once no modal dialog or popup is open. The check finishes in the
+        background at any moment; a window raised over an open dialog - above all the native
+        macOS Save/Open panel, which then can no longer be used - freezes the interface."""
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None and (app.activeModalWidget() is not None or
+                                app.activePopupWidget() is not None):
+            QTimer.singleShot(self.RETRY_MS, self, lambda: self._when_free(show))
+            return
+        show()
