@@ -6,7 +6,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QHBoxLayout, Q
                                QLineEdit, QListWidget, QPushButton)
 
 from rsstatchem.core.dataset import format_code
-from rsstatchem.core.stats import anova, boot_procs, glm_output, mi_pool, posthoc_ext, ttest
+from rsstatchem.core.stats import (anova, boot_procs, glm_output, mi_pool, posthoc_ext, ttest,
+                                   ztest)
 from rsstatchem.core.stats import imputation as mi
 from rsstatchem.core.stats.anova import POSTHOC, POSTHOC_ORDER  # noqa: F401 (re-export)
 from rsstatchem.ui.dialogs import glm_model_ui as gm
@@ -113,6 +114,62 @@ class OneSampleTDialog(ResampleMixin, VariablePickerDialog):
             lambda: ttest.one_sample(self.ds, names, tv, self.level(), lw),
             boot=lambda sec, spec: boot_procs.one_sample_t(sec, self.ds, names, tv, spec, lw),
             pool=lambda views: mi.pooled_one_sample_t(self.ds, names, tv, self.level()))
+
+
+Z_ALTERNATIVES = (("two-sided", "Mean \u2260 test value"), ("less", "Mean < test value"),
+                  ("greater", "Mean > test value"))
+
+
+def parse_positive(text: str) -> float | None:
+    """A number > 0 typed with a decimal point or comma, else None."""
+    try:
+        value = float(text.replace(",", "."))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+class OneSampleZDialog(VariablePickerDialog):
+    """One-Sample Z Test (known population standard deviation), as Minitab's 1-Sample Z."""
+
+    DEFAULTS = {"test_value": 0.0, "sigma": "", "alternative": "two-sided", "level": 95.0,
+                "listwise": False}
+
+    def __init__(self, ds, parent=None):
+        super().__init__(ds, "One-Sample Z Test", parent)
+        self.add_target("vars", "Test Variable(s):", accepts=is_numeric)
+        self.add_option_button("Options...", self.ci_missing_options)
+        self.sigma = QLineEdit(str(self.opts["sigma"]))
+        self.sigma.setPlaceholderText("population value, > 0")
+        self.test_value = QLineEdit(f"{self.opts['test_value']:g}")
+        self.alternative = QComboBox()
+        for key, text in Z_ALTERNATIVES:
+            self.alternative.addItem(text, key)
+        self.alternative.setCurrentIndex(
+            max(self.alternative.findData(self.opts["alternative"]), 0))
+        form = QFormLayout()
+        form.addRow("Known Standard Deviation:", self.sigma)
+        form.addRow("Test Value:", self.test_value)
+        form.addRow("Alternative Hypothesis:", self.alternative)
+        self.options_layout.addLayout(form)
+        self.finish()
+
+    def validate(self):
+        sigma = parse_positive(self.sigma.text())
+        if sigma is None:
+            return "Known Standard Deviation must be a number greater than 0."
+        try:
+            self.opts["test_value"] = float(self.test_value.text().replace(",", "."))
+        except ValueError:
+            return "Test Value must be a number."
+        self.opts["sigma"] = f"{sigma:g}"
+        self.opts["alternative"] = self.alternative.currentData()
+        return None
+
+    def compute(self):
+        o = self.opts
+        return ztest.one_sample(self.ds, self.selected("vars"), float(o["sigma"]),
+                                o["test_value"], self.level(), o["alternative"], o["listwise"])
 
 
 class IndependentTDialog(ResampleMixin, GroupingMixin, VariablePickerDialog):

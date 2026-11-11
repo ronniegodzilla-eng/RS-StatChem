@@ -31,6 +31,9 @@ KINDS = ("number", "slider", "checkbox", "choice", "radio", "string", "message",
          "directory", "checkbox_group")
 
 
+REPEAT_LABEL = "Repeat Command"
+
+
 class CommandError(Exception):
     """A user-facing error ("There are no images open", "8-bit grayscale image required")."""
 
@@ -376,7 +379,8 @@ class CommandRegistry:
                 image.changed = True
             session.image_updated(image)
         session.handle_result(result)
-        session.last_command = (label, format_options(fields, values))
+        if label != REPEAT_LABEL:      # Repeat Command repeats the command before it
+            session.last_command = (label, format_options(fields, values))
         if record and command.recordable:
             session.record(label, format_options(fields, values))
         return result

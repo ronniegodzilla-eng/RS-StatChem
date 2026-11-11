@@ -2,12 +2,12 @@
 (SPSS 27.0.1+) and the Summary Independent-Samples T Test (t test from N, mean and SD)."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QGridLayout, QGroupBox, QLabel, QLineEdit, QMessageBox,
-                               QVBoxLayout)
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFormLayout, QGridLayout, QGroupBox, QLabel, QLineEdit,
+                               QMessageBox, QVBoxLayout)
 
 from rsstatchem.core.stats import proportions as pr
-from rsstatchem.core.stats import ttest
+from rsstatchem.core.stats import ttest, ztest
 from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog
 from rsstatchem.ui.dialogs.compare import GroupingMixin
 
@@ -239,8 +239,80 @@ class SummaryTTestDialog(QDialog):
                                          self.fields["label2"].text() or "Sample 2")
 
 
+class SummaryZTestDialog(QDialog):
+    """Summary One-Sample Z Test: enter N and the mean of one sample (Minitab's "summarized
+    data"), the known standard deviation and the test value."""
+
+    needs_data = False
+    _last: dict = {}
+
+    def __init__(self, ds=None, parent=None):
+        from rsstatchem.ui.dialogs.compare import Z_ALTERNATIVES
+
+        super().__init__(parent)
+        self.setWindowTitle("Summary One-Sample Z Test")
+        self.fields = {}
+        data = QFormLayout()
+        for key, label, default in (("label", "Label:", "Sample"), ("n", "Number of Cases:", ""),
+                                    ("mean", "Mean:", "")):
+            self.fields[key] = QLineEdit(str(self._last.get(key, default)))
+            data.addRow(label, self.fields[key])
+        box = QGroupBox("Summary Data")
+        box.setLayout(data)
+        form = QFormLayout()
+        for key, label, default in (("sigma", "Known Standard Deviation:", ""),
+                                    ("test_value", "Test Value:", "0")):
+            self.fields[key] = QLineEdit(str(self._last.get(key, default)))
+            form.addRow(label, self.fields[key])
+        self.alternative = QComboBox()
+        for key, text in Z_ALTERNATIVES:
+            self.alternative.addItem(text, key)
+        self.alternative.setCurrentIndex(
+            max(self.alternative.findData(self._last.get("alternative", "two-sided")), 0))
+        form.addRow("Alternative Hypothesis:", self.alternative)
+        self.level = QDoubleSpinBox()
+        self.level.setRange(50, 99.99)
+        self.level.setValue(float(self._last.get("level", 95.0)))
+        form.addRow("Confidence Interval Level (%):", self.level)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                              QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(box)
+        layout.addLayout(form)
+        layout.addWidget(bb)
+        self.values: dict = {}
+
+    def accept(self) -> None:
+        try:
+            vals = {k: float(self.fields[k].text().replace(",", "."))
+                    for k in ("n", "mean", "sigma", "test_value")}
+        except ValueError:
+            QMessageBox.warning(self, self.windowTitle(), "Enter numbers for N, mean, the "
+                                "known standard deviation and the test value.")
+            return
+        if vals["n"] < 1 or vals["sigma"] <= 0:
+            QMessageBox.warning(self, self.windowTitle(), "N must be at least 1 and the known "
+                                "standard deviation greater than 0.")
+            return
+        self.values = vals
+        type(self)._last = {k: e.text() for k, e in self.fields.items()}
+        type(self)._last.update(level=self.level.value(),
+                                alternative=self.alternative.currentData())
+        super().accept()
+
+    def compute(self):
+        v = self.values
+        return ztest.summary_one_sample(v["n"], v["mean"], v["sigma"], v["test_value"],
+                                        self.level.value() / 100,
+                                        self.alternative.currentData(),
+                                        self.fields["label"].text() or "Sample")
+
+
 MENUS = {
     "Analyze/Compare Means": [
+        ("Summary One-Sample Z Test...", SummaryZTestDialog),
         ("One-Sample Proportions...", OneSampleProportionsDialog),
         ("Independent-Samples Proportions...", IndependentProportionsDialog),
         ("Paired-Samples Proportions...", PairedProportionsDialog),

@@ -514,6 +514,11 @@ def linear_mixed(ds: Dataset, dependent: str, subject: str, factors: list[str] |
     lik = _Likelihood(y, Xr, Z, groups, reml, structure if q > 1 else "VC", repeated_type,
                       rpos, t)
 
+    if n - lik.p <= 0:
+        raise ValueError(
+            f"The fixed effects need {lik.p} parameters but there are only {n} valid cases, "
+            "so the model cannot be estimated. A factor adds one parameter per category: put "
+            "scale variables in Covariate(s), not in Factor(s).")
     theta = _fit(y, Xr, Z, groups, lik, reml, n)
     G, rp = lik.unpack(theta)
     scale = lik.residual_scale(theta)

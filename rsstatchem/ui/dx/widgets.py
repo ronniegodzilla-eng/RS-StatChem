@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDia
 from rsstatchem.core.output import Image, Section, Table, Text
 from rsstatchem.core.report import clipboard_html, item_text
 from rsstatchem.ui.dx import icons, style
+from rsstatchem.ui.actions import connect_triggered
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -780,5 +781,5 @@ def make_action(parent, text: str, slot=None, shortcut=None, icon_name: str | No
         act.setStatusTip(tip)
         act.setToolTip(tip)
     if slot is not None:
-        act.triggered.connect(slot)
+        connect_triggered(act, slot)          # never the checked flag as a slot argument
     return act

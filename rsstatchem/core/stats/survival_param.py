@@ -442,6 +442,11 @@ def _prepare(ds, time, start, end, status, status_map, unmapped, covariates, fac
     frame = frame[ok]
     kind, t1, t2, lo = kind[ok], t1[ok], t2[ok], lo[ok]
     n = len(frame)
+    if n == 0:
+        raise ValueError(
+            "No valid cases are left for the analysis after excluding cases with missing "
+            "values, non-positive times or conflicting / overlapping time records. Check the "
+            "Time (or Start / End), Status, Subject and Interval variables.")
     cols = [np.ones(n)]
     pnames = ["(Intercept)"]
     for c in covariates:

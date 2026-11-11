@@ -174,3 +174,24 @@ Windows inherit the app's red/white theme; use `QMainWindow`/`QDialog` normally.
 Files created, the `MENUS` you export (module path), dependencies added, shared-file
 changes you need, test results (command + pass count), screenshots you checked, and an
 honest list of what is not implemented or approximated.
+
+## Debugging tools (`scripts/`)
+
+Run these (offscreen, no user needed) after larger changes; each prints what broke and where.
+
+| Script | What it exercises |
+|---|---|
+| `menu_crawler.py [stats rsm graph chem image]` | Triggers every menu command of a module once (dialogs are dismissed, files and network are stubbed) and reports exceptions and error boxes. |
+| `analysis_fuzzer.py [--mode scale]` | Fills and runs every Statistics analysis dialog on demo data. `--mode scale` puts scale variables in every box, the classic user mistake; hangs are detected and the run restarts (`--start N`). |
+| `imagej_fuzzer.py` | Runs every Image Analysis command with default options on six kinds of image. |
+| `rsm_walker.py` | Opens every tutorial example and a design of every family and visits every node, tab and graph type. |
+| `slot_audit.py` | Static check (also a test): no method with an optional first parameter is connected directly to `triggered` / `clicked`. |
+
+Rules these tools enforce:
+
+- Menu slots go through the window's action helper (`rsstatchem.ui.actions.connect_triggered`)
+  or a `lambda: self.method()`; never `triggered.connect(self.method)` when the method has an
+  optional parameter (Qt would pass its `checked` flag as that argument).
+- `QPrintDialog` / `QPageSetupDialog` are run with `qt_lifecycle.exec_and_delete`.
+- An analysis that cannot handle its input raises `ValueError` with a message the user can act
+  on, before allocating or iterating (see `tests/test_misuse_guards.py`).

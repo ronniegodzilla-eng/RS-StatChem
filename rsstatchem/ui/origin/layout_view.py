@@ -145,8 +145,9 @@ def print_graph(main, gwin, printer=None) -> bool:
     from rsstatchem.core.graph.export import export_bytes
     if printer is None:
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        dlg = QPrintDialog(printer, main)
-        if not dlg.exec():
+        from rsstatchem.ui.qt_lifecycle import exec_and_delete
+
+        if not exec_and_delete(QPrintDialog(printer, main)):
             return False
     img = QImage.fromData(export_bytes(gwin.graph, "png", dpi=300))
     painter = QPainter(printer)

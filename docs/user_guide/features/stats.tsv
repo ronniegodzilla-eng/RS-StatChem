@@ -352,3 +352,5 @@ Pivot > Pivoting Trays	Membuka Pivoting Trays untuk menyusun ulang dimensi tabel
 Pivot > Transpose Table (swap rows and columns)	Menukar baris dan kolom tabel terpilih, misalnya agar tabel lebar muat di halaman tegak.
 Pivot > Reset Pivots and Show Hidden	Mengembalikan susunan asli tabel terpilih dan menampilkan lagi semua baris atau kolom yang disembunyikan.
 Help > User Guide (PDF)	Membuka panduan pengguna (PDF) untuk versi aplikasi ini di browser; panduan yang sama juga bisa diunduh dari halaman rilis.
+Analyze > Compare Means > One-Sample Z Test	Menguji apakah rata-rata satu atau beberapa variabel berbeda dari Test Value bila simpangan baku populasi diketahui (uji Z, seperti 1-Sample Z di Minitab); isi Known Standard Deviation dan pilih hipotesis alternatif (≠, <, >). Menampilkan N, rata-rata, SE (σ/√N), selang atau batas kepercayaan rata-rata, Z, p, dan Cohen's d.
+Analyze > Compare Means > Summary One-Sample Z Test	Uji Z satu sampel dari data ringkasan: cukup isi jumlah kasus, rata-rata sampel, simpangan baku populasi yang diketahui, Test Value, dan hipotesis alternatif, tanpa data mentah.

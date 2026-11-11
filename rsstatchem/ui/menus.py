@@ -130,7 +130,8 @@ MENU_ORDER: dict[str, list] = {
     ],
     "Analyze/Tables": ["Custom Tables...", "Multiple Response Sets..."],
     "Analyze/Compare Means": [
-        "Means...", "One-Sample T Test...", "Independent-Samples T Test...",
+        "Means...", "One-Sample T Test...", "One-Sample Z Test...",
+        "Summary One-Sample Z Test...", "Independent-Samples T Test...",
         "Summary Independent-Samples T Test...", "Paired-Samples T Test...",
         "One-Way ANOVA...", None, "One-Sample Proportions...",
         "Independent-Samples Proportions...", "Paired-Samples Proportions...", None,

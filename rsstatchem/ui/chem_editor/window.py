@@ -18,6 +18,7 @@ from rsstatchem.ui.chem_editor import export
 from rsstatchem.ui.chem_editor.canvas import ChemCanvas
 from rsstatchem.ui.chem_editor.icons import tool_icon
 from rsstatchem.ui.chem_editor.panels import AnalysisPanel, TemplatePanel
+from rsstatchem.ui.actions import connect_triggered
 
 __all__ = ["ChemEditorWindow", "TOOL_GROUPS", "OPEN_FILTER", "EXPORT_FORMATS",
            "PASTE_KINDS"]
@@ -111,7 +112,7 @@ class ChemEditorWindow(QMainWindow):
         if tip:
             a.setStatusTip(tip)
         a.setCheckable(checkable)
-        a.triggered.connect(slot)
+        connect_triggered(a, slot)            # never the checked flag as a slot argument
         return a
 
     def _build_actions(self) -> None:

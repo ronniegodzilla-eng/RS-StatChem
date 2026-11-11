@@ -852,7 +852,7 @@ class BookWindow(QWidget):
         index = bar.tabAt(pos)
         menu = QMenu(self)
         menu.addAction("Insert", lambda: self.add_sheet(at=max(index, 0)))
-        menu.addAction("Add", self.add_sheet)
+        menu.addAction("Add", lambda: self.add_sheet())   # not add_sheet(checked)
         if index >= 0:
             menu.addAction("Rename", lambda: self.rename_sheet(index))
             menu.addAction("Duplicate", lambda: self.duplicate_sheet(index))

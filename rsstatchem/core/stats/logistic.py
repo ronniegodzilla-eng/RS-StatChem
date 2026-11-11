@@ -40,6 +40,12 @@ class LogisticResult:
     models: list = field(default_factory=list)   # resample.ModelInfo (Bootstrap, MI pooling)
 
 
+# an ordinal / multinomial dependent is categorical: a scale variable there means one
+# equation or threshold per distinct value and a fit that takes minutes or never ends
+MAX_ORDINAL_CATEGORIES = 50
+MAX_MULTINOMIAL_PARAMETERS = 2000
+
+
 def _sort_key(v):
     return (isinstance(v, str), v)
 
@@ -1134,6 +1140,13 @@ def multinomial(ds: Dataset, dependent: str, factors: list[str] = (),
         section.note("Warning", "The dependent variable must have at least two observed "
                      "categories.", style="warning")
         return result
+    n_par = (J - 1) * data.X.shape[1]
+    if J > MAX_ORDINAL_CATEGORIES or n_par > MAX_MULTINOMIAL_PARAMETERS:
+        raise ValueError(
+            f"{ds.var(dependent).title} has {J} categories and the model would need "
+            f"{n_par:,} parameters ({J - 1} equations x {data.X.shape[1]} terms), too many to "
+            "estimate. The dependent variable and the factors must be categorical variables "
+            "with few categories; put scale variables in Covariate(s).")
     if reference == "last":
         ref = J - 1
     elif reference == "first":
@@ -1662,6 +1675,7 @@ def _general_ordinal_ll(y, X, J, link, th0, beta0):
     return -min(best.fun, alt.fun)
 
 
+
 def ordinal(ds: Dataset, dependent: str, factors: list[str] = (), covariates: list[str] = (),
             link: str = "logit", level: float = 0.95, gof: bool = True,
             parallel: bool = False, classification: bool = False, save=(), *,
@@ -1698,6 +1712,13 @@ def ordinal(ds: Dataset, dependent: str, factors: list[str] = (), covariates: li
         section.note("Warning", "The dependent variable must have at least two observed "
                      "categories.", style="warning")
         return result
+    if J > MAX_ORDINAL_CATEGORIES:
+        raise ValueError(
+            f"{ds.var(dependent).title} has {J} distinct values. Ordinal regression estimates "
+            "one threshold between every two categories, so the dependent variable must be an "
+            f"ordered categorical variable (at most {MAX_ORDINAL_CATEGORIES} categories). For "
+            "a scale variable use Regression > Linear, or group it first with Transform > "
+            "Visual Binning.")
     section.table(_case_summary(ds, dependent, data, factors))
     X = data.X.to_numpy(float)
     k = X.shape[1]

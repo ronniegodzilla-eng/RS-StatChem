@@ -1151,9 +1151,11 @@ class ChemDrawWindow(ChemEditorWindow):
         from rsstatchem.ui.chem_editor.render import Builder
         if printer is None:
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            from rsstatchem.ui.qt_lifecycle import exec_and_delete
+
             dlg = QPrintDialog(printer, self)
             dlg.setWindowTitle("Print")
-            if dlg.exec() != QDialog.DialogCode.Accepted:
+            if exec_and_delete(dlg) != QDialog.DialogCode.Accepted.value:
                 return False
         scene = QGraphicsScene()
         Builder(self.doc.style).build(scene, self.doc)
@@ -1482,8 +1484,9 @@ class ChemDrawWindow(ChemEditorWindow):
         size = QPageSize(QPageSize.PageSizeId.A4 if self.canvas.page.width() < 600 else
                          QPageSize.PageSizeId.Letter)
         printer.setPageSize(size)
-        dlg = QPageSetupDialog(printer, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        from rsstatchem.ui.qt_lifecycle import exec_and_delete
+
+        if exec_and_delete(QPageSetupDialog(printer, self)) != QDialog.DialogCode.Accepted.value:
             return False
         pid = printer.pageLayout().pageSize().id()
         name = "A4" if pid == QPageSize.PageSizeId.A4 else "Letter"

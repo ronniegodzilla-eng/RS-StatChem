@@ -398,6 +398,32 @@ class Term:
     spec: TermSpec = field(default_factory=TermSpec)
 
 
+MAX_PARAMETERS = 4000
+
+
+def check_model_size(factors: list[FactorInfo], specs: list[TermSpec],
+                     limit: int = MAX_PARAMETERS) -> None:
+    """Refuse a model whose design matrix would be enormous: the usual cause is a scale
+    variable (dozens of distinct values) in a factor box, where every value becomes a
+    category and the interactions multiply them."""
+    levels = {f.name: max(len(f.levels), 1) for f in factors}
+    total = 1
+    for spec in specs:
+        size = 1
+        for name in list(spec.factors) + list(spec.within):
+            size *= levels.get(name, 1)
+        total += size
+    if total <= limit:
+        return
+    big = sorted(((n, k) for n, k in levels.items() if k > 10), key=lambda item: -item[1])
+    detail = ("Factors with many categories: " + ", ".join(f"{n} ({k})" for n, k in big[:6])
+              + ". ") if big else ""
+    raise ValueError(
+        f"This model would need about {total:,} parameters, too many to estimate. {detail}"
+        "A factor must be a categorical variable with few categories: put scale variables in "
+        "Covariate(s), or use Model... to leave out the interactions.")
+
+
 class GLMFit:
     """Multivariate (W)LS fit ``Y = X B + E`` with SPSS's coding and SS types."""
 
@@ -417,6 +443,7 @@ class GLMFit:
         self.ss_type = int(ss_type)
         self.w = np.ones(self.n) if weights is None else np.asarray(weights, float)
         self.sw = np.sqrt(self.w)
+        check_model_size(factors, self.specs)
         self.design = Design(factors, covariates, self.specs, intercept, self.n)
         self.cov_means = self.design.cov_means
         X, idx = self.design.effect_matrix()

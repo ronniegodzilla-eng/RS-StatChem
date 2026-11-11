@@ -136,6 +136,17 @@ def _hyperstack_fields(session, image):
 
 
 # ---------------------------------------------------------------------------------- open
+def need_file(path, key: str = "open") -> Path:
+    """The existing file a command was given, else a CommandError the user can act on (a
+    macro may call run("Results... ") without a path)."""
+    if not path:
+        raise CommandError(f"A file path is required ({key}=...)")
+    p = Path(path)
+    if not p.is_file():
+        raise CommandError(f"File not found:\n{path}")
+    return p
+
+
 def _open_func(session, image, open=""):
     from rsstatchem.core.imaging.io import open_in_session
     if not open:
@@ -351,13 +362,13 @@ def import_text_image(session, image, open=""):
 
 
 def import_text_file(session, image, open=""):
-    p = Path(open)
+    p = need_file(open)
     session.emit("text_opened", (p.name, p.read_text(errors="replace"), str(p)))
 
 
 def import_results(session, image, open=""):
     from rsstatchem.core.imaging.results import ResultsTable
-    t = ResultsTable.read(open)
+    t = ResultsTable.read(need_file(open))
     rt = ResultsTable.results("Results")
     for r in range(len(t)):
         rt.increment_counter()
@@ -371,7 +382,7 @@ def import_results(session, image, open=""):
 
 def import_table(session, image, open=""):
     from rsstatchem.core.imaging.results import ResultsTable
-    session.show_table(ResultsTable.read(open, title=Path(open).name))
+    session.show_table(ResultsTable.read(need_file(open), title=Path(open).name))
 
 
 def import_url(session, image, url=""):
@@ -389,7 +400,7 @@ def import_url(session, image, url=""):
 
 def stack_from_list(session, image, open=""):
     from rsstatchem.core.imaging.io import open_image
-    lines = [ln.strip() for ln in Path(open).read_text().splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in need_file(open).read_text().splitlines() if ln.strip()]
     base = Path(open).parent
     docs = [open_image(p if Path(p).is_absolute() else base / p) for p in lines]
     if not docs:
@@ -408,7 +419,7 @@ def stack_from_list(session, image, open=""):
 def import_avi(session, image, open="", first=1, last=0, use=False, convert=False,
                flip=False):
     from rsstatchem.core.imaging.io.avi import read_avi
-    doc = read_avi(open, int(first), int(last), convert)
+    doc = read_avi(need_file(open), int(first), int(last), convert)
     if flip:
         doc.pixels = np.ascontiguousarray(doc.pixels[:, :, :, ::-1])
     return doc
@@ -419,7 +430,7 @@ def import_xy(session, image, open=""):
     from rsstatchem.core.imaging.roi import PolygonRoi
     if image is None:
         raise CommandError("There are no images open")
-    xs, ys = read_xy(open)
+    xs, ys = read_xy(need_file(open))
     if len(xs) < 1:
         raise CommandError("No coordinates found")
     cal = image.calibration
@@ -432,7 +443,7 @@ def import_xy(session, image, open=""):
 
 def tiff_virtual(session, image, open=""):
     from rsstatchem.core.imaging.io import open_image
-    return open_image(open)
+    return open_image(need_file(open))
 
 
 # ---------------------------------------------------------------------------------- close/save
@@ -671,7 +682,9 @@ def _ui_page_setup(bar, cmd):
     printer = getattr(bar, "_printer", None) or QPrinter()
     bar._printer = printer
     if not getattr(bar, "file_hook", None):
-        QPageSetupDialog(printer, bar).exec()
+        from rsstatchem.ui.qt_lifecycle import exec_and_delete
+
+        exec_and_delete(QPageSetupDialog(printer, bar))
 
 
 def _ui_print(bar, cmd):
@@ -682,7 +695,9 @@ def _ui_print(bar, cmd):
         return
     printer = getattr(bar, "_printer", None) or QPrinter()
     bar._printer = printer
-    if QPrintDialog(printer, bar).exec():
+    from rsstatchem.ui.qt_lifecycle import exec_and_delete
+
+    if exec_and_delete(QPrintDialog(printer, bar)):
         print_image(doc, printer)
 
 

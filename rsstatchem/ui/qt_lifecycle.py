@@ -25,6 +25,23 @@ _WINDOW_REGISTRIES = (
 )
 
 
+def exec_and_delete(dialog) -> int:
+    """Run a modal dialog and destroy it at once, like a dialog on the C++ stack.
+
+    For dialogs that hold a pointer to a short-lived object (QPrintDialog and QPageSetupDialog
+    keep their QPrinter): with a parent window the dialog would outlive the printer as a
+    child of that window and crash when the window is hidden or closed later."""
+    import shiboken6
+
+    try:
+        return int(dialog.exec())
+    finally:
+        if shiboken6.isValid(dialog):
+            dialog.hide()
+            dialog.setParent(None)
+            shiboken6.delete(dialog)
+
+
 def _clear_registries() -> None:
     for module_name, attr in _WINDOW_REGISTRIES:
         registry = getattr(sys.modules.get(module_name), attr, None)

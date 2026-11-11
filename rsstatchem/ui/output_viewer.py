@@ -26,6 +26,7 @@ from rsstatchem.core import report
 from rsstatchem.core.output import Image, OutputDocument, Section, Table, Text
 from rsstatchem.core.output_store import OUTPUT_EXT, OUTPUT_FILTER, load_output, save_output
 from rsstatchem.ui import icons
+from rsstatchem.ui.actions import connect_triggered
 
 ID_ROLE = Qt.ItemDataRole.UserRole
 ZOOM_LEVELS = (0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
@@ -119,7 +120,7 @@ class OutputViewer(QMainWindow):
             action.setShortcuts(shortcut if isinstance(shortcut, list) else [shortcut])
         if icon:
             action.setIcon(icons.icon(icon))
-        action.triggered.connect(slot)
+        connect_triggered(action, slot)       # never the checked flag as a slot argument
         return action
 
     def _build_actions(self) -> None:

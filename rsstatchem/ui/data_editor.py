@@ -27,7 +27,8 @@ from rsstatchem.core.stats import descriptive
 from rsstatchem.io import files
 from rsstatchem.ui import icons
 from rsstatchem.ui.dialogs.compare import (IndependentTDialog, OneSampleTDialog,
-                                           OneWayAnovaDialog, PairedTDialog, UnivariateDialog)
+                                           OneSampleZDialog, OneWayAnovaDialog, PairedTDialog,
+                                           UnivariateDialog)
 from rsstatchem.ui.dialogs.data import SortCasesDialog, TextImportDialog, ValueLabelsDialog
 from rsstatchem.ui.dialogs.descriptive import DescriptivesDialog, FrequenciesDialog
 from rsstatchem.ui.dialogs.explore import CrosstabsDialog, ExploreDialog, ReliabilityDialog
@@ -46,6 +47,7 @@ from rsstatchem.ui.menus import build_tree
 from rsstatchem.ui.modules import add_module_menu
 from rsstatchem.ui.models import DataTableModel, VariableTableModel
 from rsstatchem.ui.views import ChoiceDelegate, DataGridView, SheetView, SpinDelegate
+from rsstatchem.ui.actions import connect_triggered
 
 if TYPE_CHECKING:
     from rsstatchem.app import AppContext
@@ -56,6 +58,7 @@ ANALYZE = [
     ("Descriptive Statistics", ["FREQ", "DESC", ("Explore...", ExploreDialog),
                                 ("Crosstabs...", CrosstabsDialog)]),
     ("Compare Means", ["Means...", ("One-Sample T Test...", OneSampleTDialog),
+                       ("One-Sample Z Test...", OneSampleZDialog),
                        ("Independent-Samples T Test...", IndependentTDialog),
                        ("Paired-Samples T Test...", PairedTDialog),
                        ("One-Way ANOVA...", OneWayAnovaDialog)]),
@@ -232,7 +235,7 @@ class DataEditorWindow(QMainWindow):
             action.setStatusTip(tip)
         action.setCheckable(checkable)
         if slot is not None:
-            action.triggered.connect(slot)
+            connect_triggered(action, slot)   # never the checked flag as a slot argument
         return action
 
     def _build_actions(self) -> None:

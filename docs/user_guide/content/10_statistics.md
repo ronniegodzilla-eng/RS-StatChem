@@ -249,6 +249,27 @@ Pada data contoh, rata-rata laki-laki 70,18 dan perempuan 72,06. Uji Levene tida
 p (two-sided) = ,534, Cohen's d = −0,19. Dengan demikian, tidak ada perbedaan nilai posttest
 yang berarti antara laki-laki dan perempuan.
 
+### Uji Z satu sampel (simpangan baku populasi diketahui)
+
+Jika simpangan baku populasi **sudah diketahui** (misalnya dari spesifikasi metode atau data
+historis), gunakan [[Analyze > Compare Means > One-Sample Z Test]]. Uji ini tidak ada di SPSS;
+cara kerjanya mengikuti *1-Sample Z* di Minitab.
+
+1. Masukkan variabel ke **Test Variable(s)**.
+2. Isi **Known Standard Deviation** (simpangan baku populasi, harus lebih dari 0) dan
+   **Test Value** (rata-rata yang dihipotesiskan).
+3. Pilih **Alternative Hypothesis**: *Mean ≠ test value* (dua arah), *Mean < test value*, atau
+   *Mean > test value*. Taraf kepercayaan diatur lewat **Options...**.
+4. Klik **OK**.
+
+Tabel **One-Sample Statistics** menampilkan N, rata-rata, simpangan baku sampel, dan
+*Std. Error Mean* yang dihitung dari simpangan baku populasi (σ/√N), beserta selang kepercayaan
+rata-rata. Untuk hipotesis satu arah, yang tampil adalah satu batas (bawah atau atas), seperti
+di Minitab. Tabel **One-Sample Z Test** memuat nilai Z, p, selisih rata-rata, dan Cohen's d.
+
+> [!TIP] Hanya punya ringkasan data (jumlah sampel dan rata-ratanya)? Gunakan
+> [[Analyze > Compare Means > Summary One-Sample Z Test]], tanpa perlu data mentah.
+
 ## Output Viewer
 
 Semua hasil analisis dari semua jendela Data Editor terkumpul di satu **Output Viewer**. Jendela

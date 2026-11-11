@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from rsstatchem.core.imaging import commands as C
-from rsstatchem.core.imaging.commands import CommandError
+from rsstatchem.core.imaging.commands import REPEAT_LABEL, CommandError
 from rsstatchem.core.imaging.image import ImageDoc
 from rsstatchem.core.imaging.results import ResultsTable
 
@@ -30,7 +30,7 @@ TOOL_TEMPLATE = ('// Macro tool: runs when you click on the image\n'
 # ---------------------------------------------------------------------------------- repeat
 def repeat_command(session, image):
     last = session.last_command
-    if last is None:
+    if last is None or last[0] == REPEAT_LABEL:
         raise CommandError("There is no command to repeat")
     label, options = last
     return session.registry.run(session, label, options)
@@ -38,7 +38,7 @@ def repeat_command(session, image):
 
 def _ui_repeat(bar, cmd):
     last = bar.session.last_command
-    if last is None:
+    if last is None or last[0] == REPEAT_LABEL:
         bar.error("There is no command to repeat", "Repeat Command")
         return
     label, options = last
@@ -49,7 +49,7 @@ def _ui_repeat(bar, cmd):
 def run_macro_cmd(session, image, macro="", argument=""):
     from rsstatchem.core.imaging.macro import MacroError, run_macro, run_python
     p = Path(macro)
-    if not p.exists():
+    if not macro or not p.is_file():
         raise CommandError(f"Macro or script not found:\n{macro}")
     code = p.read_text(errors="replace")
     try:
@@ -77,6 +77,8 @@ def _ui_install(bar, cmd):
 
 def install_cmd(session, image, macro=""):
     from rsstatchem.core.imaging.macro import macro_names
+    if not macro or not Path(macro).is_file():
+        raise CommandError(f"Macro file not found:\n{macro}")
     names = macro_names(Path(macro).read_text(errors="replace"))
     session.options.extra["installed_macros"] = macro
     session.status(f"{len(names)} macros installed")

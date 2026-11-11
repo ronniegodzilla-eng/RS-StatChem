@@ -1471,12 +1471,26 @@ def fieller(a: float, b: float, V: np.ndarray, z: float, t: float,
 
 
 # ====================================================================== loglinear
+MAX_CELLS = 3000    # cells of the cross-classification (a saturated design is cells x cells)
+
+
 def _cells(ds: Dataset, factors: list[str], cell_cov: list[str] = (), weights: str | None = None):
     frame = pd.DataFrame({f: ds.analysis_series(f) for f in factors})
     for c in cell_cov:
         frame[c] = numeric(ds, c)
     frame = frame.dropna()
     flev = {f: sorted(frame[f].unique(), key=_sort_key) for f in factors}
+    n_cells = math.prod(len(v) for v in flev.values())
+    if n_cells > MAX_CELLS:
+        big = sorted(((f, len(v)) for f, v in flev.items() if len(v) > 10),
+                     key=lambda item: -item[1])
+        raise ValueError(
+            f"The cross-classification of these variables has {n_cells:,} cells, too many "
+            "for a loglinear model. "
+            + ("Variables with many categories: "
+               + ", ".join(f"{f} ({k})" for f, k in big[:6]) + ". " if big else "")
+            + "Loglinear models need categorical variables with few categories; recode scale "
+            "variables into groups first (Transform > Visual Binning).")
     grid = pd.DataFrame(list(itertools.product(*[flev[f] for f in factors])), columns=factors)
     counts = frame.groupby(factors, sort=False).size()
     grid["count"] = [float(counts.get(tuple(r) if len(factors) > 1 else r[0], 0))

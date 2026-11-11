@@ -640,6 +640,11 @@ def linear_regression(ds: Dataset, dependent: str, factors: list[str], covariate
     sst = float(((y - y.mean()) ** 2).sum())
     ssr = sst - sse
     df_e = n - p - 1
+    if df_e <= 0:
+        raise ValueError(
+            f"The model has {p + 1} parameters but only {n} valid cases, so it cannot be "
+            "estimated. A factor adds one parameter per category: put scale variables in "
+            "Covariate(s), not in Factor(s).")
     mse = sse / df_e
     r2 = ssr / sst if sst > 0 else 0.0
     F = (ssr / p) / mse if p else float("nan")
