@@ -513,9 +513,12 @@ class ImageJBar(QMainWindow):
         return [a for a in self.actions_by_label.values() if not a.shortcut().isEmpty()]
 
     def image_window_menubar(self, window):
-        """On macOS an image window gets a QMenuBar holding the bar's menus (the same QMenus
-        and QActions), so the global menu bar keeps ImageJ's menus while it is active."""
-        if sys.platform != "darwin" or os.environ.get("RSSTATCHEM_NO_WINDOW_MENUBAR"):
+        """With the macOS system menu bar an image window gets a QMenuBar holding the bar's
+        menus (the same QMenus and QActions), so the global menu bar keeps ImageJ's menus
+        while it is active. With menu bars inside the windows (the app's default) the menus
+        stay on the main bar only, as in ImageJ on Windows."""
+        if sys.platform != "darwin" or os.environ.get("RSSTATCHEM_NO_WINDOW_MENUBAR") or \
+                QApplication.testAttribute(Qt.ApplicationAttribute.AA_DontUseNativeMenuBar):
             return None
         mb = QMenuBar(window)
         for top in MENU_LAYOUT:

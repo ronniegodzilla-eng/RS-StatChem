@@ -197,6 +197,34 @@ class _FileOpenFilter(QObject):
         return False
 
 
+def use_window_menu_bars() -> None:
+    """Keep every window's menu bar inside the window on macOS too (as on Windows and in the
+    user guide) instead of in the system menu bar at the top of the screen, where the menus
+    change with the active window and sit far from the toolbar they belong to. Must run
+    before the QApplication is created. macOS keeps its own application menu (About, Hide,
+    Quit) in the system bar."""
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeMenuBar, True)
+
+
+def mac_application_menu(ctx):
+    """Check for Updates in the macOS application menu (next to Hide and Quit). With menu
+    bars inside the windows Qt leaves that menu to the system items; a parentless native menu
+    bar holding the role action adds ours. About stays in each window's Help menu (Qt keeps
+    its own About item disabled without a native window menu bar). Returns the bar: keep a
+    reference."""
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QMenuBar
+
+    bar = QMenuBar(None)
+    bar.setNativeMenuBar(True)
+    menu = bar.addMenu(APP_NAME)
+    updates = menu.addAction("Check for Updates...")
+    updates.setMenuRole(QAction.MenuRole.ApplicationSpecificRole)
+    updates.triggered.connect(lambda _checked=False: ctx.check_for_updates(manual=True))
+    menu.menuAction().setVisible(False)   # its item lives in the application menu
+    return bar
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv if argv is None else argv
     if "--check-update" in argv:  # diagnostics: does the (packaged) app reach GitHub?
@@ -229,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    use_window_menu_bars()
     app = QApplication(argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_ORG)
@@ -251,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         app.processEvents()
 
     ctx = AppContext(app)
+    app_menu = mac_application_menu(ctx) if sys.platform == "darwin" else None
     file_filter = _FileOpenFilter(ctx)
     app.installEventFilter(file_filter)
     files = [arg for arg in argv[1:] if Path(arg).is_file()]
@@ -282,5 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         ctx._output = None
         ctx._updates = None
         del app._rs_context
-        del splash, first, ctx, file_filter, watchdog
+        if app_menu is not None:
+            app_menu.deleteLater()
+        del splash, first, ctx, file_filter, watchdog, app_menu
         shutdown_application(app)
