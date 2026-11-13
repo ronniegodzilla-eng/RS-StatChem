@@ -39,6 +39,7 @@ Pemeriksaan otomatis versi baru bisa dimatikan di jendela **Software Update** (h
 | macOS: "RS-StatChem can't be opened" atau "Apple could not verify..." | Buka **System Settings ▸ Privacy & Security**, lalu klik **Open Anyway** (lihat Bab 2). |
 | macOS: aplikasi disebut rusak (*damaged*) | Jalankan di Terminal: `xattr -dr com.apple.quarantine /Applications/RS-StatChem.app` |
 | Windows: muncul layar biru SmartScreen | Klik **More info**, lalu **Run anyway**. |
+| Windows: "Smart App Control blocked an app that may be unsafe" ("Kontrol Aplikasi Pintar memblokir aplikasi yang mungkin tidak aman"), hanya ada tombol **OK** | Matikan Smart App Control di **Windows Security ▸ App & browser control ▸ Smart App Control settings**, lalu buka RS-StatChem lagi (lihat Bab 2, bagian Jika diblokir oleh Smart App Control). |
 | Windows: aplikasi tidak mau terbuka atau langsung tertutup | Pastikan zip sudah diekstrak semua (jangan dijalankan dari dalam zip) dan folder tidak berada di lokasi yang dibatasi, misalnya langsung di `C:\Program Files`. |
 | Tabel output berantakan saat ditempel di Word | Salin lewat **Edit ▸ Copy** di Output Viewer, lalu tempel di Word dengan ++Ctrl+V++ biasa. Tabel akan masuk sebagai tabel Word dengan lebar kolom yang sudah disesuaikan. |
 | Nama senyawa tidak ditemukan | Coba nama IUPAC atau nama umum dalam bahasa Inggris. Untuk nama yang jarang dipakai, sambungkan internet agar PubChem bisa dicari. |

@@ -59,6 +59,31 @@ registry, dan bisa dijalankan dari flashdisk.
 > [!WARNING] Jangan menjalankan **RS-StatChem.exe** langsung dari dalam berkas zip tanpa
 > mengekstraknya. Aplikasi akan gagal menemukan berkas pendukungnya.
 
+### Jika diblokir oleh Smart App Control
+
+Di sebagian komputer Windows 11, yang muncul bukan layar biru SmartScreen, melainkan kotak
+pesan **Smart App Control blocked an app that may be unsafe** (di Windows berbahasa Indonesia:
+**Kontrol Aplikasi Pintar memblokir aplikasi yang mungkin tidak aman**) dengan tombol **OK**
+(**Oke**) saja. Pesan ini muncul karena RS-StatChem belum memiliki tanda tangan digital
+penerbit, bukan karena aplikasinya rusak atau berbahaya. Berbeda dengan SmartScreen, pesan ini
+tidak memiliki tombol **Run anyway**, jadi RS-StatChem baru bisa dibuka setelah
+Smart App Control dimatikan:
+
+1. Klik **OK** untuk menutup pesan.
+2. Buka **Windows Security** (**Keamanan Windows**) dari menu Start.
+3. Pilih **App & browser control** (**Kontrol aplikasi & browser**), lalu klik
+   **Smart App Control settings** (**Pengaturan Kontrol Aplikasi Pintar**).
+4. Pilih **Off** (**Nonaktif**). Langkah ini memerlukan akun administrator.
+5. Klik dua kali **RS-StatChem.exe** lagi. Jika kemudian muncul layar biru SmartScreen, klik
+   **More info**, lalu **Run anyway**, seperti pada langkah 3 di atas.
+
+> [!WARNING] Smart App Control adalah salah satu lapis perlindungan Windows. Matikan hanya di
+> laptop milik sendiri, dan jangan di komputer kantor atau laboratorium yang dikelola orang
+> lain (mintalah bantuan pengelolanya). Di Windows 11 yang sudah mendapat pembaruan April 2026
+> atau lebih baru, fitur ini bisa dinyalakan kembali dari menu yang sama. Di Windows yang
+> lebih lama, fitur yang sudah dimatikan tidak bisa dinyalakan lagi tanpa memasang ulang
+> Windows.
+
 Pengaturan aplikasi tersimpan di folder **UserData** di sebelah **RS-StatChem.exe**. Karena
 itu, seluruh folder RS-StatChem bisa dipindah ke komputer lain bersama pengaturannya.
 
