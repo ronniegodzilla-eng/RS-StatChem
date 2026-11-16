@@ -29,6 +29,7 @@ from scipy import stats
 from rsstatchem.core.dataset import NUMERIC, Dataset
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, fmt_p, value_text
+from rsstatchem.core.output import OUTPUT_DPI
 
 CELLS = ("observed", "expected", "row", "column", "total", "resid", "sresid", "asresid")
 STATISTICS = ("chisq", "corr", "phi", "cc", "lambda", "uc", "gamma", "d", "btau", "ctau",
@@ -1265,5 +1266,5 @@ def clustered_bar_chart(row_labels: list[str], col_labels: list[str], obs: np.nd
     _style(ax, title, xlabel, "Count")
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()

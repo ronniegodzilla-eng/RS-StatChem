@@ -132,3 +132,38 @@ def test_values_cell_has_a_button_that_opens_value_labels(themed, tmp_path, monk
     assert len(opened) == 1                       # empty rows have no button
     assert editor.values_delegate.has_button(0)
     assert not editor.values_delegate.has_button(2)
+
+
+def test_bold_group_titles_fit_in_sub_dialogs(themed):
+    """Explore > Plots cut its bold group titles ("Spread vs Level with Levene Tes"), and an
+    explicit minimum on a group must not squeeze its contents ("Modified Breusch-Pagan")."""
+    from PySide6.QtWidgets import QCheckBox, QGroupBox
+
+    from rsstatchem.ui.dialogs.base import SubDialog
+    from rsstatchem.ui.theme import group_title_width
+
+    dlg = SubDialog("Explore: Plots", None, columns=2)
+    dlg.radio(dlg.group("Spread vs Level with Levene Test"), "a", [("x", "None")], "x")
+    dlg.radio(dlg.group("Power (Transformed)"), "b", [("y", "Natural log")], "y")
+    dlg.check(dlg.group("Heteroskedasticity Tests"), "c", "Modified Breusch-Pagan test", False)
+    dlg.check(dlg.group("Parameter estimates with robust standard errors"), "d", "HC3", False)
+    dlg.resize(300, 200)
+    dlg.show()
+    themed.processEvents()
+    for box in dlg.findChildren(QGroupBox):
+        assert box.width() >= group_title_width(box), box.title()
+    for cb in dlg.findChildren(QCheckBox):
+        assert cb.width() >= cb.sizeHint().width(), cb.text()
+
+
+def test_output_charts_are_sharp_on_retina():
+    """Output Viewer charts are shown at Image.width logical px; the PNG must have at least
+    twice as many pixels so a 2x screen does not blur them."""
+    from PySide6.QtGui import QImage
+
+    import numpy as np
+    from rsstatchem.core.output import Image
+    from rsstatchem.core.stats import charts
+
+    png = charts.histogram(np.arange(20.0), "Histogram", "x", False)
+    assert QImage.fromData(png).width() >= 2 * Image("t", png).width

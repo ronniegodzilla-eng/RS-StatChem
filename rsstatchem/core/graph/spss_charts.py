@@ -20,6 +20,7 @@ from scipy import stats
 
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.stats.common import value_text
+from rsstatchem.core.output import OUTPUT_DPI
 
 PALETTE = ["#1f5fa8", "#d9822b", "#3a923a", "#c23b3b", "#7b52ab", "#8c564b", "#d062a6",
            "#6b6b6b", "#a8a82e", "#25a7b8"]
@@ -130,7 +131,7 @@ def _figure(w: float = 6.4, h: float = 4.6) -> Figure:
 
 def _png(fig: Figure) -> bytes:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, bbox_inches="tight")
     return buf.getvalue()
 
 

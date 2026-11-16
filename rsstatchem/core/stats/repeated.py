@@ -31,6 +31,7 @@ from rsstatchem.core.stats.manova import (LinearModel, _frame, between_factors_t
                                           estimates_rows, levene_table, make_factor,
                                           multivariate_table, multivariate_tests,
                                           nested_descriptive_rows, pairwise_rows, pairwise_table)
+from rsstatchem.core.output import OUTPUT_DPI
 
 CORRECTIONS = ("Sphericity Assumed", "Greenhouse-Geisser", "Huynh-Feldt", "Lower-bound")
 SS_NAMES = {1: "Type I", 2: "Type II", 3: "Type III", 4: "Type IV"}
@@ -589,5 +590,5 @@ def _profile_plot(model: LinearModel, wd: WithinDesign, fobjs, h: str, s: str | 
                 transform=ax.transAxes, fontsize=7, color="#555")
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()

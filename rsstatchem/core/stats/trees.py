@@ -43,6 +43,7 @@ from rsstatchem.core.stats.ml_common import (MLError, MLResult, categorical,
                                              importance_table, measure_of,
                                              raw_column, rng)
 from rsstatchem.core.stats.roc import figure, png, style
+from rsstatchem.core.output import OUTPUT_DPI
 
 METHODS = {"chaid": "CHAID", "exhaustive": "Exhaustive CHAID", "crt": "CRT", "quest": "QUEST"}
 DEFAULT_DEPTH = {"chaid": 3, "exhaustive": 3, "crt": 5, "quest": 5}
@@ -1679,7 +1680,7 @@ def tree_diagram(model: TreeModel, ds: Dataset | None = None) -> bytes:
                     fontsize=fs, color="#1f3c88",
                     bbox=dict(boxstyle="round,pad=0.2", fc="#eef2fb", ec="#99a"))
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

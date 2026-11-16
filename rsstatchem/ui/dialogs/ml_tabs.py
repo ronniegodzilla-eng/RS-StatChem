@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDia
 from PySide6.QtCore import Qt
 
 from rsstatchem.ui.dialogs.base import VariablePickerDialog
+from rsstatchem.ui.theme import fit_to_contents
 
 
 class Form:
@@ -139,6 +140,10 @@ class OptionsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        fit_to_contents(self)     # bold group titles and long options are never cut off
 
     def group(self, title: str, span: int = 1) -> Form:
         box = QGroupBox(title)

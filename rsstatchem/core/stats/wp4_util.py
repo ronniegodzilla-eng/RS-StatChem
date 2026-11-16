@@ -17,6 +17,7 @@ from matplotlib.figure import Figure
 from rsstatchem.core.dataset import NUMERIC, Dataset
 from rsstatchem.core.output import Section
 from rsstatchem.core.stats.common import numeric, value_text
+from rsstatchem.core.output import OUTPUT_DPI
 
 COLORS = ["#1f4e9c", "#c8102e", "#2e8b57", "#d48a00", "#6a3d9a", "#00838f", "#8c564b",
           "#e377c2", "#7f7f7f", "#17becf"]
@@ -43,7 +44,7 @@ def figure(width: float = 6.0, height: float = 4.2) -> Figure:
 def png(fig: Figure) -> bytes:
     buf = io.BytesIO()
     fig.tight_layout()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

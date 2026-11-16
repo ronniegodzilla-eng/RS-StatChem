@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QLocale
-from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QGroupBox
 
 RED = "#C62828"
 RED_DARK = "#8E1B1B"
@@ -72,6 +72,12 @@ def fit_to_contents(dialog: QDialog) -> None:
     layout = dialog.layout()
     if layout is None:
         return
+    for box in dialog.findChildren(QGroupBox):        # titles are bold (stylesheet): Qt
+        if box.title():                               # measures them in the normal weight
+            # an explicit minimum replaces the layout's own: keep the contents' width too
+            need = max(group_title_width(box), box.minimumSizeHint().width())
+            if box.minimumWidth() < need:
+                box.setMinimumWidth(need)
     for combo in dialog.findChildren(QComboBox):      # drop-downs: room for the chosen entry
         if not combo.isEditable() and combo.minimumWidth() == 0:
             hint = combo.sizeHint().width()
@@ -87,6 +93,15 @@ def fit_to_contents(dialog: QDialog) -> None:
         dialog.setMinimumSize(max(w, dialog.minimumWidth()), max(h, dialog.minimumHeight()))
     if dialog.width() < w or dialog.height() < h:
         dialog.resize(max(dialog.width(), w), max(dialog.height(), h))
+
+
+def group_title_width(box) -> int:
+    """Width a group box needs for its bold title (``QGroupBox::title`` in STYLESHEET: 8 px
+    from the left, 4 px padding each side) plus the frame on the right."""
+    font = QFont(box.font())
+    font.setWeight(QFont.Weight.DemiBold)
+    title = box.title().replace("&&", "\0").replace("&", "").replace("\0", "&")
+    return QFontMetrics(font).horizontalAdvance(title) + 8 + 2 * 4 + 12
 
 
 def fit_to_screen(window) -> None:

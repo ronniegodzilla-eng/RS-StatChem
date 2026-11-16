@@ -18,6 +18,7 @@ from scipy import stats
 from rsstatchem.core.dataset import Dataset, format_code
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, fmt_p, numeric, parse_value, pct
+from rsstatchem.core.output import OUTPUT_DPI
 
 PALETTE = ["#C62828", "#1565C0", "#2E7D32", "#EF6C00", "#6A1B9A", "#00838F", "#5D4037",
            "#AD1457", "#455A64", "#9E9D24", "#283593"]
@@ -41,7 +42,7 @@ def style(ax, title: str, xlabel: str, ylabel: str) -> None:
 def png(fig: Figure) -> bytes:
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

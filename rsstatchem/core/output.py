@@ -17,6 +17,10 @@ def _next_id() -> int:
     return next(_ids)
 
 
+# Charts for the Output Viewer are drawn at this resolution and shown at Image.width logical
+# pixels, so they stay sharp on a 2x (Retina / HiDPI) screen and in Word or PDF exports.
+OUTPUT_DPI = 240
+
 @dataclass
 class Table:
     title: str

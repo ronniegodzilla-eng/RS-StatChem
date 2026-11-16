@@ -21,6 +21,7 @@ from scipy import stats
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, listwise, percentile
+from rsstatchem.core.output import OUTPUT_DPI
 
 MODELS = {1: "Simple moderation", 4: "Mediation (simple / parallel)",
           7: "Moderated mediation (first stage)", 14: "Moderated mediation (second stage)"}
@@ -190,7 +191,7 @@ def _interaction_plot(xv, wv, yhat, xname, wname, yname) -> bytes:
     ax.legend(fontsize=8, frameon=False)
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

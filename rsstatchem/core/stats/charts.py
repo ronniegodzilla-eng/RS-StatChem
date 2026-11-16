@@ -10,6 +10,7 @@ import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from scipy import stats
+from rsstatchem.core.output import OUTPUT_DPI
 
 BAR = "#C62828"
 EDGE = "#7f1010"
@@ -34,7 +35,7 @@ def _style(ax, title: str, xlabel: str, ylabel: str) -> None:
 def _png(fig: Figure) -> bytes:
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 from rsstatchem.core.dataset import NUMERIC, Dataset
 from rsstatchem.core.graph import spss_charts as sc
+from rsstatchem.core.output import OUTPUT_DPI
 
 _CHOICES = {"error": [("ci", "Confidence interval"), ("se", "±2 standard errors"),
                       ("sd", "±1 standard deviation")],
@@ -224,6 +225,8 @@ class ChartBuilderDialog(QDialog):
         try:
             fig, _ = sc.render(self.ds, chart.key, roles, self.options())
             self._full = QPixmap.fromImage(QImage.fromData(sc._png(fig)))
+            # drawn at OUTPUT_DPI: same on-screen size as the figure's own dpi, but sharp
+            self._full.setDevicePixelRatio(OUTPUT_DPI / fig.dpi)
             self._show_pixmap()
             self.status.setText("")
         except Exception as exc:  # noqa: BLE001 - show the problem instead of a chart
@@ -237,8 +240,10 @@ class ChartBuilderDialog(QDialog):
             return
         room = max(self.scroll.viewport().width() - 12, 280)
         pix = self._full
-        if pix.width() > room:
-            pix = pix.scaledToWidth(room, Qt.TransformationMode.SmoothTransformation)
+        ratio = pix.devicePixelRatio()
+        if pix.width() / ratio > room:
+            pix = pix.scaledToWidth(int(room * ratio), Qt.TransformationMode.SmoothTransformation)
+            pix.setDevicePixelRatio(ratio)
         self.preview.setPixmap(pix)
 
     def resizeEvent(self, event) -> None:

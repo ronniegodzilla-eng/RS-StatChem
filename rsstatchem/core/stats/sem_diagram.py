@@ -18,6 +18,7 @@ from matplotlib.patches import Ellipse, FancyArrowPatch, FancyBboxPatch
 
 from rsstatchem.core.stats.common import fmt
 from rsstatchem.core.stats.sem_syntax import SEMModel
+from rsstatchem.core.output import OUTPUT_DPI
 
 LATENT_FILL = "#fde8e8"
 OBS_FILL = "#ffffff"
@@ -243,7 +244,7 @@ def path_diagram(model: SEMModel, values: dict[str, float], r2: dict[str, float]
         "; small italic numbers / R² = squared multiple correlations"
     ax.text(x0 + 0.1, y0 + 0.1, note, fontsize=6.5, color="#666666", ha="left", va="bottom")
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

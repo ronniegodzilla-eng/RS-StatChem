@@ -24,6 +24,7 @@ from scipy import optimize, stats
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, fmt_p, listwise, sup
+from rsstatchem.core.output import OUTPUT_DPI
 
 EXTRACTION = {"pc": "Principal Component Analysis", "paf": "Principal Axis Factoring",
               "ml": "Maximum Likelihood"}
@@ -263,7 +264,7 @@ def _order(L: np.ndarray, sort: bool) -> list[int]:
 def _png(fig) -> bytes:
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

@@ -36,6 +36,8 @@ _SCREEN_JSON.write_text('{"synchronousWindowSystemEvents": true, "windowFrameMar
 os.environ.setdefault("QT_QPA_PLATFORM", f"offscreen:configfile={_SCREEN_JSON}")
 import menu_crawler as crawler  # noqa: E402  (offscreen platform, temp home, patches)
 
+from PySide6.QtCore import QTimer  # noqa: E402
+
 from PySide6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QApplication,  # noqa: E402
                                QCheckBox, QComboBox, QDialog, QGroupBox, QLabel, QLineEdit,
                                QMainWindow,
@@ -103,8 +105,10 @@ def check(window: QWidget) -> None:
                 report(window, f"clipped {type(w).__name__}", w,
                        f"{_text_of(w)[:60]!r} needs {hint}px, has {w.width()}px")
         elif isinstance(w, QGroupBox) and w.title():
-            need = fm.horizontalAdvance(w.title().replace("&", "")) + 24
-            if need > w.width():
+            from rsstatchem.ui.theme import group_title_width
+
+            need = group_title_width(w)                    # the title is drawn bold
+            if need > w.width() + SLACK:
                 report(window, "clipped group title", w, f"{w.title()!r}")
         if isinstance(w, QLineEdit) and not w.isReadOnly() and w.width() < 60 \
                 and not isinstance(w.parentWidget(), (QAbstractSpinBox, QComboBox)):
@@ -169,6 +173,32 @@ def shoot(window: QWidget) -> None:
     window.grab().save(str(SHOTS / f"{name}.png"))
 
 
+_opened_from: set[int] = set()
+
+
+def open_sub_dialogs(dialog) -> None:
+    """Press each "...") button of an analysis dialog once (Options..., Plots..., Statistics...):
+    its sub-dialog is shown (and so checked) and dismissed by the crawler's exec patch."""
+    from rsstatchem.ui.dialogs.base import SubDialog, VariablePickerDialog
+
+    if not isinstance(dialog, VariablePickerDialog) or isinstance(dialog, SubDialog) \
+            or id(dialog) in _opened_from:
+        return
+    _opened_from.add(id(dialog))
+    command = crawler.current["command"]
+    for button in dialog.findChildren(QPushButton):
+        text = button.text().replace("&", "")
+        if text.endswith("...") and button.isEnabled() and button.isVisibleTo(dialog) \
+                and "Bootstrap" not in text:
+            crawler.current["command"] = f"{command} > {text}"
+            try:
+                button.click()
+                QApplication.processEvents()
+            except Exception:  # noqa: BLE001 - the crawler reports exceptions itself
+                pass
+    crawler.current["command"] = command
+
+
 def install(app: QApplication) -> None:
     """Hook into the crawler: check every dialog when shown, every main window after each
     command."""
@@ -176,13 +206,17 @@ def install(app: QApplication) -> None:
 
     def show_event(self, event):
         original_show_event(self, event)
-        try:
-            self.adjustSize() if False else None
-            QApplication.processEvents()
-            check(self)
-            shoot(self)
-        except RuntimeError:
-            pass
+
+        def later(dialog=self):
+            try:
+                check(dialog)
+                shoot(dialog)
+                open_sub_dialogs(dialog)
+            except RuntimeError:            # deleted meanwhile
+                pass
+
+        # after the dialog's own showEvent has run (theme.fit_to_contents sizes it there)
+        QTimer.singleShot(0, self, later)
 
     QDialog.showEvent = show_event
     original_trigger_crawl = crawler.crawl

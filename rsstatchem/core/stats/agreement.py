@@ -23,6 +23,7 @@ from scipy import stats
 from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import fmt, fmt_int, fmt_p, listwise, value_text
+from rsstatchem.core.output import OUTPUT_DPI
 
 ICC_MODELS = {"oneway": "One-Way Random", "twoway_random": "Two-Way Random",
               "twoway_mixed": "Two-Way Mixed"}
@@ -407,5 +408,5 @@ def bland_altman_plot(res: dict, title: str, xlabel: str, ylabel: str, level: fl
     _style(ax, title, xlabel, ylabel)
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()

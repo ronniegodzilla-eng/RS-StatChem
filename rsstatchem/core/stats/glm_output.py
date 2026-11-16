@@ -26,6 +26,7 @@ from rsstatchem.core.stats.glm_model import (CONTRAST_NAMES, GLMFit, TermSpec,
                                              heteroskedasticity, lack_of_fit, observed_power_f,
                                              observed_power_t, parameter_estimates,
                                              saved_values)
+from rsstatchem.core.output import OUTPUT_DPI
 
 ADJUST = {"lsd": "Least Significant Difference (equivalent to no adjustments)",
           "bonferroni": "Bonferroni", "sidak": "Sidak"}
@@ -628,7 +629,7 @@ def profile_plot(title: str, xlabel: str, xlabels: list[str],
                 va="top")
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 
@@ -811,7 +812,7 @@ def residual_plot(fit: GLMFit, j: int, title: str) -> bytes:
     fig.suptitle(f"Dependent Variable: {title}", fontsize=10, fontweight="bold")
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 
@@ -835,7 +836,7 @@ def spread_level_plots(cells: list[np.ndarray], title: str) -> bytes:
             ax.spines[side].set_visible(False)
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

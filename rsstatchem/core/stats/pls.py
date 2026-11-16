@@ -29,6 +29,7 @@ from rsstatchem.core.stats.pls_model import (  # noqa: F401
     mediation_template,
     parse_syntax,
 )
+from rsstatchem.core.output import OUTPUT_DPI
 
 DEFAULTS = {
     "scheme": "path", "max_iter": 300, "stop": 7, "missing": "listwise",
@@ -419,7 +420,7 @@ def _simple_slopes(sec: Section, model: PLSModel, st: E.Structure, est: dict) ->
                      fontsize=9)
         fig.tight_layout()
         buf = io.BytesIO()
-        fig.savefig(buf, format="png")
+        fig.savefig(buf, format="png", dpi=OUTPUT_DPI)
         sec.image(f"Simple slope analysis - {model.interaction_name(x, w)} -> {t}",
                   buf.getvalue(), width=520)
         sec.note("", f"Slope of {x} on {t}: {fmt(bx - bi)} at {w} = -1 SD, {fmt(bx)} at the "

@@ -54,6 +54,7 @@ from rsstatchem.core.stats.ml_common import (RESCALE, Encoder, MLError, MLResult
                                              raw_column, rng, roc_chart,
                                              scatter_observed_predicted)
 from rsstatchem.core.stats.roc import figure
+from rsstatchem.core.output import OUTPUT_DPI
 
 
 # ============================================================================ network
@@ -964,7 +965,7 @@ def network_diagram(net: Net, enc: Encoder, specs, w=None, rbf: bool = False) ->
         {"identity": "Identity", "softmax": "Softmax", "tanh": "Hyperbolic tangent",
          "sigmoid": "Sigmoid"}[net.out_act], fontsize=8)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 

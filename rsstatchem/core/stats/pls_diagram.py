@@ -12,6 +12,7 @@ from matplotlib.patches import Circle, FancyArrowPatch, Rectangle
 
 from rsstatchem.core.stats.common import fmt
 from rsstatchem.core.stats.pls_engine import Structure
+from rsstatchem.core.output import OUTPUT_DPI
 
 R_CIRCLE = 0.62
 BOX_H = 0.42
@@ -180,5 +181,5 @@ def path_diagram(st: Structure, weights: np.ndarray, loadings: np.ndarray,
             ax.text(cx, cy, name, ha="center", va="center", fontsize=8.5, fontweight="bold",
                     zorder=4)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()

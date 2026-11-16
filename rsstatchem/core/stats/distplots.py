@@ -31,6 +31,7 @@ from rsstatchem.core.dataset import Dataset
 from rsstatchem.core.output import Section, Table
 from rsstatchem.core.stats.common import (fmt, fmt_int, fmt_p, lilliefors, numeric, shapiro,
                                           value_text)
+from rsstatchem.core.output import OUTPUT_DPI
 
 BAR = "#C62828"
 EDGE = "#7f1010"
@@ -78,7 +79,7 @@ def _style(ax, title: str, xlabel: str, ylabel: str) -> None:
 def _png(fig: Figure) -> bytes:
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png", dpi=OUTPUT_DPI, facecolor="white")
     return buf.getvalue()
 
 
