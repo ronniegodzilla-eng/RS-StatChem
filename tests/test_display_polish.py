@@ -55,8 +55,15 @@ def test_analysis_dialog_grows_to_fit_a_long_option(themed):
     themed.processEvents()
     radios = [b for b in dlg.findChildren(QRadioButton) if b.isVisible()]
     assert any(b.text() == "Characterize Posterior Distribution" for b in radios)
-    for b in radios:
-        assert b.width() >= b.sizeHint().width(), b.text()
+    from rsstatchem.ui.theme import available_geometry
+
+    need = dlg.layout().totalMinimumSize().width()
+    avail = available_geometry(dlg).width()
+    if need <= avail:            # everything fits on this screen: nothing is cut off
+        for b in radios:
+            assert b.width() >= b.sizeHint().width(), b.text()
+    else:                        # a small test screen (800 px on Windows CI): as wide as it
+        assert dlg.width() >= avail - 1
 
 
 def test_buttons_keep_their_labels_in_a_crowded_row(themed):
