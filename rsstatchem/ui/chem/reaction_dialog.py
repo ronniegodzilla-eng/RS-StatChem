@@ -20,7 +20,7 @@ EXAMPLES = [
     "C6H12O6 + O2 -> CO2 + H2O",
     "CuSO4·5H2O -> CuSO4 + H2O",
 ]
-UNITS = ["", *rx.MASS_UNITS, *rx.AMOUNT_UNITS, *rx.SOLUTION_UNITS, *rx.GAS_UNITS]
+UNITS = [*rx.MASS_UNITS, *rx.AMOUNT_UNITS, *rx.SOLUTION_UNITS, *rx.GAS_UNITS]
 COLS = ["Species", "Role", "Coef.", "M (g/mol)", "Amount", "Unit", "Molarity (M)",
         "Actual yield (g)"]
 

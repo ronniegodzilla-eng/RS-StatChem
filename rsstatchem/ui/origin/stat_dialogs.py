@@ -488,7 +488,7 @@ class StatDialog(QDialog):
             grid.setContentsMargins(0, 0, 0, 0)
             grid.setHorizontalSpacing(14)
             w.boxes = {}
-            per_col = 2 if len(extra) > 6 else 1
+            per_col = 3 if len(extra) > 18 else 2 if len(extra) > 6 else 1   # rows on a laptop
             for k, (v, text) in enumerate(extra.items()):
                 cb = QCheckBox(text)
                 cb.setChecked(v in (value or ()))

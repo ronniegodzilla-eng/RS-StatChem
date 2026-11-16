@@ -1,10 +1,11 @@
 """Spreadsheet-style views: Enter moves down, Delete clears, copy/paste with Excel (TSV)."""
 from __future__ import annotations
 
-from PySide6.QtCore import QModelIndex, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QKeySequence
+from PySide6.QtCore import QEvent, QModelIndex, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QKeySequence, QPainter
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView, QComboBox, QHeaderView,
-                               QSpinBox, QStyledItemDelegate, QTableView)
+                               QSpinBox, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+                               QTableView, QToolTip)
 
 
 class SheetView(QTableView):
@@ -157,6 +158,58 @@ class ChoiceDelegate(QStyledItemDelegate):
 
     def setModelData(self, editor: QComboBox, model, index: QModelIndex) -> None:
         model.setData(index, editor.currentData(), Qt.ItemDataRole.EditRole)
+
+
+class DialogCellDelegate(QStyledItemDelegate):
+    """A cell edited in a dialog (Variable View > Values), marked like SPSS with a small "..."
+    button at its right edge. A click on the button emits ``button_clicked(index)``; rows for
+    which ``has_button(row)`` is False (empty rows below the variables) show no button."""
+
+    button_clicked = Signal(QModelIndex)
+    WIDTH = 22
+
+    def __init__(self, has_button, tooltip: str = "", parent=None):
+        super().__init__(parent)
+        self.has_button = has_button
+        self.tooltip = tooltip
+
+    def button_rect(self, cell: QRect) -> QRect:
+        w = min(self.WIDTH, cell.width() // 2)
+        return QRect(cell.right() - w - 1, cell.top() + 2, w, cell.height() - 4)
+
+    def paint(self, painter, option, index) -> None:
+        if not self.has_button(index.row()):
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        opt.rect = option.rect.adjusted(0, 0, -(self.WIDTH + 2), 0)  # text stops before it
+        super().paint(painter, opt, index)
+        rect = self.button_rect(option.rect)
+        hot = bool(option.state & QStyle.StateFlag.State_MouseOver) and \
+            rect.contains(option.widget.viewport().mapFromGlobal(QCursor.pos())) \
+            if option.widget is not None else False
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QColor("#C62828" if hot else "#B5B5B5"))
+        painter.setBrush(QColor("#FBE3E3" if hot else "#F7F7F7"))
+        painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+        painter.setPen(QColor("#8E1B1B" if hot else "#444444"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "...")
+        painter.restore()
+
+    def editorEvent(self, event, model, option, index) -> bool:
+        if event.type() == QEvent.Type.MouseButtonRelease and self.has_button(index.row()) \
+                and event.button() == Qt.MouseButton.LeftButton \
+                and self.button_rect(option.rect).contains(event.position().toPoint()):
+            self.button_clicked.emit(QModelIndex(index))
+            return True
+        return super().editorEvent(event, model, option, index)
+
+    def helpEvent(self, event, view, option, index) -> bool:
+        if self.tooltip and self.has_button(index.row()):
+            QToolTip.showText(event.globalPos(), self.tooltip, view)
+            return True
+        return super().helpEvent(event, view, option, index)
 
 
 class SpinDelegate(QStyledItemDelegate):

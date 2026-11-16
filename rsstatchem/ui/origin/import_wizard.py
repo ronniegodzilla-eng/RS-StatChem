@@ -15,11 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame,
                                QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-                               QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from rsstatchem.core.analysis import importers as imp
 from rsstatchem.core.analysis.importers import ascii_wizard as aw
@@ -232,8 +232,17 @@ class ImportWizard(QDialog):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.addWidget(fbox)
         ll.addWidget(obox)
+        # the options column scrolls on a short (1366 x 768) screen instead of pushing the
+        # Import button below it
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setWidget(left)
+        left_scroll.setMinimumWidth(left.sizeHint().width()
+                                    + left_scroll.verticalScrollBar().sizeHint().width())
         main_split = QSplitter(Qt.Orientation.Horizontal)
-        main_split.addWidget(left)
+        main_split.addWidget(left_scroll)
         main_split.addWidget(pbox)
         main_split.setSizes([380, 560])
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |

@@ -33,6 +33,7 @@ from rsstatchem.core.graph.themes import (THEMES, apply_template, apply_theme,
 from rsstatchem.ui.graph import gicons
 from rsstatchem.ui.graph.dialogs import ExportDialog, PageSetupDialog
 from rsstatchem.ui.graph.properties import PropertiesDialog, PropertyForm, schema_for
+from rsstatchem.ui.theme import fit_to_screen
 
 WINDOWS: list["GraphWindow"] = []
 REF_ROLE = Qt.ItemDataRole.UserRole
@@ -74,6 +75,7 @@ class GraphWindow(QMainWindow):
         self.export_settings: dict = {"fmt": "png", "dpi": 600}
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.resize(1240, 800)
+        fit_to_screen(self)   # a 1366 x 768 laptop: keep the window on the screen
         self.setWindowIcon(gicons.icon("graph"))
 
         self.figure = Figure(dpi=96)

@@ -71,7 +71,7 @@ baris, dan setiap kolom mengatur satu sifat variabel tersebut.
 | **Type** | *Numeric* (angka), *String* (teks), atau *Date* (tanggal). Pilih dari daftar di sel. |
 | **Width / Decimals** | Lebar tampilan dan jumlah angka di belakang koma. Ini hanya memengaruhi tampilan; perhitungan tetap memakai nilai lengkap. |
 | **Label** | Keterangan lengkap, misalnya "Nilai posttest". Label inilah yang tampil di tabel output, jadi isilah dengan rapi. |
-| **Values** | Label nilai untuk kode, misalnya 1 = Laki-laki dan 2 = Perempuan. Klik dua kali sel untuk mengisinya. |
+| **Values** | Label nilai untuk kode, misalnya 1 = Laki-laki dan 2 = Perempuan. Klik tombol **...** di sisi kanan sel (atau klik dua kali sel) untuk mengisinya. |
 | **Missing** | Kode yang dianggap data hilang, misalnya `9` untuk "tidak menjawab". Beberapa kode dipisah dengan koma. Sel kosong selalu dianggap hilang. |
 | **Columns / Align** | Lebar kolom dan perataan teks di Data View. |
 | **Measure** | Tingkat pengukuran: *Scale* (interval/rasio), *Ordinal*, atau *Nominal*. Beberapa dialog memakainya untuk memilah variabel yang cocok. |
@@ -86,7 +86,8 @@ baris untuk menyisipkan atau menghapus variabel.
 
 ### Mengisi label nilai
 
-1. Di Variable View, klik dua kali sel **Values** pada baris variabel, misalnya `metode`.
+1. Di Variable View, klik tombol **...** di sisi kanan sel **Values** pada baris variabel,
+   misalnya `metode` (atau klik dua kali selnya).
 2. Ketik kode di **Value** dan teksnya di **Label**, lalu klik **Add** (atau tekan ++Enter++).
 3. Ulangi untuk setiap kode. Untuk memperbaiki label, pilih di daftar, ubah teksnya, lalu klik
    **Change**.

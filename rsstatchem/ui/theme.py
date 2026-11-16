@@ -1,8 +1,9 @@
 """Red-and-white RS theme on top of Qt's Fusion style (identical look on macOS and Windows)."""
 from __future__ import annotations
 
+from PySide6.QtCore import QLocale
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog
 
 RED = "#C62828"
 RED_DARK = "#8E1B1B"
@@ -42,7 +43,8 @@ QTabBar::tab:selected {{ background: #FFFFFF; color: {RED_DARK}; font-weight: 60
     border-bottom: 3px solid {RED}; }}
 QStatusBar {{ background: #F7F7F7; border-top: 1px solid #DDDDDD; color: #444; }}
 QPushButton {{ background: #FFFFFF; border: 1px solid #BDBDBD; border-radius: 4px;
-    padding: 4px 14px; min-width: 64px; }}
+    padding: 4px 14px; }}
+QDialogButtonBox QPushButton {{ min-width: 64px; }}
 QPushButton:hover {{ border-color: {RED}; background: {RED_LIGHT}; }}
 QPushButton:default {{ background: {RED}; color: #FFFFFF; border-color: {RED_DARK}; }}
 QPushButton:default:hover {{ background: {RED_DARK}; }}
@@ -53,6 +55,9 @@ QListWidget, QTreeWidget, QTextBrowser, QLineEdit, QComboBox, QSpinBox, QPlainTe
     border: 1px solid #CACACA; border-radius: 3px; background: #FFFFFF; }}
 QListWidget::item:selected, QTreeWidget::item:selected {{ background: {SELECTION};
     color: {TEXT}; }}
+QComboBox::item:selected {{ background: {SELECTION}; color: {TEXT}; }}
+QComboBox QAbstractItemView {{ selection-background-color: {SELECTION};
+    selection-color: {TEXT}; }}
 QGroupBox {{ border: 1px solid #D6D6D6; border-radius: 4px; margin-top: 10px; padding-top: 6px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; color: {RED_DARK};
     font-weight: 600; }}
@@ -60,7 +65,60 @@ QSplitter::handle {{ background: #E6E6E6; }}
 """
 
 
+def fit_to_contents(dialog: QDialog) -> None:
+    """Grow ``dialog`` to what its layout needs (never beyond the screen). A dialog that calls
+    ``setMinimumSize`` no longer gets its layout's minimum from Qt, so a long option was cut
+    off ("Characterize Posterior Distributio"). Call it from the dialog's ``showEvent``."""
+    layout = dialog.layout()
+    if layout is None:
+        return
+    for combo in dialog.findChildren(QComboBox):      # drop-downs: room for the chosen entry
+        if not combo.isEditable() and combo.minimumWidth() == 0:
+            hint = combo.sizeHint().width()
+            if combo.width() < hint <= 360:
+                combo.setMinimumWidth(hint)
+    layout.activate()
+    need = layout.totalMinimumSize()
+    avail = available_geometry(dialog)
+    w, h = need.width(), need.height()
+    if avail is not None:
+        w, h = min(w, avail.width()), min(h, avail.height())
+    if w > dialog.minimumWidth() or h > dialog.minimumHeight():
+        dialog.setMinimumSize(max(w, dialog.minimumWidth()), max(h, dialog.minimumHeight()))
+    if dialog.width() < w or dialog.height() < h:
+        dialog.resize(max(dialog.width(), w), max(dialog.height(), h))
+
+
+def fit_to_screen(window) -> None:
+    """Reduce a window that would open taller or wider than the screen (a 1366 x 768 laptop)
+    as far as its contents allow, so its OK/Cancel buttons and status bar stay reachable."""
+    avail = available_geometry(window)
+    if avail is None or (window.width() <= avail.width()
+                         and window.height() <= avail.height()):
+        return
+    window.resize(max(min(window.width(), avail.width()), window.minimumWidth()),
+                  max(min(window.height(), avail.height()), window.minimumHeight()))
+
+
+def available_geometry(window):
+    """The usable part of the window's screen, less room for the title bar."""
+    screen = window.screen() or QApplication.primaryScreen()
+    if screen is None:
+        return None
+    return screen.availableGeometry().adjusted(0, 0, 0, -32)
+
+
+def number_locale() -> QLocale:
+    """Decimal point everywhere: the text boxes, the output tables and the files all use "."
+    (a computer set to Indonesian would otherwise show "0,0500" in the number boxes only,
+    while "0,05" typed in a text box is refused)."""
+    locale = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
+    locale.setNumberOptions(QLocale.NumberOption.OmitGroupSeparator)
+    return locale
+
+
 def apply_theme(app: QApplication) -> None:
+    QLocale.setDefault(number_locale())
     app.setStyle("Fusion")
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#FFFFFF"))

@@ -42,7 +42,7 @@ class PreparePlanDialog(VariablePickerDialog):
 
     def __init__(self, ds, parent=None):
         super().__init__(ds, "Analysis Preparation Wizard", parent)
-        self.setMinimumSize(820, 820)
+        self.setMinimumSize(820, 640)   # grows to its contents; fits a 1366 x 768 laptop
         self.add_target("strata", "Stage 1 Strata:", required=False)
         self.add_target("clusters", "Stage 1 Clusters:", required=False)
         self.add_target("weight", "Sample Weight:", accepts=is_numeric, single=True,

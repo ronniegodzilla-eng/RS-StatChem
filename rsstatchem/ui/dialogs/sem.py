@@ -167,6 +167,7 @@ class CBSEMDialog(QDialog):
         row.addWidget(QLabel("Name:"))
         self.cname = QLineEdit()
         self.cname.setPlaceholderText("e.g. Motivation")
+        self.cname.setMinimumWidth(140)
         self.cname.returnPressed.connect(self._add_construct)
         row.addWidget(self.cname, 1)
         for text, fn in (("Add selected as construct", self._add_construct),

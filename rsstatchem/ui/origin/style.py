@@ -61,7 +61,8 @@ QTabBar::tab {{ background: #e4e4e4; color: #000; padding: 3px 12px; border: 1px
 QTabBar::tab:selected {{ background: #ffffff; color: #000; font-weight: normal;
     border-bottom: 1px solid #ffffff; }}
 QPushButton {{ background: #e1e1e1; border: 1px solid #adadad; border-radius: 0px;
-    padding: 3px 12px; min-width: 64px; color: #000; }}
+    padding: 3px 12px; color: #000; }}
+QDialogButtonBox QPushButton {{ min-width: 64px; }}
 QPushButton:hover {{ background: {HOVER}; border-color: #0078d7; }}
 QPushButton:default {{ border: 1px solid #0078d7; background: #e1e1e1; color: #000; }}
 QPushButton:default:hover {{ background: {HOVER}; }}

@@ -33,8 +33,8 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QKeySequence, Q
                            QPen)
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFontComboBox, QInputDialog, QLabel,
-                               QMessageBox, QTableWidget, QTableWidgetItem, QTextBrowser,
-                               QToolBar, QVBoxLayout)
+                               QFrame, QMessageBox, QScrollArea, QTableWidget,
+                               QTableWidgetItem, QTextBrowser, QToolBar, QVBoxLayout)
 
 from rsstatchem.core.chem import molecule as mo
 from rsstatchem.core.chem_draw import cdx, cdxml, convert, mapping, names
@@ -48,6 +48,7 @@ from rsstatchem.ui.chemdraw.icons import cd_icon, color_icon
 from rsstatchem.ui.chemdraw.lookup import NameLookup
 from rsstatchem.ui.chemdraw.palette import TOOL_TIPS, MainToolbar
 from rsstatchem.ui.chemdraw.style import STYLESHEET
+from rsstatchem.ui.theme import fit_to_screen
 
 __all__ = ["ChemDrawWindow", "OPEN_FILTER", "DEFAULT_STYLE", "COLORS", "HOTKEYS_HTML",
            "MENU_SHORTCUTS", "ShellCanvas", "INSTALL_MODULES"]
@@ -359,6 +360,7 @@ class ChemDrawWindow(ChemEditorWindow):
         self.canvas.selection_changed.connect(self._sync_text_style)
         self._show_zoom(self.canvas.zoom_percent())
         self.resize(1280, 860)
+        fit_to_screen(self)   # a 1366 x 768 laptop: keep the window on the screen
         self._restore_ui()
         self._update_title()
 
@@ -867,7 +869,13 @@ class ChemDrawWindow(ChemEditorWindow):
     def _dock(self, title: str, name: str, widget) -> QDockWidget:
         d = QDockWidget(title, self)
         d.setObjectName(name)
-        d.setWidget(widget)
+        # scrolls instead of making the window taller than a 1366 x 768 laptop screen
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(widget)
+        d.setWidget(scroll)
         d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable |
                       QDockWidget.DockWidgetFeature.DockWidgetMovable |
                       QDockWidget.DockWidgetFeature.DockWidgetFloatable)

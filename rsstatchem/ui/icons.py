@@ -35,8 +35,13 @@ _SVG = {
               f'<rect x="6" y="15" width="2.5" height="3" fill="{R}"/>'
               f'<rect x="10.5" y="12" width="2.5" height="6" fill="{R}"/>'
               f'<rect x="15" y="10" width="2.5" height="8" fill="{R}"/>',
-    "goto": f'<circle cx="10" cy="10" r="6" fill="none" stroke="{D}" stroke-width="1.8"/>'
+    "find": f'<circle cx="10" cy="10" r="6" fill="none" stroke="{D}" stroke-width="1.8"/>'
             f'<path d="M14.5 14.5L20 20" stroke="{R}" stroke-width="2.4"/>',
+    "goto": f'<rect x="9" y="4" width="12" height="16" fill="none" stroke="{D}" '
+            f'stroke-width="1.4"/><path d="M9 9.3h12M9 14.7h12" stroke="{D}" stroke-width="1"/>'
+            f'<rect x="9" y="9.3" width="12" height="5.4" fill="{R}" fill-opacity="0.25"/>'
+            f'<path d="M2 12h5M5 9.5L7.5 12 5 14.5" fill="none" stroke="{R}" stroke-width="1.9" '
+            f'stroke-linecap="round" stroke-linejoin="round"/>',
     "insert_var": f'<rect x="3" y="4" width="5" height="16" fill="none" stroke="{D}" '
                   f'stroke-width="1.4"/><rect x="16" y="4" width="5" height="16" fill="none" '
                   f'stroke="{D}" stroke-width="1.4"/><rect x="9.5" y="4" width="5" height="16" '

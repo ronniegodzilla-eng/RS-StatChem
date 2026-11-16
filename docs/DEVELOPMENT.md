@@ -186,6 +186,7 @@ Run these (offscreen, no user needed) after larger changes; each prints what bro
 | `imagej_fuzzer.py` | Runs every Image Analysis command with default options on six kinds of image. |
 | `rsm_walker.py` | Opens every tutorial example and a design of every family and visits every node, tab and graph type. |
 | `slot_audit.py` | Static check (also a test): no method with an optional first parameter is connected directly to `triggered` / `clicked`. |
+| `ui_lint.py [modules] [--shots DIR]` | Runs the menu crawler on a 1366 x 768 screen and checks every window and dialog as it opens: clipped labels, buttons and group titles, drop-downs too narrow for their value or with a blank entry, squeezed text and spin boxes, toolbar buttons without an icon, windows larger than the screen. `--shots` saves a picture of each dialog for a visual pass. |
 
 Rules these tools enforce:
 
@@ -193,5 +194,13 @@ Rules these tools enforce:
   or a `lambda: self.method()`; never `triggered.connect(self.method)` when the method has an
   optional parameter (Qt would pass its `checked` flag as that argument).
 - `QPrintDialog` / `QPageSetupDialog` are run with `qt_lifecycle.exec_and_delete`.
+- Window sizes: a dialog that sets a minimum size calls `theme.fit_to_contents` in its
+  `showEvent` (the shared analysis dialogs do), and a module window calls
+  `theme.fit_to_screen` after its first `resize`. A long form or side panel goes in a
+  `QScrollArea` rather than making a window taller than a 1366 x 768 laptop screen. Buttons
+  get no stylesheet `min-width` (it lets a crowded row cut their labels), except in a
+  `QDialogButtonBox`.
+- Numbers are shown with a decimal point (`theme.number_locale()`), whatever the
+  computer's language, because text boxes and files read ".".
 - An analysis that cannot handle its input raises `ValueError` with a message the user can act
   on, before allocating or iterating (see `tests/test_misuse_guards.py`).

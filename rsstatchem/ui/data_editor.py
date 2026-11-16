@@ -46,8 +46,10 @@ from rsstatchem.ui.document import DatasetDocument
 from rsstatchem.ui.menus import build_tree
 from rsstatchem.ui.modules import add_module_menu
 from rsstatchem.ui.models import DataTableModel, VariableTableModel
-from rsstatchem.ui.views import ChoiceDelegate, DataGridView, SheetView, SpinDelegate
+from rsstatchem.ui.views import (ChoiceDelegate, DataGridView, DialogCellDelegate, SheetView,
+                                 SpinDelegate)
 from rsstatchem.ui.actions import connect_triggered
+from rsstatchem.ui.theme import fit_to_screen
 
 if TYPE_CHECKING:
     from rsstatchem.app import AppContext
@@ -150,6 +152,7 @@ class DataEditorWindow(QMainWindow):
         self.doc = DatasetDocument(dataset or Dataset(name=f"DataSet{number}"), self)
         self.setWindowIcon(icons.icon("data_editor"))
         self.resize(1180, 760)
+        fit_to_screen(self)   # a 1366 x 768 laptop: keep the window on the screen
         self.setAcceptDrops(True)
 
         self.data_model = DataTableModel(self.doc, self)
@@ -219,6 +222,12 @@ class DataEditorWindow(QMainWindow):
         v.setItemDelegateForColumn(cols.index("width"), SpinDelegate(1, 32767, v))
         v.setItemDelegateForColumn(cols.index("decimals"), SpinDelegate(0, 16, v))
         v.setItemDelegateForColumn(cols.index("columns"), SpinDelegate(1, 255, v))
+        self.values_delegate = DialogCellDelegate(
+            lambda row: row < self.ds.n_vars, "Click ... (or double-click the cell) to define "
+            "value labels", v)
+        self.values_delegate.button_clicked.connect(self._variable_cell_activated)
+        v.setItemDelegateForColumn(cols.index("value_labels"), self.values_delegate)
+        v.setMouseTracking(True)   # the "..." button lights up under the mouse
         widths = (120, 90, 60, 70, 220, 160, 100, 70, 80, 95, 80)
         for i, w in enumerate(widths):
             v.setColumnWidth(i, w)
@@ -292,7 +301,7 @@ class DataEditorWindow(QMainWindow):
         self.act_copy_labels = a("Copy with Variable &Labels",
                                  lambda: self.copy_with_header("label"))
         self.act_find = a("&Find...", lambda: self.find_dialog(False), QKeySequence.StandardKey.Find,
-                          tip="Find data")
+                          "find", "Find data")
         self.act_find_next = a("Find Ne&xt", self.find_next, QKeySequence.StandardKey.FindNext)
         self.act_replace = a("&Replace...", lambda: self.find_dialog(True), "Ctrl+H")
         self.act_options = a("&Options...", self.options_dialog)

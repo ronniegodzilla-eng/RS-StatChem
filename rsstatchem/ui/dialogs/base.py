@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
 
 from rsstatchem.core.dataset import NUMERIC, Dataset, Variable, format_code
 from rsstatchem.ui import icons
+from rsstatchem.ui.theme import fit_to_contents
 
 NAME_ROLE = Qt.ItemDataRole.UserRole
 BASE_TEXT_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -124,6 +125,10 @@ class SubDialog(QDialog):
         self._getters[key] = spin.value
         return spin
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        fit_to_contents(self)     # long options are never cut off (see theme.fit_to_contents)
+
     def values(self) -> dict:
         return {k: get() for k, get in self._getters.items()}
 
@@ -177,6 +182,10 @@ class VariablePickerDialog(QDialog):
         layout.addLayout(body, 1)
         layout.addLayout(self.options_layout)
         layout.addWidget(buttons)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        fit_to_contents(self)     # long options are never cut off (see theme.fit_to_contents)
 
     # ------------------------------------------------------------------ building
     def _target_block(self, label: str, widget: QListWidget, arrow: QPushButton,

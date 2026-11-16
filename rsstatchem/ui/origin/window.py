@@ -58,6 +58,7 @@ from rsstatchem.ui.origin.plotting import (MATRIX_PLOTS, ORIGIN_THEME, PLOT_TYPE
                                            add_xy_plot, column_key, plot_columns, plot_matrix,
                                            refresh_links, rekey, update_data_ranges)
 from rsstatchem.ui.origin.sheet_view import BookWindow
+from rsstatchem.ui.theme import fit_to_screen
 
 APP_TITLE = "RS-StatChem Graph & Analysis"
 PROJECT_FILTER = f"Origin-style Project (*{EXTENSION});;Graph (*{GRAPH_EXT});;All files (*)"
@@ -118,6 +119,7 @@ class OriginMainWindow(QMainWindow):
         self.setDockOptions(QMainWindow.DockOption.AllowTabbedDocks
                             | QMainWindow.DockOption.AnimatedDocks)
         self.resize(1360, 860)
+        fit_to_screen(self)   # a 1366 x 768 laptop: keep the window on the screen
         self.setWindowIcon(icon("e_graph"))
         self.setAcceptDrops(True)
 

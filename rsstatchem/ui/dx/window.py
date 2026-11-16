@@ -39,6 +39,7 @@ from rsstatchem import APP_NAME
 from rsstatchem.ui.dx import icons, style
 from rsstatchem.ui.dx.document import DesignDocument
 from rsstatchem.ui.dx.widgets import GraphView, ReportView, make_action
+from rsstatchem.ui.theme import fit_to_screen
 
 TIPS = {
     "start": "<h3>Getting started</h3><p>Click <b>New Design</b> to choose a design (Factorial, "
@@ -693,6 +694,7 @@ class DXMainWindow(QMainWindow):
         self.setStyleSheet(style.STYLESHEET)
         self.setWindowIcon(icons.icon("surface"))
         self.resize(1280, 820)
+        fit_to_screen(self)   # a 1366 x 768 laptop: keep the window on the screen
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
