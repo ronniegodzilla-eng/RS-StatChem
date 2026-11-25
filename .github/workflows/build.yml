@@ -133,6 +133,8 @@ jobs:
           out="$(dist/RS-StatChem.app/Contents/MacOS/RS-StatChem --check-update --update-url=https://api.github.com/repos/cli/cli/releases/latest)" && code=0 || code=$?
           echo "$out"
           if [ "$code" -ne 0 ] && ! grep -q "GitHub answered HTTP" <<<"$out"; then exit "$code"; fi
+          # the Claude connector: an MCP client starts the app with --mcp and runs an analysis
+          python scripts/mcp_smoke.py dist/RS-StatChem.app/Contents/MacOS/RS-StatChem
 
       - name: Smoke-test the packaged app (Windows)
         if: runner.os == 'Windows'
@@ -145,6 +147,9 @@ jobs:
           $p = Start-Process dist/RS-StatChem/RS-StatChem.exe -ArgumentList "--selftest" -Wait -PassThru
           if (Test-Path selftest.log) { Get-Content selftest.log } else { "no selftest report written" }
           if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          # the Claude connector: an MCP client starts the windowed exe with --mcp over pipes
+          python scripts/mcp_smoke.py dist/RS-StatChem/RS-StatChem.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package (macOS)
         if: runner.os == 'macOS'

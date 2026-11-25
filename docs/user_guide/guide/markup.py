@@ -13,6 +13,9 @@ Blocks (separated by blank lines)::
     !features stats                 the generated feature reference of a module
     | A | B |                       table; the first row is the header,
     |---|---|                       followed by a separator row
+    ```                             code block: the lines up to the closing ``` are shown
+    {"key": "value"}                as typed, in a monospaced box (for text to copy exactly)
+    ```
     ---pagebreak---
 
 Inline: ``**bold**``, ``*italic*``, ```code```, ``[[File > Open]]`` (menu path),
@@ -28,7 +31,8 @@ from pathlib import Path
 
 @dataclass
 class Block:
-    kind: str                       # h1 h2 h3 p ul ol callout figure features table pagebreak
+    kind: str                       # h1 h2 h3 p ul ol callout figure features table code
+                                    # pagebreak
     text: str = ""
     items: list = field(default_factory=list)
     arg: str = ""                   # callout type, figure key, features module
@@ -59,6 +63,15 @@ def parse(text: str, source: str = "") -> list[Block]:
         if not line.strip():
             flush()
             i += 1
+            continue
+        if line.strip() == "```":
+            flush()
+            end = next((j for j in range(i + 1, len(lines)) if lines[j].strip() == "```"), None)
+            if end is None:
+                raise ValueError(f"{where}: code block is not closed with ```")
+            blocks.append(Block("code", "\n".join(s.rstrip() for s in lines[i + 1:end]),
+                                source=where))
+            i = end + 1
             continue
         if line.startswith("<!--"):
             flush()

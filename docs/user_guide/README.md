@@ -27,8 +27,8 @@ has no explanation.
 
 See the docstring of `guide/markup.py`: `#` chapter, `##` section, `###` subsection, paragraphs,
 `-` bullets, `1.` steps, `> [!TIP]` / `[!NOTE]` / `[!WARNING]` callouts, tables with `|`,
-`![scene.key]` screenshots (optional `(caption)`), `!features <module>` for the generated menu
-reference, inline `**bold**`, `*italic*`, `` `code` ``, `[[Menu > Item]]`, `++Ctrl+S++`.
+a fenced code block (three backticks on their own line, before and after), `![scene.key]`
+screenshots (optional `(caption)`), `!features <module>` for the generated menu reference, inline `**bold**`, `*italic*`, `` `code` ``, `[[Menu > Item]]`, `++Ctrl+S++`.
 
 ## Scenes (`scenes/*.py`)
 

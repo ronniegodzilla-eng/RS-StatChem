@@ -171,6 +171,9 @@ class LauncherWindow(QWidget):
         bottom_head.addWidget(recent_label)
         bottom_head.addStretch(1)
         bottom_head.addWidget(open_btn)
+        connector_btn = QPushButton("Claude Connector...")
+        connector_btn.clicked.connect(lambda: ctx.show_connector())
+        bottom_head.addWidget(connector_btn)
 
         modules_label = QLabel("MODULES")
         modules_label.setObjectName("section")

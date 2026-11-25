@@ -14,7 +14,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (BaseDocTemplate, CondPageBreak, Flowable, Frame, Image,
                                 KeepTogether, NextPageTemplate, PageBreak, PageTemplate,
-                                Paragraph, Spacer, Table, TableStyle)
+                                Paragraph, Preformatted, Spacer, Table, TableStyle)
 from reportlab.platypus.tableofcontents import TableOfContents
 
 from . import markup
@@ -380,6 +380,8 @@ class Builder:
             return self._figure(b)
         if b.kind == "table":
             return [self._table(b.items), Spacer(1, 6)]
+        if b.kind == "code":
+            return [self._code(b.text)]
         if b.kind == "features":
             return self._reference(b.arg)
         if b.kind == "pagebreak":
@@ -414,6 +416,17 @@ class Builder:
             ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ]))
         return KeepTogether([Spacer(1, 3), t, Spacer(1, 8)])
+
+    def _code(self, text: str):
+        style = ParagraphStyle("code", fontName="DejaVuSansMono", fontSize=8.2, leading=11.2,
+                               textColor=TEXT)
+        t = Table([[Preformatted(text, style)]], colWidths=[FRAME_W])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), GREY_LIGHT), ("BOX", (0, 0), (-1, -1), 0.5, GRID),
+            ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ]))
+        return KeepTogether([Spacer(1, 2), t, Spacer(1, 8)])
 
     def _figure(self, b: markup.Block) -> list:
         fig = self.figures.get(b.arg)

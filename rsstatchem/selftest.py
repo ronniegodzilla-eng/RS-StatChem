@@ -130,6 +130,14 @@ def run() -> int:
         except Exception:  # noqa: BLE001
             failures += 1
             print(f"selftest FAILED: Indigo atom mapping\n{traceback.format_exc()}")
+    try:  # the Claude connector (--mcp): the MCP SDK must be bundled and answer a client
+        from rsstatchem.mcp.server import selftest as mcp_selftest
+
+        mcp_selftest()
+        print("selftest ok: rsstatchem.mcp")
+    except Exception:  # noqa: BLE001
+        failures += 1
+        print(f"selftest FAILED: rsstatchem.mcp\n{traceback.format_exc()}")
     if failures:
         return 1
     print("RS-StatChem selftest OK")

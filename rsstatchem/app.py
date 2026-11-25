@@ -37,6 +37,8 @@ class AppContext:
         self._output = None
         self._updates = None
         self._counter = 0
+        self._connector = None      # LiveServer while Claude may use the open windows
+        self.connector_calls = 0    # > 0 while a connector tool is running
 
     # ------------------------------------------------------------------ editors
     def new_editor(self, dataset: Dataset | None = None):
@@ -103,6 +105,37 @@ class AppContext:
         from rsstatchem.ui.modules import open_module
 
         return open_module(self, key, path)
+
+    # ------------------------------------------------------------------ Claude connector
+    def connector_listening(self) -> bool:
+        return self._connector is not None and self._connector.listening
+
+    def start_connector(self) -> bool:
+        """Live mode: let the Claude connector work in the open windows (user's choice)."""
+        if self._connector is None:
+            from rsstatchem.mcp.bridge import LiveServer
+
+            self._connector = LiveServer(self)
+            self._connector.used.connect(self._connector_used)
+        return self._connector.start()
+
+    def stop_connector(self) -> None:
+        if self._connector is not None:
+            self._connector.stop()
+
+    def _connector_used(self, tool: str) -> None:
+        from PySide6.QtWidgets import QMainWindow
+
+        window = self.app.activeWindow()
+        if isinstance(window, QMainWindow):
+            window.statusBar().showMessage(f"Claude: {tool.replace('_', ' ')}", 4000)
+
+    def show_connector(self) -> None:
+        if self.connector_calls:        # Claude must not change its own permissions
+            return
+        from rsstatchem.ui.dialogs.connector import ConnectorDialog
+
+        ConnectorDialog(self, self.app.activeWindow()).exec()
 
     # ------------------------------------------------------------------ output
     def output(self):
@@ -248,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout = sys.stderr = open(log, "w", encoding="utf-8", buffering=1)  # noqa: SIM115
 
         return run()
+    if "--mcp" in argv:  # connector for the Claude desktop app: MCP server on stdin/stdout
+        from rsstatchem.mcp.server import serve
+
+        return serve()
     if sys.platform == "win32":
         try:  # own taskbar icon instead of python.exe's
             import ctypes
@@ -292,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
         QTimer.singleShot(700, splash, lambda: splash.finish(first))
     if not os.environ.get("RSSTATCHEM_NO_UPDATE_CHECK"):
         QTimer.singleShot(4000, first, lambda: ctx.check_for_updates(manual=False))
+    if str(ctx.settings.value("connector/live", "0")) == "1":
+        ctx.start_connector()
     app._rs_context = ctx  # keep a strong reference for the lifetime of the app
     from rsstatchem.hang_watchdog import HangWatchdog
 
@@ -305,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
         from rsstatchem.ui.qt_lifecycle import shutdown_application
 
         watchdog.stop()
+        ctx.stop_connector()
+        ctx._connector = None
         app.removeEventFilter(file_filter)
         ctx.editors.clear()
         ctx.windows.clear()

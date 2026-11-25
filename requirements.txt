@@ -21,3 +21,6 @@ pydicom==3.0.2
 # features are hidden or explain themselves when these are missing
 PyWavelets==1.10.0
 h5py==3.16.0
+# Claude connector (RS-StatChem --mcp): the official Model Context Protocol SDK (MIT). 2.x API
+# (mcp.server.MCPServer); pulls in pydantic, anyio, starlette, httpx2 and friends
+mcp>=2.3,<3

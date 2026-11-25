@@ -19,8 +19,8 @@ juga bisa membuka dan menyimpan format yang lazim dipakai aplikasi lain.
 ## Koneksi internet dan privasi
 
 RS-StatChem bekerja sepenuhnya di komputer Anda. Data, desain, gambar, dan hasil analisis
-tidak pernah dikirim ke mana pun. Internet hanya dipakai untuk hal-hal berikut, dan hanya saat
-fitur itu digunakan:
+tidak dikirim ke mana pun, kecuali lewat fitur yang Anda pakai sendiri pada tabel berikut.
+Internet hanya dipakai untuk hal-hal berikut, dan hanya saat fitur itu digunakan:
 
 | Fitur | Tujuan | Yang dikirim |
 |---|---|---|
@@ -28,6 +28,7 @@ fitur itu digunakan:
 | Nama senyawa yang tidak ada di basis data bawaan (Chemical Drawing) | PubChem (NCBI) | Nama atau struktur yang sedang dicari |
 | Contoh citra dan **File ▸ Import ▸ URL** (Image Analysis) | imagej.net atau alamat yang Anda isi | Permintaan berkas |
 | Tautan bantuan ImageJ (Image Analysis) | imagej.net, dibuka di browser | Tidak ada data |
+| Konektor Claude, hanya jika Anda memasangnya (lihat bab Konektor Claude) | Anthropic, lewat aplikasi Claude milik Anda | Daftar variabel dan tabel hasil yang diminta Claude dalam percakapan. Berkas data tidak dikirim |
 
 Pemeriksaan otomatis versi baru bisa dimatikan di jendela **Software Update** (hapus centang
 **Check for updates automatically**).

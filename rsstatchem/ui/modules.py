@@ -86,4 +86,7 @@ def add_module_menu(menu, ctx):
         # "&&": a single "&" would be read as a keyboard mnemonic and disappear
         sub.addAction(f"New {info.title.replace('&', '&&')} Window",
                       lambda _=False, k=info.key: open_module(ctx, k))
+    if hasattr(ctx, "show_connector"):
+        sub.addSeparator()
+        sub.addAction("&Claude Connector...", lambda: ctx.show_connector())
     return sub

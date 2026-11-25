@@ -35,6 +35,8 @@ rsstatchem/
     stats/         analyses: common.py helpers, descriptive, explore, ttest, anova,
                    correlate, regression, nonparametric, crosstabs, reliability, charts
   io/files.py      .rsd / .sav / csv / xlsx
+  mcp/             Claude connector (`RS-StatChem --mcp`): the whole app as MCP tools, see
+                   "Claude connector" below
   ui/              Qt
     data_editor.py main window + menus (integration point)
     dialogs/base.py VariablePickerDialog, SubDialog, DefineGroupsDialog
@@ -187,6 +189,8 @@ Run these (offscreen, no user needed) after larger changes; each prints what bro
 | `rsm_walker.py` | Opens every tutorial example and a design of every family and visits every node, tab and graph type. |
 | `slot_audit.py` | Static check (also a test): no method with an optional first parameter is connected directly to `triggered` / `clicked`. |
 | `ui_lint.py [modules] [--shots DIR]` | Runs the menu crawler on a 1366 x 768 screen and checks every window and dialog as it opens: clipped labels, buttons and group titles, drop-downs too narrow for their value or with a blank entry, squeezed text and spin boxes, toolbar buttons without an icon, windows larger than the screen. `--shots` saves a picture of each dialog for a visual pass. |
+| `mcp_crawler.py [modules]` | Runs every menu command of a module through the Claude connector: describes and answers the dialogs, reports crashes and dialogs that cannot be closed. |
+| `mcp_smoke.py <command>` | Starts `<command> --mcp` as an MCP client would (stdio), lists the tools and runs a t test, with both protocol handshakes. CI runs it on the packaged app. |
 
 Rules these tools enforce:
 
@@ -204,3 +208,31 @@ Rules these tools enforce:
   computer's language, because text boxes and files read ".".
 - An analysis that cannot handle its input raises `ValueError` with a message the user can act
   on, before allocating or iterating (see `tests/test_misuse_guards.py`).
+
+## Claude connector (`rsstatchem/mcp/`)
+
+`RS-StatChem --mcp` is a local MCP server (stdio) for the Claude desktop app / Claude Code; the
+app never signs in to Claude itself. The connector *is* the application: Qt runs off screen in
+the main thread with a normal `AppContext`, the MCP server in a second thread.
+
+| Module | Role |
+|---|---|
+| `tools.py` | Statistics tools on a plain `Workspace` (no Qt, no SDK) |
+| `driver.py` | `GuiThread` (run on the Qt thread; `interact` notices that a dialog is waiting) and functions that describe and operate any window, dialog, table or menu |
+| `engine.py` | `AppWorkspace`: datasets = Data Editors, results = Output Viewer; the general tools (`run_command`, `fill_dialog`, ...); `Engine.call(name, args)` |
+| `module_tools.py` | `FullWorkspace`: rsm_*, graph_*, chem_*, image_* tools |
+| `server.py` | MCP SDK 2.x server; `Backend` picks the visible app (live) or our own windows |
+| `bridge.py` | Live mode: `LiveServer` (QLocalServer, user-only, token file) in the app, `LiveClient` in the connector |
+| `setup.py` | Our entry in `claude_desktop_config.json` (used by `ui/dialogs/connector.py`) |
+
+To add a tool, add a method to `Workspace` (`@_tool("Title")`), or to `AppWorkspace` /
+`FullWorkspace` (`@app_tool("Title", read_only=..., ui=True)`; `ui=True` when it may open a dialog:
+such a tool runs off the Qt thread and uses `self._do` / `self.gui`). Type hints become the input
+schema, the docstring is the description the model reads, user-fixable problems raise
+`ValueError`. Return text, or a list of `str` / `Picture`. New dialogs and menu commands need
+nothing: they are reachable as soon as they are in a menu, if their fields have labels.
+
+Rules: never identify a widget by `id()` (wrappers of Qt-created widgets come and go; use
+`driver.key_of`); no Qt call that keeps the interpreter lock while a dialog is open (see
+`driver.release_static_dialogs`); nothing a tool does may reach `ConnectorDialog`
+(`ctx.connector_calls`). `scripts/mcp_crawler.py` runs every menu command through the engine.

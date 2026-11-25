@@ -1027,6 +1027,8 @@ class DataEditorWindow(QMainWindow):
                     f"{dlg.windowTitle()}: Save Variables"))
                 if created:
                     section.note("", "Variables created: " + ", ".join(created))
+        elif hasattr(result, "section"):      # e.g. a PROCESS result (section + numbers)
+            section = result.section
         self.ctx.show_output(section)
 
     def _compute_on_views(self, fn):

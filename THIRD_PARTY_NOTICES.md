@@ -19,6 +19,13 @@ folder (Python packages keep theirs in their `*.dist-info` folders).
 | Pillow | MIT-CMU (HPND) |
 | certifi | MPL-2.0 |
 | EPAM Indigo (`epam.indigo`) | Apache-2.0 |
+| Model Context Protocol Python SDK (`mcp`, `mcp-types`), for the Claude connector (`--mcp`) | MIT |
+| pydantic, pydantic-core, annotated-types, typing-inspection, anyio, h11, attrs, jsonschema, jsonschema-specifications, referencing, rpds-py, PyJWT, truststore (used by the MCP SDK) | MIT |
+| cffi (used by the MCP SDK) | MIT-0 |
+| httpx2, httpcore2, Starlette, Uvicorn, sse-starlette, click, idna, pycparser (used by the MCP SDK) | BSD-3-Clause |
+| cryptography (used by the MCP SDK) | Apache-2.0 or BSD-3-Clause |
+| python-multipart, OpenTelemetry API (used by the MCP SDK) | Apache-2.0 |
+| typing-extensions | PSF-2.0 |
 | OPSIN name-to-structure | MIT (`resources/opsin/LICENSE-OPSIN.txt`) |
 | Chemistry Development Kit (CDK) 2.13, unmodified jars | LGPL-2.1-or-later; beam-core BSD-2-Clause; vecmath GPL-2.0 with Classpath Exception (`resources/java/LICENSE-CDK.txt`, sources on Maven Central) |
 | Eclipse Temurin Java runtime (jlink subset) | GPL-2.0 with Classpath Exception |
