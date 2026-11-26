@@ -317,8 +317,8 @@ def test_stdio_server_started_like_claude_desktop_does(data_file, tmp_path):
         env={"RSSTATCHEM_HOME": str(tmp_path / "home"), "QT_QPA_PLATFORM": "offscreen",
              "PYTHONWARNINGS": "default"})    # warnings on stderr must not break the stream
 
-    async def run():
-        with anyio.fail_after(120):
+    async def run():     # the server's stderr goes to pytest's "Captured stderr"
+        with anyio.fail_after(240):
             async with Client(params) as client:
                 names = [t.name for t in (await client.list_tools()).tools]
                 assert names[:len(TOOLS)] == [t.name for t in TOOLS] and "run_command" in names

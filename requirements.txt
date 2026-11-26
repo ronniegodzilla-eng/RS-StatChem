@@ -24,3 +24,6 @@ h5py==3.16.0
 # Claude connector (RS-StatChem --mcp): the official Model Context Protocol SDK (MIT). 2.x API
 # (mcp.server.MCPServer); pulls in pydantic, anyio, starlette, httpx2 and friends
 mcp>=2.3,<3
+# cryptography (via the MCP SDK's pyjwt) has no Intel Mac wheels from 49 on: a source build
+# links Homebrew's OpenSSL and clashes with the libssl bundled in the app
+cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"

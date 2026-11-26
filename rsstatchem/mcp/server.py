@@ -273,7 +273,8 @@ def _offscreen_platform() -> str:
     except OSError:
         return "offscreen"
     text = str(path)
-    return f"offscreen:configfile={text}" if ":" not in text[2:] else "offscreen"
+    # Qt splits platform options at ":", so a Windows drive letter would break the path
+    return f"offscreen:configfile={text}" if ":" not in text else "offscreen"
 
 
 def _offscreen_app():
